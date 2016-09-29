@@ -57,4 +57,10 @@ public class PageSinkManager
         checkArgument(provider != null, "No page sink provider for connector '%s'", connectorId);
         return provider;
     }
+
+    public void removeConnectorPageSinkProvider(String connectorId) {
+        if (pageSinkProviders.containsKey(connectorId)) {
+            pageSinkProviders.remove(connectorId);
+        }
+    }
 }

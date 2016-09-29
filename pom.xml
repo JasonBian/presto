@@ -113,6 +113,7 @@
         <module>presto-verifier</module>
         <module>presto-testing-server-launcher</module>
         <module>presto-plugin-toolkit</module>
+        <module>presto-elasticsearch</module>
     </modules>
 
     <dependencyManagement>

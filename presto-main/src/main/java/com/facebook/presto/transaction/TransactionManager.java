@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.transaction;
 
+import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
@@ -132,6 +133,21 @@ public class TransactionManager
         requireNonNull(connectorId, "connectorId is null");
         requireNonNull(connector, "connector is null");
         checkArgument(connectorsById.put(connectorId, connector) == null, "Connector '%s' is already registered", connectorId);
+    }
+
+    //动态修改catalog
+    public void removeConnector(String connectorId, String schemaConnectorId, String tableConnectorId) {
+        requireNonNull(connectorId, "connectorId is null");
+        if (connectorsById.containsKey(connectorId)) {
+            connectorsById.remove(connectorId);
+        }
+        if (connectorsById.containsKey(schemaConnectorId)) {
+            connectorsById.remove(schemaConnectorId);
+        }
+        if (connectorsById.containsKey(tableConnectorId)) {
+            connectorsById.remove(tableConnectorId);
+        }
+
     }
 
     public TransactionInfo getTransactionInfo(TransactionId transactionId)

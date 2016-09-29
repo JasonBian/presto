@@ -170,6 +170,12 @@ public class MetadataManager
         connectorsByCatalog.put(catalogName, connectorEntry);
     }
 
+    public synchronized void removeConnectorMetadata(String catalogName) {
+        if (connectorsByCatalog.containsKey(catalogName)) {
+            connectorsByCatalog.remove(catalogName);
+        }
+    }
+
     public synchronized void registerInformationSchemaCatalog(String connectorId, String catalogName)
     {
         checkMetadataArguments(connectorId, catalogName);
@@ -188,6 +194,30 @@ public class MetadataManager
         ConnectorEntry connectorEntry = new ConnectorEntry(connectorId, catalogName);
         connectorsById.put(connectorId, connectorEntry);
         systemTablesByCatalog.put(catalogName, connectorEntry);
+    }
+
+    public synchronized void removeInformationSchemaCatalog(String connectorId, String catalogName) {
+        if (informationSchemasByCatalog.containsKey(catalogName)) {
+            informationSchemasByCatalog.remove(catalogName);
+        }
+        if (connectorsById.containsKey(connectorId)) {
+            connectorsById.remove(connectorId);
+        }
+    }
+
+    public synchronized void removeSystemTablesCatalog(String connectorId, String catalogName) {
+        if (systemTablesByCatalog.containsKey(catalogName)) {
+            systemTablesByCatalog.remove(catalogName);
+        }
+        if (connectorsById.containsKey(connectorId)) {
+            connectorsById.remove(connectorId);
+        }
+    }
+
+    public synchronized void removeConnectorsById(String connectorId) {
+        if (connectorsById.containsKey(connectorId)) {
+            connectorsById.remove(connectorId);
+        }
     }
 
     private void checkMetadataArguments(String connectorId, String catalogName)

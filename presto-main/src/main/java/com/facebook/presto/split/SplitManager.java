@@ -53,4 +53,10 @@ public class SplitManager
         checkArgument(result != null, "No split manager for connector '%s'", connectorId);
         return result;
     }
+
+    public void removeConnectorSplitManager(String connectorId) {
+        if (splitManagers.containsKey(connectorId)) {
+            splitManagers.remove(connectorId);
+        }
+    }
 }

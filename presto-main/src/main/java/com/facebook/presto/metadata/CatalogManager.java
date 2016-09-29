@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.presto.ExceededCpuLimitException;
 import com.facebook.presto.connector.ConnectorManager;
+import com.facebook.presto.server.PrestoServer;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -24,11 +26,14 @@ import javax.inject.Inject;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
+import java.nio.file.*;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static com.google.common.base.MoreObjects.firstNonNull;
@@ -79,6 +84,80 @@ public class CatalogManager
         }
 
         catalogsLoaded.set(true);
+
+        //动态添加,修改,删除catalog
+        new Thread(() -> {
+            try {
+                log.info("-- Catalog watcher thread start --");
+                startCatalogWatcher(catalogConfigurationDir);
+            } catch (Exception e) {
+                log.info("startCatalogWatcher error," + e.getStackTrace());
+            }
+        }).start();
+    }
+
+    /**
+     * catalog 监控逻辑
+     * @param catalogConfigurationDir
+     * @throws IOException
+     * @throws InterruptedException
+     */
+    private void startCatalogWatcher(File catalogConfigurationDir) throws IOException, InterruptedException {
+        WatchService watchService = FileSystems.getDefault().newWatchService();
+        Paths.get(catalogConfigurationDir.getAbsolutePath()).register(
+                watchService, StandardWatchEventKinds.ENTRY_CREATE,StandardWatchEventKinds.ENTRY_DELETE,StandardWatchEventKinds.ENTRY_MODIFY
+        );
+        while (true) {
+            WatchKey key = watchService.take();
+            log.info("Take watch enents");
+            for (WatchEvent<?> event : key.pollEvents()) {
+                if (event.kind() == StandardWatchEventKinds.ENTRY_CREATE) {
+                    log.info("New file in catalog directory :" + event.context());
+                    Path newCatalog = (Path) event.context();
+                    addCatalog(newCatalog);
+                } else if (event.kind() == StandardWatchEventKinds.ENTRY_DELETE) {
+                    log.info("Delete file from catalog directory :" + event.context());
+                    Path deletedCatalog = (Path) event.context();
+                    deleteCatalog(deletedCatalog);
+                } else if (event.kind() == StandardWatchEventKinds.ENTRY_MODIFY) {
+                    log.info("Modify file from the catalog directory:" + event.context());
+                    Path modifiedCatalog = (Path) event.context();
+                    modifyCatalog(modifiedCatalog);
+                }
+            }
+            boolean valid = key.reset();
+            if (!valid) {
+                break;
+            }
+        }
+    }
+
+    private void addCatalog(Path catalogPath) {
+        log.info("addCatalog, catalogPath:" + catalogPath);
+        File file = new File(catalogConfigurationDir, catalogPath.getFileName().toString());
+        if (file.isFile() && file.getName().endsWith(".properties")) {
+            try {
+                TimeUnit.SECONDS.sleep(5);
+                loadCatalog(file);
+                PrestoServer.updateDataSourceAnnouncement(catalogPath.getFileName().toString(), PrestoServer.DatasourceAction.ADD);
+            } catch (Exception e) {
+                log.info("addCatalog error:" + e.getMessage());
+            }
+        }
+    }
+
+    private void deleteCatalog(Path catalogPath) {
+        if (catalogPath.getFileName().toString().endsWith(".properties")) {
+            String catalogName = Files.getNameWithoutExtension(catalogPath.getFileName().toString());
+            log.info("-- Removing catalog %s", catalogName);
+            connectorManager.removeConnector(catalogName);
+            PrestoServer.updateDataSourceAnnouncement(catalogName, PrestoServer.DatasourceAction.DELETE);
+        }
+    }
+
+    private void modifyCatalog(Path catalogPath) {
+        deleteCatalog(catalogPath);
+        addCatalog(catalogPath);
     }
 
     private void loadCatalog(File file)

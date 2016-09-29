@@ -100,6 +100,15 @@ public final class SessionPropertyManager
         }
     }
 
+    //动态修改catalog
+    public void removeConnectorSessionProperties(String catalog) {
+        requireNonNull(catalog, "catalog is null");
+        checkArgument(!catalog.isEmpty() && catalog.trim().toLowerCase(ENGLISH).equals(catalog), "Invalid catalog name '%s'", catalog);
+        if (catalogSessionProperties.containsKey(catalog)) {
+            catalogSessionProperties.remove(catalog);
+        }
+    }
+
     private <T> void addSessionPropertyInternal(Optional<String> catalogName, PropertyMetadata<T> sessionProperty)
     {
         SessionProperty<T> value = new SessionProperty<>(catalogName, sessionProperty);

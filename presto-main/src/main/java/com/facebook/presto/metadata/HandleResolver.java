@@ -58,6 +58,12 @@ public class HandleResolver
                 "Connector '%s' is already assigned to resolver: %s", name, existingResolver);
     }
 
+    public void removeHandleResolver(String id) {
+        if (handleResolvers.containsKey(id)) {
+            handleResolvers.remove(id);
+        }
+    }
+
     public String getId(ConnectorTableHandle tableHandle)
     {
         return getId(tableHandle, ConnectorHandleResolver::getTableHandleClass);

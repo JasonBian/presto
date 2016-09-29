@@ -49,4 +49,10 @@ public class IndexManager
         checkArgument(result != null, "No index provider for connector '%s'", handle.getConnectorId());
         return result;
     }
+
+    public void removeIndexResolver(String connectorId) {
+        if (providers.containsKey(connectorId)) {
+            providers.remove(connectorId);
+        }
+    }
 }

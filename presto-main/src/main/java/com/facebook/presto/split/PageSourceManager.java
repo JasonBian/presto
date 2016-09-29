@@ -56,4 +56,10 @@ public class PageSourceManager
 
         return provider;
     }
+
+    public void removeConnectorPageSourceProvider(String connectorId) {
+        if (pageSourceProviders.containsKey(connectorId)) {
+            pageSourceProviders.remove(connectorId);
+        }
+    }
 }

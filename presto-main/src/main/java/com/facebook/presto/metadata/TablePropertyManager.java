@@ -54,6 +54,15 @@ public class TablePropertyManager
         checkState(catalogTableProperties.putIfAbsent(catalog, propertiesByName) == null, "TableProperties for catalog '%s' are already registered", catalog);
     }
 
+    //动态修改catalog
+    public void removeTableProperties(String catalog) {
+        requireNonNull(catalog, "catalog is null");
+        checkArgument(!catalog.isEmpty() && catalog.trim().equals(catalog), "Invalid catalog name '%s'", catalog);
+        if (catalogTableProperties.containsKey(catalog)) {
+            catalogTableProperties.remove(catalog);
+        }
+    }
+
     public Map<String, Object> getTableProperties(
             String catalog,
             Map<String, Expression> sqlPropertyValues,

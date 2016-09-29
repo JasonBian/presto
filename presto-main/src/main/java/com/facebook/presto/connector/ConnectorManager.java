@@ -155,6 +155,9 @@ public class ConnectorManager
         requireNonNull(catalogName, "catalogName is null");
         requireNonNull(properties, "properties is null");
         requireNonNull(connectorFactory, "connectorFactory is null");
+        for (String catalog : catalogs) {
+            log.info("catalog:" + catalog);
+        }
         checkArgument(!catalogs.contains(catalogName), "A catalog already exists for %s", catalogName);
 
         String connectorId = getConnectorId(catalogName);
@@ -184,6 +187,37 @@ public class ConnectorManager
         // Register session and table properties once per catalog
         metadataManager.getSessionPropertyManager().addConnectorSessionProperties(catalogName, connector.getSessionProperties());
         metadataManager.getTablePropertyManager().addTableProperties(catalogName, connector.getTableProperties());
+    }
+
+    public synchronized void removeConnector(String catalogName) {
+        if (catalogs.contains(catalogName)) {
+            catalogs.remove(catalogName);
+        }
+        String connectorId = getConnectorId(catalogName);
+        metadataManager.removeConnectorMetadata(catalogName);
+        splitManager.removeConnectorSplitManager(makeInformationSchemaConnectorId(connectorId));
+        pageSourceManager.removeConnectorPageSourceProvider(makeInformationSchemaConnectorId(connectorId));
+        metadataManager.removeInformationSchemaCatalog(makeInformationSchemaConnectorId(connectorId), catalogName);
+
+        splitManager.removeConnectorSplitManager(makeSystemTablesConnectorId(connectorId));
+        pageSourceManager.removeConnectorPageSourceProvider(makeSystemTablesConnectorId(connectorId));
+        metadataManager.removeSystemTablesCatalog(makeSystemTablesConnectorId(connectorId), catalogName);
+
+        splitManager.removeConnectorSplitManager(connectorId);
+        pageSourceManager.removeConnectorPageSourceProvider(connectorId);
+        handleResolver.removeHandleResolver(connectorId);
+        metadataManager.removeConnectorsById(connectorId);
+
+        pageSinkManager.removeConnectorPageSinkProvider(connectorId);
+        indexManager.removeIndexResolver(connectorId);
+        transactionManager.removeConnector(connectorId, makeInformationSchemaConnectorId(connectorId), makeSystemTablesConnectorId(connectorId));
+
+        connectors.remove(connectorId);
+        connectors.remove(makeSystemTablesConnectorId(connectorId));
+        connectors.remove(makeInformationSchemaConnectorId(connectorId));
+
+        metadataManager.getSessionPropertyManager().removeConnectorSessionProperties(catalogName);
+        metadataManager.getTablePropertyManager().removeTableProperties(catalogName);
     }
 
     private synchronized void addConnectorInternal(ConnectorType type, String catalogName, String connectorId, Connector connector)
