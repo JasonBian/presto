@@ -139,7 +139,7 @@ public class CatalogManager
             try {
                 TimeUnit.SECONDS.sleep(5);
                 loadCatalog(file);
-                PrestoServer.updateDataSourceAnnouncement(catalogPath.getFileName().toString(), PrestoServer.DatasourceAction.ADD);
+                PrestoServer.updateDataSourceAnnouncement(Files.getNameWithoutExtension(catalogPath.getFileName().toString()), PrestoServer.DatasourceAction.ADD);
             } catch (Exception e) {
                 log.info("addCatalog error:" + e.getMessage());
             }
