@@ -45,7 +45,7 @@ public class ElasticsearchTable
             @JsonProperty("sources") List<ElasticsearchTableSource> sources)
     {
         checkArgument(!isNullOrEmpty(name), "name is null or is empty");
-        this.name = requireNonNull(name, "name is null");
+        this.name = requireNonNull(name.toLowerCase(ENGLISH), "name is null");
         this.sources = ImmutableList.copyOf(requireNonNull(sources, "sources is null"));
     }
 

@@ -13,7 +13,8 @@
  */
 package com.facebook.presto.elasticsearch;
 
-import com.facebook.presto.spi.type.DateType;
+import com.carrotsearch.hppc.cursors.ObjectCursor;
+import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import com.facebook.presto.spi.type.Type;
 import com.google.common.base.Function;
 import com.google.common.base.Supplier;
@@ -21,22 +22,14 @@ import com.google.common.base.Suppliers;
 import com.google.common.base.Throwables;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.io.Resources;
 import io.airlift.json.JsonCodec;
 import io.airlift.log.Logger;
-import org.elasticsearch.action.admin.indices.mapping.get.GetFieldMappingsRequest;
-import org.elasticsearch.action.admin.indices.mapping.get.GetFieldMappingsResponse;
 import org.elasticsearch.action.admin.indices.mapping.get.GetMappingsRequest;
-import org.elasticsearch.client.AdminClient;
 import org.elasticsearch.client.Client;
-import org.elasticsearch.client.FilterClient;
 import org.elasticsearch.client.IndicesAdminClient;
 import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
-import org.elasticsearch.common.hppc.cursors.ObjectCursor;
-import org.elasticsearch.common.hppc.cursors.ObjectObjectCursor;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 import org.json.JSONArray;
@@ -44,31 +37,25 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import javax.inject.Inject;
-
 import java.io.IOException;
-import java.net.URI;
-import java.net.URL;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.HashSet;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.*;
 import java.util.concurrent.ExecutionException;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.collect.Maps.transformValues;
 import static com.google.common.collect.Maps.uniqueIndex;
-import static java.nio.charset.StandardCharsets.UTF_8;
-import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
+
+//import org.json.JSONObject;
+
 
 /**
  * Created by bianzexin on 16/9/18.
@@ -126,11 +113,11 @@ public class ElasticsearchClient {
 
         requireNonNull(schema, "schema is null");
         requireNonNull(tableName, "tableName is null");
-        Map<String, ElasticsearchTable> tables = schemas.get().get(schema);
+        Map<String, ElasticsearchTable> tables = schemas.get().get(schema.toLowerCase(Locale.ENGLISH));
         if (tables == null) {
             return null;
         }
-        return tables.get(tableName);
+        return tables.get(tableName.toLowerCase(Locale.ENGLISH));
     }
 
     Map<String, Map<String, ElasticsearchTable>> updateSchemas()
@@ -199,7 +186,6 @@ public class ElasticsearchClient {
                     result.add(clm);
                 }
             }
-            int a;
         }
 
         return result;
@@ -332,7 +318,7 @@ public class ElasticsearchClient {
             //catalog = catalogCodec.fromJson(tableMappings);
 
             //construct the es client
-            Settings settings = ImmutableSettings.settingsBuilder()
+            Settings settings = Settings.settingsBuilder()
                     .put("cluster.name", config.getEsClusterName())
                     .build();
 
@@ -341,7 +327,10 @@ public class ElasticsearchClient {
             Integer esPort = config.getEsPort();
             String esClusterName = config.getEsClusterName();
 
-            Client transportClient = new TransportClient(settings).addTransportAddress(new InetSocketTransportAddress(esServerAddr, esPort));
+            Client transportClient = TransportClient.builder().settings(settings).build().addTransportAddress(new InetSocketTransportAddress
+                    (InetAddress.getByName(esServerAddr), esPort));
+
+//            Client transportClient = new TransportClient(settings).addTransportAddress(new InetSocketTransportAddress(esServerAddr, esPort));
             IndicesAdminClient indicesAdmin = transportClient.admin().indices();
 
             ImmutableOpenMap<String, ImmutableOpenMap<String, MappingMetaData>> f =
@@ -403,7 +392,7 @@ public class ElasticsearchClient {
                         ElasticsearchTable::getName));
     }
 
-    static ImmutableMap<String, Client> createClients(Map<String, Map<String, ElasticsearchTable>> schemas) {
+    static ImmutableMap<String, Client> createClients(Map<String, Map<String, ElasticsearchTable>> schemas) throws UnknownHostException {
         Map<String, Client> transportClients = new HashMap<String, Client>();
 
 
@@ -415,10 +404,11 @@ public class ElasticsearchClient {
                 for (ElasticsearchTableSource tableSource : tableSources) {
                     String clusterName = tableSource.getClusterName();
                     if (transportClients.get(clusterName) == null) {
-                        Settings settings = ImmutableSettings.settingsBuilder()
+                        Settings settings = Settings.settingsBuilder()
                                 .put("cluster.name", clusterName)
                                 .build();
-                        Client transportClient = new TransportClient(settings).addTransportAddress(new InetSocketTransportAddress(tableSource.getHostAddress(), tableSource.getPort()));
+                        Client transportClient = TransportClient.builder().settings(settings).build().addTransportAddress(new InetSocketTransportAddress
+                                (InetAddress.getByName(tableSource.getHostAddress()), tableSource.getPort()));
                         transportClients.put(clusterName, transportClient);
                     }
                 }

@@ -19,27 +19,30 @@ import com.facebook.presto.spi.predicate.Domain;
 import com.facebook.presto.spi.predicate.Range;
 import com.facebook.presto.spi.type.*;
 import com.google.common.base.Strings;
+
 import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
+
 import org.apache.lucene.search.Query;
 import org.elasticsearch.action.admin.indices.mapping.get.GetFieldMappingsRequest;
 import org.elasticsearch.action.admin.indices.mapping.get.GetFieldMappingsResponse;
 import org.elasticsearch.action.search.SearchResponse;
 import org.elasticsearch.action.search.SearchType;
 import org.elasticsearch.client.Client;
-import org.elasticsearch.common.base.Joiner;
-import org.elasticsearch.common.joda.time.*;
-import org.elasticsearch.common.joda.time.DateTime;
-import org.elasticsearch.common.joda.time.DateTimeZone;
-import org.elasticsearch.common.joda.time.format.DateTimeFormatter;
-import org.elasticsearch.common.joda.time.format.ISODateTimeFormat;
+//import org.elasticsearch.common.base.Joiner;
+//import org.elasticsearch.common.joda.time.*;
+//import org.elasticsearch.common.joda.time.DateTime;
+//import org.elasticsearch.common.joda.time.DateTimeZone;
 import org.elasticsearch.common.unit.TimeValue;
 import org.elasticsearch.index.query.*;
 import org.elasticsearch.search.SearchHit;
 import org.elasticsearch.search.SearchHitField;
 import org.elasticsearch.search.SearchHits;
 //import org.joda.time.*;
+
+//import org.joda.time.format.DateTimeFormatter;
+//import org.joda.time.format.ISODateTimeFormat;
 
 import java.text.SimpleDateFormat;
 import java.util.*;
@@ -166,27 +169,29 @@ public class ElasticsearchRecordCursor
     @Override
     public long getLong(int field)
     {
-        String timeStr = getFieldValue(field);
-        Long milliSec = 0L;
-        if ( getType( field ) == TIMESTAMP ) {
-            if ( timeStr.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}.\\d{3}") ) {
-                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
-                try {
-                    milliSec = sdf.parse(timeStr).getTime();
-                }catch(Exception except){
-                    log.error(except.getMessage());
-                }
-                return milliSec;
-            }
-
-            DateTimeFormatter formatter = ISODateTimeFormat.dateOptionalTimeParser();
-
-            milliSec =  formatter.parseDateTime(timeStr).getMillis();
-            return milliSec;
-        }
-
-        //suppose the
-        return Math.round(Double.parseDouble(getFieldValue(field)));
+        checkFieldType(field, BIGINT);
+        return Long.valueOf(String.valueOf(getFieldValue(field)));
+//        String timeStr = getFieldValue(field);
+//        Long milliSec = 0L;
+//        if ( getType( field ) == TIMESTAMP ) {
+//            if ( timeStr.matches("\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}.\\d{3}") ) {
+//                SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS");
+//                try {
+//                    milliSec = sdf.parse(timeStr).getTime();
+//                }catch(Exception except){
+//                    log.error(except.getMessage());
+//                }
+//                return milliSec;
+//            }
+//
+//            DateTimeFormatter formatter = ISODateTimeFormat.dateOptionalTimeParser();
+//
+//            milliSec =  formatter.parseDateTime(timeStr).getMillis();
+//            return milliSec;
+//        }
+//
+//        //suppose the
+//        return Math.round(Double.parseDouble(getFieldValue(field)));
     }
 
     @Override
@@ -355,7 +360,7 @@ public class ElasticsearchRecordCursor
                      }
                      */
                     //new ConstantScoreQueryBuilder(FilterBuilders.existsFilter(columnName))
-                    QueryBuilder existQuery = QueryBuilders.constantScoreQuery(FilterBuilders.existsFilter(columnName));
+                    QueryBuilder existQuery = QueryBuilders.constantScoreQuery(QueryBuilders.existsQuery(columnName));
 
                     SearchResponse searchResp =
                             client.prepareSearch().setIndices(indexName).setTypes(typeName)
@@ -384,12 +389,13 @@ public class ElasticsearchRecordCursor
             checkArgument(domain.getType().isOrderable(), "Domain type must be orderable");
 
             if (domain.getValues().isNone()) {
-                return QueryBuilders.filteredQuery(null, FilterBuilders.missingFilter(columnName));
+            	return QueryBuilders.filteredQuery(null, QueryBuilders.missingQuery(columnName));
+//                return QueryBuilders.filteredQuery(null, FilterBuilders.missingFilter(columnName));
                 //return domain.isNullAllowed() ? columnName + " IS NULL" : "FALSE";
             }
 
             if (domain.getValues().isAll()) {
-                return QueryBuilders.filteredQuery(null, FilterBuilders.existsFilter(columnName));
+                return QueryBuilders.filteredQuery(null, QueryBuilders.existsQuery(columnName));
                 //return domain.isNullAllowed() ? "TRUE" : columnName + " IS NOT NULL";
             }
 
