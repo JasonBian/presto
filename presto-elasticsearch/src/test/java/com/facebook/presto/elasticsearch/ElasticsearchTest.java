@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.elasticsearch;
 
+import com.carrotsearch.hppc.cursors.ObjectObjectCursor;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableMap;
 import org.elasticsearch.action.admin.indices.mapping.get.GetMappingsRequest;
@@ -21,15 +22,12 @@ import org.elasticsearch.client.IndicesAdminClient;
 import org.elasticsearch.client.transport.TransportClient;
 import org.elasticsearch.cluster.metadata.MappingMetaData;
 import org.elasticsearch.common.collect.ImmutableOpenMap;
-import org.elasticsearch.common.hppc.cursors.ObjectObjectCursor;
-import org.elasticsearch.common.settings.ImmutableSettings;
 import org.elasticsearch.common.settings.Settings;
 import org.elasticsearch.common.transport.InetSocketTransportAddress;
 
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.net.InetAddress;
+import java.net.UnknownHostException;
+import java.util.*;
 
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.collect.Maps.transformValues;
@@ -40,17 +38,17 @@ import static com.google.common.collect.Maps.uniqueIndex;
  */
 public class ElasticsearchTest {
     private static Map<String, List<ElasticsearchTable>> catalog = new HashMap<String, List<ElasticsearchTable>>();
-    public static void main(String[] args) {
-        Settings settings = ImmutableSettings.settingsBuilder()
-                .put("cluster.name", "elasticsearch")
+    public static void main(String[] args) throws UnknownHostException {
+        Settings settings = Settings.settingsBuilder()
+                .put("cluster.name", "elasticsearch-bi-master")
                 .build();
 
-        String esServerAddr = "192.168.10.29";
+        String esServerAddr = "172.16.11.218";
         Integer esPort = 9300;
-        String esClusterName = "elasticsearch";
+        String esClusterName = "elasticsearch-bi-master";
 
 
-        Client transportClient = new TransportClient(settings).addTransportAddress(new InetSocketTransportAddress(esServerAddr, esPort));
+        Client transportClient = TransportClient.builder().settings(settings).build().addTransportAddress(new InetSocketTransportAddress(InetAddress.getByName(esServerAddr), esPort));
         IndicesAdminClient indicesAdmin = transportClient.admin().indices();
 
         ImmutableOpenMap<String, ImmutableOpenMap<String, MappingMetaData>> f =
@@ -83,6 +81,16 @@ public class ElasticsearchTest {
                 transformValues(
                         catalog,
                         resolveAndIndexTablesFunction()));
+        Set<String> keys = catalog.keySet();
+        for (String key : keys) {
+            System.out.println(key);
+            List<ElasticsearchTable> tables = catalog.get(key);
+            if (tables != null && tables.size() > 0) {
+                for (ElasticsearchTable table : tables) {
+                    System.out.println(key + ":" + table.getName());
+                }
+            }
+        }
     }
 
     static Function<List<ElasticsearchTable>, Map<String, ElasticsearchTable>> resolveAndIndexTablesFunction() {

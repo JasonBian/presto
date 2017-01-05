@@ -30,4 +30,12 @@ public interface SplitSource
     void close();
 
     boolean isFinished();
+
+    default boolean isControlScanConcurrencyEnable() {
+        return false;
+    }
+
+    default int getScanConcurrencyCount() {
+        return 1;
+    }
 }

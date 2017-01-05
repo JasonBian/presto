@@ -15,6 +15,8 @@ package com.facebook.presto.plugin.mysql;
 
 import com.facebook.presto.plugin.jdbc.BaseJdbcConfig;
 import com.facebook.presto.plugin.jdbc.JdbcClient;
+import com.facebook.presto.plugin.jdbc.cache.JdbcCacheConfig;
+import com.facebook.presto.plugin.jdbc.subtable.JdbcSubTableConfig;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
@@ -30,5 +32,7 @@ public class MySqlClientModule
         binder.bind(JdbcClient.class).to(MySqlClient.class).in(Scopes.SINGLETON);
         configBinder(binder).bindConfig(BaseJdbcConfig.class);
         configBinder(binder).bindConfig(MySqlConfig.class);
+        configBinder(binder).bindConfig(JdbcSubTableConfig.class);
+        configBinder(binder).bindConfig(JdbcCacheConfig.class);
     }
 }

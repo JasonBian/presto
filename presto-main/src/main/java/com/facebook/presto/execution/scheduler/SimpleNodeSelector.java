@@ -98,12 +98,17 @@ public class SimpleNodeSelector
     }
 
     @Override
-    public Multimap<Node, Split> computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks)
+    public Multimap<Node, Split> computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks,
+                                                    boolean controlScanConcurrencyEnabled, int scanConcurrencyCount)
     {
         Multimap<Node, Split> assignment = HashMultimap.create();
         NodeMap nodeMap = this.nodeMap.get().get();
         NodeAssignmentStats assignmentStats = new NodeAssignmentStats(nodeTaskMap, nodeMap, existingTasks);
 
+        int allSplits = 0;
+        for (RemoteTask task : existingTasks) {
+            allSplits += task.getPartitionedSplitCount();
+        }
         ResettableRandomizedIterator<Node> randomCandidates = randomizedNodes(nodeMap, includeCoordinator);
         for (Split split : splits) {
             randomCandidates.reset();
@@ -141,6 +146,10 @@ public class SimpleNodeSelector
                 }
             }
             if (chosenNode != null) {
+                allSplits += 1;
+                if (controlScanConcurrencyEnabled && scanConcurrencyCount < allSplits) {
+                    break;
+                }
                 assignment.put(chosenNode, split);
                 assignmentStats.addAssignedSplit(chosenNode);
             }

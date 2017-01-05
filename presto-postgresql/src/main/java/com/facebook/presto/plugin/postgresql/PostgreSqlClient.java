@@ -17,6 +17,8 @@ import com.facebook.presto.plugin.jdbc.BaseJdbcClient;
 import com.facebook.presto.plugin.jdbc.BaseJdbcConfig;
 import com.facebook.presto.plugin.jdbc.JdbcConnectorId;
 import com.facebook.presto.plugin.jdbc.JdbcOutputTableHandle;
+import com.facebook.presto.plugin.jdbc.cache.JdbcCacheConfig;
+import com.facebook.presto.plugin.jdbc.subtable.JdbcSubTableConfig;
 import com.google.common.base.Throwables;
 import org.postgresql.Driver;
 
@@ -30,10 +32,11 @@ public class PostgreSqlClient
         extends BaseJdbcClient
 {
     @Inject
-    public PostgreSqlClient(JdbcConnectorId connectorId, BaseJdbcConfig config)
+    public PostgreSqlClient(JdbcConnectorId connectorId, BaseJdbcConfig config,
+                            JdbcSubTableConfig subTableConfig, JdbcCacheConfig cacheConfig)
             throws SQLException
     {
-        super(connectorId, config, "\"", new Driver());
+        super(connectorId, config, "\"", new Driver(), subTableConfig, cacheConfig);
     }
 
     @Override

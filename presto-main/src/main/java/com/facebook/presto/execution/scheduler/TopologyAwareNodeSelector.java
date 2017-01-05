@@ -114,7 +114,8 @@ public class TopologyAwareNodeSelector
     }
 
     @Override
-    public Multimap<Node, Split> computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks)
+    public Multimap<Node, Split> computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks,
+                                                    boolean controlScanConcurrencyEnabled, int scanConcurrencyCount)
     {
         NodeMap nodeMap = this.nodeMap.get().get();
         Multimap<Node, Split> assignment = HashMultimap.create();

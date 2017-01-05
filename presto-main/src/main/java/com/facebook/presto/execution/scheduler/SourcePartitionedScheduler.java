@@ -85,7 +85,9 @@ public class SourcePartitionedScheduler
                 }
 
                 long start = System.nanoTime();
-                batchFuture = splitSource.getNextBatch(splitBatchSize);
+                boolean controlScanConcurrencyEnabled = splitSource.isControlScanConcurrencyEnable();
+                int scanConcurrencyCount =  splitSource.getScanConcurrencyCount();
+                batchFuture = splitSource.getNextBatch(controlScanConcurrencyEnabled ? scanConcurrencyCount : splitBatchSize);
                 batchFuture.thenRun(() -> stage.recordGetSplitTime(start));
             }
 
@@ -99,7 +101,8 @@ public class SourcePartitionedScheduler
         }
 
         // assign the splits
-        Multimap<Node, Split> splitAssignment = splitPlacementPolicy.computeAssignments(pendingSplits);
+        Multimap<Node, Split> splitAssignment = splitPlacementPolicy.computeAssignments(pendingSplits,
+                splitSource.isControlScanConcurrencyEnable(), splitSource.getScanConcurrencyCount());
         Set<RemoteTask> newTasks = assignSplits(splitAssignment);
 
         // remove assigned splits

@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.presto.plugin.jdbc.cache.JdbcCacheSplit;
+import com.facebook.presto.plugin.jdbc.cache.JdbcJavaBean;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.type.BigintType;
@@ -40,6 +42,7 @@ import java.sql.Time;
 import java.sql.Timestamp;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -58,23 +61,37 @@ public class JdbcRecordCursor
 
     private final List<JdbcColumnHandle> columnHandles;
 
-    private final Connection connection;
-    private final PreparedStatement statement;
-    private final ResultSet resultSet;
+    private Connection connection;
+    private PreparedStatement statement;
+    private ResultSet resultSet;
     private boolean closed;
+
+    //modify for pdbo
+    private List<JdbcJavaBean> tableDataSet;
+    private boolean isCacheTable = false;
+    private AtomicLong rowRecord = new AtomicLong(0);
+    private BaseJdbcClient client;
+    private JdbcSplit split;
 
     public JdbcRecordCursor(JdbcClient jdbcClient, JdbcSplit split, List<JdbcColumnHandle> columnHandles)
     {
+        this.client = (BaseJdbcClient) jdbcClient;
+        this.split = split;
+        isCacheTable = client.isCacheTable(split.getBaseTableName());
         this.columnHandles = ImmutableList.copyOf(requireNonNull(columnHandles, "columnHandles is null"));
-
-        try {
-            connection = jdbcClient.getConnection(split);
-            statement = jdbcClient.buildSql(split, columnHandles);
-            log.debug("Executing: %s", statement.toString());
-            resultSet = statement.executeQuery();
-        }
-        catch (SQLException | RuntimeException e) {
-            throw handleSqlException(e);
+        if (isCacheTable) {
+            JdbcCacheSplit key = new JdbcCacheSplit(split.getConnectorId(), split.getCatalogName(), split.getSchemaName(),
+                    split.getTableName(), split.getConnectionUrl(), split.getBaseTableName());
+            tableDataSet = client.getTableDataSet(key);
+        } else {
+            try {
+                connection = jdbcClient.getConnection(split);
+                statement = jdbcClient.buildSql(split, columnHandles);
+                log.debug("Executing: %s", statement.toString());
+                resultSet = statement.executeQuery();
+            } catch (SQLException | RuntimeException e) {
+                throw handleSqlException(e);
+            }
         }
     }
 
@@ -108,16 +125,21 @@ public class JdbcRecordCursor
         if (closed) {
             return false;
         }
-
-        try {
-            boolean result = resultSet.next();
-            if (!result) {
-                close();
-            }
+        boolean result;
+        if (isCacheTable) {
+            long andIncrement = rowRecord.incrementAndGet();
+            result = andIncrement <= tableDataSet.size();
             return result;
-        }
-        catch (SQLException | RuntimeException e) {
-            throw handleSqlException(e);
+        } else {
+            try {
+                result = resultSet.next();
+                if (!result) {
+                    close();
+                }
+                return result;
+            } catch (SQLException | RuntimeException e) {
+                throw handleSqlException(e);
+            }
         }
     }
 
@@ -125,11 +147,14 @@ public class JdbcRecordCursor
     public boolean getBoolean(int field)
     {
         checkState(!closed, "cursor is closed");
-        try {
-            return resultSet.getBoolean(field + 1);
-        }
-        catch (SQLException | RuntimeException e) {
-            throw handleSqlException(e);
+        if (isCacheTable) {
+            return (boolean) getFieldValue(field);
+        } else {
+            try {
+                return resultSet.getBoolean(field + 1);
+            } catch (SQLException | RuntimeException e) {
+                throw handleSqlException(e);
+            }
         }
     }
 
@@ -178,11 +203,14 @@ public class JdbcRecordCursor
     public double getDouble(int field)
     {
         checkState(!closed, "cursor is closed");
-        try {
-            return resultSet.getDouble(field + 1);
-        }
-        catch (SQLException | RuntimeException e) {
-            throw handleSqlException(e);
+        if (isCacheTable) {
+            return (double) getFieldValue(field);
+        } else {
+            try {
+                return resultSet.getDouble(field + 1);
+            } catch (SQLException | RuntimeException e) {
+                throw handleSqlException(e);
+            }
         }
     }
 
@@ -218,6 +246,10 @@ public class JdbcRecordCursor
         checkArgument(field < columnHandles.size(), "Invalid field index");
 
         try {
+            if (isCacheTable) {
+                Object fieldValue = getFieldValue(field);
+                return fieldValue == null;
+            }
             // JDBC is kind of dumb: we need to read the field and then ask
             // if it was null, which means we are wasting effort here.
             // We could save the result of the field access if it matters.
@@ -262,5 +294,11 @@ public class JdbcRecordCursor
             }
         }
         return Throwables.propagate(e);
+    }
+
+    private Object getFieldValue(int field) {
+        String lowerCase = columnHandles.get(field).getColumnName().toLowerCase();
+        JdbcJavaBean jdbcJavaBean = tableDataSet.get(rowRecord.intValue() - 1);
+        return jdbcJavaBean.getFieldObjectValue(jdbcJavaBean.getColumns().indexOf(lowerCase));
     }
 }

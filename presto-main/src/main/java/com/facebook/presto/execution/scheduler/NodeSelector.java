@@ -39,7 +39,8 @@ public interface NodeSelector
      * @return a multimap from node to splits only for splits for which we could identify a node to schedule on.
      * If we cannot find an assignment for a split, it is not included in the map.
      */
-    Multimap<Node, Split> computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks);
+    Multimap<Node, Split> computeAssignments(Set<Split> splits, List<RemoteTask> existingTasks, boolean controlScanConcurrencyEnabled, int
+            scanConcurrencyCount);
 
     /**
      * Identifies the nodes for running the specified splits based on a precomputed fixed partitioning.

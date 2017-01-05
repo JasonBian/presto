@@ -58,6 +58,8 @@ public class PrestoServer
         implements Runnable
 {
     private static Announcer announcer;
+    private static ServerConfig serverConfig;
+
     public enum DatasourceAction {
         ADD, DELETE;
     }
@@ -115,6 +117,8 @@ public class PrestoServer
 
         try {
             Injector injector = app.strictConfig().initialize();
+
+            serverConfig = injector.getInstance(ServerConfig.class);
 
             injector.getInstance(PluginManager.class).loadPlugins();
 
@@ -218,5 +222,9 @@ public class PrestoServer
             log.info("updateDataSourceAnnouncement error," + e.getMessage());
         }
         log.info("updateDataSourceAnnouncement end");
+    }
+
+    public static boolean isCoordinator() {
+        return serverConfig == null || serverConfig.isCoordinator();
     }
 }
