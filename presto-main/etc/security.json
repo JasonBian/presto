@@ -1,0 +1,43 @@
+{
+  "schemas": [
+    {
+      "user": "admin",
+      "schema": ".*",
+      "owner": true
+    },
+    {
+      "user": "bianzexin",
+      "owner": false
+    },
+    {
+      "schema": "default",
+      "owner": true
+    }
+  ],
+  "tables": [
+    {
+      "user": "admin",
+      "privileges": ["SELECT", "INSERT", "DELETE", "OWNERSHIP"]
+    },
+    {
+      "user": "bianzexin",
+      "privileges": []
+    },
+    {
+      "schema": "default",
+      "table": ".*",
+      "privileges": ["SELECT"]
+    }
+  ],
+  "sessionProperties": [
+    {
+      "property": "force_local_scheduling",
+      "allow": true
+    },
+    {
+      "user": "admin",
+      "property": "max_split_size",
+      "allow": true
+    }
+  ]
+}
