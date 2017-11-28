@@ -113,7 +113,7 @@
         <module>presto-verifier</module>
         <module>presto-testing-server-launcher</module>
         <module>presto-plugin-toolkit</module>
-        <module>presto-elasticsearch</module>
+       <!--  <module>presto-elasticsearch</module> -->
     </modules>
 
     <dependencyManagement>
@@ -852,6 +852,9 @@
                                             <goal>analyze-duplicate</goal>
                                             <goal>analyze-only</goal>
                                         </goals>
+                                        <configuration>
+											<failOnWarning>false</failOnWarning>
+										</configuration>
                                     </pluginExecutionFilter>
                                     <action>
                                         <ignore />
