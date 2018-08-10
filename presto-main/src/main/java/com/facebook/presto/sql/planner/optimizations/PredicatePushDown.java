@@ -28,6 +28,7 @@ import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
 import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.SymbolAllocator;
 import com.facebook.presto.sql.planner.SymbolsExtractor;
+import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.plan.AggregationNode;
 import com.facebook.presto.sql.planner.plan.AssignUniqueId;
 import com.facebook.presto.sql.planner.plan.Assignments;
@@ -47,12 +48,15 @@ import com.facebook.presto.sql.planner.plan.UnionNode;
 import com.facebook.presto.sql.planner.plan.UnnestNode;
 import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.ComparisonExpression;
-import com.facebook.presto.sql.tree.ComparisonExpressionType;
 import com.facebook.presto.sql.tree.Expression;
+import com.facebook.presto.sql.tree.Literal;
 import com.facebook.presto.sql.tree.LongLiteral;
 import com.facebook.presto.sql.tree.NodeRef;
 import com.facebook.presto.sql.tree.NullLiteral;
 import com.facebook.presto.sql.tree.SymbolReference;
+import com.facebook.presto.sql.tree.TryExpression;
+import com.facebook.presto.sql.util.AstUtils;
+import com.google.common.base.Verify;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
@@ -65,6 +69,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.function.Predicate;
 import java.util.stream.Collectors;
 
@@ -105,7 +110,7 @@ public class PredicatePushDown
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, Map<Symbol, Type> types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
+    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
     {
         requireNonNull(plan, "plan is null");
         requireNonNull(session, "session is null");
@@ -128,7 +133,7 @@ public class PredicatePushDown
         private final EffectivePredicateExtractor effectivePredicateExtractor;
         private final SqlParser sqlParser;
         private final Session session;
-        private final Map<Symbol, Type> types;
+        private final TypeProvider types;
         private final ExpressionEquivalence expressionEquivalence;
 
         private Rewriter(
@@ -139,7 +144,7 @@ public class PredicatePushDown
                 EffectivePredicateExtractor effectivePredicateExtractor,
                 SqlParser sqlParser,
                 Session session,
-                Map<Symbol, Type> types)
+                TypeProvider types)
         {
             this.symbolAllocator = requireNonNull(symbolAllocator, "symbolAllocator is null");
             this.idAllocator = requireNonNull(idAllocator, "idAllocator is null");
@@ -192,7 +197,8 @@ public class PredicatePushDown
                         node.getScope(),
                         node.getPartitioningScheme(),
                         builder.build(),
-                        node.getInputs());
+                        node.getInputs(),
+                        node.getOrderingScheme());
             }
 
             return node;
@@ -211,21 +217,57 @@ public class PredicatePushDown
 
             Map<Boolean, List<Expression>> conjuncts = extractConjuncts(context.get()).stream().collect(Collectors.partitioningBy(deterministic));
 
-            // Push down conjuncts from the inherited predicate that don't depend on non-deterministic assignments
-            PlanNode rewrittenNode = context.defaultRewrite(node, inlineSymbols(node.getAssignments().getMap(), combineConjuncts(conjuncts.get(true))));
+            // Push down conjuncts from the inherited predicate that only depend on deterministic assignments with
+            // certain limitations.
+            List<Expression> deterministicConjuncts = conjuncts.get(true);
 
-            // All non-deterministic conjuncts, if any, will be in the filter node.
-            if (!conjuncts.get(false).isEmpty()) {
-                rewrittenNode = new FilterNode(idAllocator.getNextId(), rewrittenNode, combineConjuncts(conjuncts.get(false)));
+            // We partition the expressions in the deterministicConjuncts into two lists, and only inline the
+            // expressions that are in the inlining targets list.
+            Map<Boolean, List<Expression>> inlineConjuncts = deterministicConjuncts.stream()
+                    .collect(Collectors.partitioningBy(expression -> isInliningCandidate(expression, node)));
+
+            List<Expression> inlinedDeterministicConjuncts = inlineConjuncts.get(true).stream()
+                    .map(entry -> inlineSymbols(node.getAssignments().getMap(), entry))
+                    .collect(Collectors.toList());
+
+            PlanNode rewrittenNode = context.defaultRewrite(node, combineConjuncts(inlinedDeterministicConjuncts));
+
+            // All deterministic conjuncts that contains non-inlining targets, and non-deterministic conjuncts,
+            // if any, will be in the filter node.
+            List<Expression> nonInliningConjuncts = inlineConjuncts.get(false);
+            nonInliningConjuncts.addAll(conjuncts.get(false));
+
+            if (!nonInliningConjuncts.isEmpty()) {
+                rewrittenNode = new FilterNode(idAllocator.getNextId(), rewrittenNode, combineConjuncts(nonInliningConjuncts));
             }
 
             return rewrittenNode;
         }
 
+        private boolean isInliningCandidate(Expression expression, ProjectNode node)
+        {
+            // TryExpressions should not be pushed down. However they are now being handled as lambda
+            // passed to a FunctionCall now and should not affect predicate push down. So we want to make
+            // sure the conjuncts are not TryExpressions.
+            Verify.verify(AstUtils.preOrder(expression).noneMatch(TryExpression.class::isInstance));
+
+            // candidate symbols for inlining are
+            //   1. references to simple constants
+            //   2. references to complex expressions that appear only once
+            // which come from the node, as opposed to an enclosing scope.
+            Set<Symbol> childOutputSet = ImmutableSet.copyOf(node.getOutputSymbols());
+            Map<Symbol, Long> dependencies = SymbolsExtractor.extractAll(expression).stream()
+                    .filter(childOutputSet::contains)
+                    .collect(Collectors.groupingBy(Function.identity(), Collectors.counting()));
+
+            return dependencies.entrySet().stream()
+                    .allMatch(entry -> entry.getValue() == 1 || node.getAssignments().get(entry.getKey()) instanceof Literal);
+        }
+
         @Override
         public PlanNode visitGroupId(GroupIdNode node, RewriteContext<Expression> context)
         {
-            Map<Symbol, SymbolReference> commonGroupingSymbolMapping = node.getGroupingSetMappings().entrySet().stream()
+            Map<Symbol, SymbolReference> commonGroupingSymbolMapping = node.getGroupingColumns().entrySet().stream()
                     .filter(entry -> node.getCommonGroupingColumns().contains(entry.getKey()))
                     .collect(Collectors.toMap(Map.Entry::getKey, entry -> entry.getValue().toSymbolReference()));
 
@@ -359,7 +401,7 @@ public class PredicatePushDown
             newJoinPredicate = simplifyExpression(newJoinPredicate);
             // TODO: find a better way to directly optimize FALSE LITERAL in join predicate
             if (newJoinPredicate.equals(BooleanLiteral.FALSE_LITERAL)) {
-                newJoinPredicate = new ComparisonExpression(ComparisonExpressionType.EQUAL, new LongLiteral("0"), new LongLiteral("1"));
+                newJoinPredicate = new ComparisonExpression(ComparisonExpression.Operator.EQUAL, new LongLiteral("0"), new LongLiteral("1"));
             }
 
             PlanNode leftSource = context.rewrite(node.getLeft(), leftPredicate);
@@ -799,7 +841,7 @@ public class PredicatePushDown
                 // At this point in time, our join predicates need to be deterministic
                 if (isDeterministic(expression) && expression instanceof ComparisonExpression) {
                     ComparisonExpression comparison = (ComparisonExpression) expression;
-                    if (comparison.getType() == ComparisonExpressionType.EQUAL) {
+                    if (comparison.getOperator() == ComparisonExpression.Operator.EQUAL) {
                         Set<Symbol> symbols1 = SymbolsExtractor.extractUnique(comparison.getLeft());
                         Set<Symbol> symbols2 = SymbolsExtractor.extractUnique(comparison.getRight());
                         if (symbols1.isEmpty() || symbols2.isEmpty()) {
@@ -872,7 +914,7 @@ public class PredicatePushDown
             Expression sourceEffectivePredicate = filterDeterministicConjuncts(effectivePredicateExtractor.extract(node.getSource()));
             Expression filteringSourceEffectivePredicate = filterDeterministicConjuncts(effectivePredicateExtractor.extract(node.getFilteringSource()));
             Expression joinExpression = new ComparisonExpression(
-                    ComparisonExpressionType.EQUAL,
+                    ComparisonExpression.Operator.EQUAL,
                     node.getSourceJoinSymbol().toSymbolReference(),
                     node.getFilteringSourceJoinSymbol().toSymbolReference());
 

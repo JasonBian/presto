@@ -34,8 +34,8 @@ import java.util.OptionalInt;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ScheduledExecutorService;
-import java.util.function.LongFunction;
-import java.util.function.LongPredicate;
+import java.util.function.BiFunction;
+import java.util.function.BiPredicate;
 
 import static com.facebook.presto.ExceededMemoryLimitException.exceededLocalUserMemoryLimit;
 import static com.facebook.presto.ExceededSpillLimitException.exceededPerQueryLocalLimit;
@@ -113,19 +113,20 @@ public class LegacyQueryContext
         maxMemory = memoryPool.getMaxBytes();
     }
 
-    private synchronized ListenableFuture<?> updateUserMemory(long delta)
+    private synchronized ListenableFuture<?> updateUserMemory(String allocationTag, long delta)
     {
         if (delta >= 0) {
             if (queryMemoryContext.getUserMemory() + delta > maxMemory) {
                 throw exceededLocalUserMemoryLimit(succinctBytes(maxMemory));
             }
-            return memoryPool.reserve(queryId, delta);
+            return memoryPool.reserve(queryId, allocationTag, delta);
         }
-        memoryPool.free(queryId, -delta);
+        memoryPool.free(queryId, allocationTag, -delta);
         return NOT_BLOCKED;
     }
 
-    private synchronized ListenableFuture<?> updateRevocableMemory(long delta)
+    //TODO Add tagging support for revocable memory reservations if needed
+    private synchronized ListenableFuture<?> updateRevocableMemory(String allocationTag, long delta)
     {
         if (delta >= 0) {
             return memoryPool.reserveRevocable(queryId, delta);
@@ -134,15 +135,15 @@ public class LegacyQueryContext
         return NOT_BLOCKED;
     }
 
-    private synchronized ListenableFuture<?> updateSystemMemory(long delta)
+    private synchronized ListenableFuture<?> updateSystemMemory(String allocationTag, long delta)
     {
         if (delta >= 0) {
-            systemMemoryPool.reserve(queryId, delta);
+            systemMemoryPool.reserve(queryId, allocationTag, delta);
             // Since various operators and the output buffers now support blocking when the system pool is full
             // we return NOT_BLOCKED to prevent them from blocking, which is the legacy behavior.
             return NOT_BLOCKED;
         }
-        systemMemoryPool.free(queryId, -delta);
+        systemMemoryPool.free(queryId, allocationTag, -delta);
         return NOT_BLOCKED;
     }
 
@@ -159,17 +160,17 @@ public class LegacyQueryContext
         return future;
     }
 
-    private synchronized boolean tryUpdateUserMemory(long delta)
+    private synchronized boolean tryUpdateUserMemory(String allocationTag, long delta)
     {
         if (delta <= 0) {
-            ListenableFuture<?> future = updateUserMemory(delta);
+            ListenableFuture<?> future = updateUserMemory(allocationTag, delta);
             verify(future.isDone(), "future should be done");
             return true;
         }
         if (queryMemoryContext.getUserMemory() + delta > maxMemory) {
             return false;
         }
-        return memoryPool.tryReserve(queryId, delta);
+        return memoryPool.tryReserve(queryId, allocationTag, delta);
     }
 
     @Override
@@ -181,7 +182,7 @@ public class LegacyQueryContext
     }
 
     @Override
-    public synchronized void setMemoryPool(MemoryPool pool)
+    public synchronized void setMemoryPool(MemoryPool newMemoryPool)
     {
         // This method first acquires the monitor of this instance.
         // After that in this method if we acquire the monitors of the
@@ -195,19 +196,13 @@ public class LegacyQueryContext
         // That's why instead of calling methods on queryMemoryContext to get the
         // user/revocable memory reservations, we call the MemoryPool to get the same
         // information.
-        requireNonNull(pool, "pool is null");
-        if (memoryPool == pool) {
+        requireNonNull(newMemoryPool, "newMemoryPool is null");
+        if (memoryPool == newMemoryPool) {
             // Don't unblock our tasks and thrash the pools, if this is a no-op
             return;
         }
-        MemoryPool originalPool = memoryPool;
-        long originalReserved = originalPool.getQueryMemoryReservation(queryId);
-        long originalRevocableReserved = originalPool.getQueryRevocableMemoryReservation(queryId);
-        memoryPool = pool;
-        ListenableFuture<?> future = pool.reserve(queryId, originalReserved);
-        originalPool.free(queryId, originalReserved);
-        pool.reserveRevocable(queryId, originalRevocableReserved);
-        originalPool.freeRevocable(queryId, originalRevocableReserved);
+        ListenableFuture<?> future = memoryPool.moveQuery(queryId, newMemoryPool);
+        memoryPool = newMemoryPool;
         future.addListener(() -> {
             // Unblock all the tasks, if they were waiting for memory, since we're in a new pool.
             taskContexts.values().forEach(TaskContext::moreMemoryAvailable);
@@ -264,29 +259,31 @@ public class LegacyQueryContext
     private static class QueryMemoryReservationHandler
             implements MemoryReservationHandler
     {
-        private final LongFunction<ListenableFuture<?>> reserveMemoryFunction;
-        private final LongPredicate tryReserveMemoryFunction;
+        private final BiFunction<String, Long, ListenableFuture<?>> reserveMemoryFunction;
+        private final BiPredicate<String, Long> tryReserveMemoryFunction;
 
-        public QueryMemoryReservationHandler(LongFunction<ListenableFuture<?>> reserveMemoryFunction, LongPredicate tryReserveMemoryFunction)
+        public QueryMemoryReservationHandler(
+                BiFunction<String, Long, ListenableFuture<?>> reserveMemoryFunction,
+                BiPredicate<String, Long> tryReserveMemoryFunction)
         {
             this.reserveMemoryFunction = requireNonNull(reserveMemoryFunction, "reserveMemoryFunction is null");
             this.tryReserveMemoryFunction = requireNonNull(tryReserveMemoryFunction, "tryReserveMemoryFunction is null");
         }
 
         @Override
-        public ListenableFuture<?> reserveMemory(long delta)
+        public ListenableFuture<?> reserveMemory(String allocationTag, long delta)
         {
-            return reserveMemoryFunction.apply(delta);
+            return reserveMemoryFunction.apply(allocationTag, delta);
         }
 
         @Override
-        public boolean tryReserveMemory(long delta)
+        public boolean tryReserveMemory(String allocationTag, long delta)
         {
-            return tryReserveMemoryFunction.test(delta);
+            return tryReserveMemoryFunction.test(allocationTag, delta);
         }
     }
 
-    private boolean tryReserveMemoryNotSupported(long bytes)
+    private boolean tryReserveMemoryNotSupported(String allocationTag, long bytes)
     {
         throw new UnsupportedOperationException("tryReserveMemory is not supported");
     }

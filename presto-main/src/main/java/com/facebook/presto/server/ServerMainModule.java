@@ -88,6 +88,7 @@ import com.facebook.presto.memory.MemoryResource;
 import com.facebook.presto.memory.NodeMemoryConfig;
 import com.facebook.presto.memory.ReservedSystemMemoryConfig;
 import com.facebook.presto.metadata.CatalogManager;
+import com.facebook.presto.metadata.ColumnPropertyManager;
 import com.facebook.presto.metadata.DiscoveryNodeManager;
 import com.facebook.presto.metadata.ForNodeManager;
 import com.facebook.presto.metadata.HandleJsonModule;
@@ -146,10 +147,9 @@ import com.facebook.presto.sql.parser.SqlParserOptions;
 import com.facebook.presto.sql.planner.CompilerConfig;
 import com.facebook.presto.sql.planner.LocalExecutionPlanner;
 import com.facebook.presto.sql.planner.NodePartitioningManager;
-import com.facebook.presto.sql.planner.PlanOptimizers;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
-import com.facebook.presto.transaction.ForTransactionManager;
+import com.facebook.presto.transaction.NoOpTransactionManager;
 import com.facebook.presto.transaction.TransactionManager;
 import com.facebook.presto.transaction.TransactionManagerConfig;
 import com.facebook.presto.type.TypeDeserializer;
@@ -166,7 +166,6 @@ import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.airlift.discovery.client.ServiceDescriptor;
 import io.airlift.discovery.server.EmbeddedDiscoveryModule;
-import io.airlift.http.client.HttpClientConfig;
 import io.airlift.slice.Slice;
 import io.airlift.stats.GcMonitor;
 import io.airlift.stats.JmxGcMonitor;
@@ -201,7 +200,6 @@ import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
-import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
@@ -234,6 +232,9 @@ public class ServerMainModule
             // Install no-op resource group manager on workers, since only coordinators manage resource groups.
             binder.bind(ResourceGroupManager.class).to(NoOpResourceGroupManager.class).in(Scopes.SINGLETON);
 
+            // Install no-op transaction manager on workers, since only coordinators manage transactions.
+            binder.bind(TransactionManager.class).to(NoOpTransactionManager.class).in(Scopes.SINGLETON);
+
             // HACK: this binding is needed by SystemConnectorModule, but will only be used on the coordinator
             binder.bind(QueryManager.class).toInstance(newProxy(QueryManager.class, (proxy, method, args) -> {
                 throw new UnsupportedOperationException();
@@ -244,11 +245,7 @@ public class ServerMainModule
         // TODO: move to CoordinatorModule
         install(installModuleIf(EmbeddedDiscoveryConfig.class, EmbeddedDiscoveryConfig::isEnabled, new EmbeddedDiscoveryModule()));
 
-        InternalCommunicationConfig internalCommunicationConfig = buildConfigObject(InternalCommunicationConfig.class);
-        configBinder(binder).bindConfigGlobalDefaults(HttpClientConfig.class, config -> {
-            config.setKeyStorePath(internalCommunicationConfig.getKeyStorePath());
-            config.setKeyStorePassword(internalCommunicationConfig.getKeyStorePassword());
-        });
+        install(new InternalCommunicationModule());
 
         configBinder(binder).bindConfig(FeaturesConfig.class);
 
@@ -278,6 +275,9 @@ public class ServerMainModule
 
         // table properties
         binder.bind(TablePropertyManager.class).in(Scopes.SINGLETON);
+
+        // column properties
+        binder.bind(ColumnPropertyManager.class).in(Scopes.SINGLETON);
 
         // node manager
         discoveryBinder(binder).bindSelector("presto");
@@ -473,9 +473,6 @@ public class ServerMainModule
 
         binder.bind(CatalogManager.class).in(Scopes.SINGLETON);
 
-        // optimizers
-        binder.bind(PlanOptimizers.class).in(Scopes.SINGLETON);
-
         // block encodings
         binder.bind(BlockEncodingManager.class).in(Scopes.SINGLETON);
         binder.bind(BlockEncodingSerde.class).to(BlockEncodingManager.class).in(Scopes.SINGLETON);
@@ -592,33 +589,6 @@ public class ServerMainModule
         return newScheduledThreadPool(config.getHttpTimeoutThreads(), daemonThreadsNamed("statement-timeout-%s"));
     }
 
-    @Provides
-    @Singleton
-    @ForTransactionManager
-    public static ScheduledExecutorService createTransactionIdleCheckExecutor()
-    {
-        return newSingleThreadScheduledExecutor(daemonThreadsNamed("transaction-idle-check"));
-    }
-
-    @Provides
-    @Singleton
-    @ForTransactionManager
-    public static ExecutorService createTransactionFinishingExecutor()
-    {
-        return newCachedThreadPool(daemonThreadsNamed("transaction-finishing-%s"));
-    }
-
-    @Provides
-    @Singleton
-    public static TransactionManager createTransactionManager(
-            TransactionManagerConfig config,
-            CatalogManager catalogManager,
-            @ForTransactionManager ScheduledExecutorService idleCheckExecutor,
-            @ForTransactionManager ExecutorService finishingExecutor)
-    {
-        return TransactionManager.create(config, idleCheckExecutor, catalogManager, finishingExecutor);
-    }
-
     private static void bindFailureDetector(Binder binder, boolean coordinator)
     {
         // TODO: this is a hack until the coordinator module works correctly
@@ -655,16 +625,12 @@ public class ServerMainModule
         public ExecutorCleanup(
                 @ForExchange ScheduledExecutorService exchangeExecutor,
                 @ForAsyncHttp ExecutorService httpResponseExecutor,
-                @ForAsyncHttp ScheduledExecutorService httpTimeoutExecutor,
-                @ForTransactionManager ExecutorService transactionFinishingExecutor,
-                @ForTransactionManager ScheduledExecutorService transactionIdleExecutor)
+                @ForAsyncHttp ScheduledExecutorService httpTimeoutExecutor)
         {
             executors = ImmutableList.of(
                     exchangeExecutor,
                     httpResponseExecutor,
-                    httpTimeoutExecutor,
-                    transactionFinishingExecutor,
-                    transactionIdleExecutor);
+                    httpTimeoutExecutor);
         }
 
         @PreDestroy

@@ -92,7 +92,7 @@ public class AggregationOperator
     public AggregationOperator(OperatorContext operatorContext, Step step, List<AccumulatorFactory> accumulatorFactories)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
-        this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext();
+        this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext(AggregationOperator.class.getSimpleName());
         this.userMemoryContext = operatorContext.localUserMemoryContext();
 
         requireNonNull(step, "step is null");
@@ -119,6 +119,13 @@ public class AggregationOperator
         if (state == State.NEEDS_INPUT) {
             state = State.HAS_OUTPUT;
         }
+    }
+
+    @Override
+    public void close()
+    {
+        userMemoryContext.setBytes(0);
+        systemMemoryContext.close();
     }
 
     @Override

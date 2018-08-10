@@ -36,18 +36,16 @@ import com.facebook.presto.spi.type.MapType;
 import com.facebook.presto.spi.type.RowType;
 import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.sql.ExpressionUtils;
 import com.facebook.presto.sql.parser.ParsingException;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.ExpressionInterpreter;
 import com.facebook.presto.sql.planner.SymbolsExtractor;
+import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.tree.AddColumn;
 import com.facebook.presto.sql.tree.AliasedRelation;
 import com.facebook.presto.sql.tree.AllColumns;
 import com.facebook.presto.sql.tree.Call;
 import com.facebook.presto.sql.tree.Commit;
-import com.facebook.presto.sql.tree.ComparisonExpression;
-import com.facebook.presto.sql.tree.ComparisonExpressionType;
 import com.facebook.presto.sql.tree.CreateSchema;
 import com.facebook.presto.sql.tree.CreateTable;
 import com.facebook.presto.sql.tree.CreateTableAsSelect;
@@ -315,7 +313,7 @@ class StatementAnalyzer
             if (insert.getColumns().isPresent()) {
                 insertColumns = insert.getColumns().get().stream()
                         .map(Identifier::getValue)
-                        .map(String::toLowerCase)
+                        .map(column -> column.toLowerCase(ENGLISH))
                         .collect(toImmutableList());
 
                 Set<String> columnNames = new HashSet<>();
@@ -700,7 +698,15 @@ class StatementAnalyzer
                 ExpressionAnalysis expressionAnalysis = analyzeExpression(expression, createScope(scope));
                 Type expressionType = expressionAnalysis.getType(expression);
                 if (expressionType instanceof ArrayType) {
-                    outputFields.add(Field.newUnqualified(Optional.empty(), ((ArrayType) expressionType).getElementType()));
+                    Type elementType = ((ArrayType) expressionType).getElementType();
+                    if (!SystemSessionProperties.isLegacyUnnest(session) && elementType instanceof RowType) {
+                        ((RowType) elementType).getFields().stream()
+                                .map(field -> Field.newUnqualified(field.getName(), field.getType()))
+                                .forEach(outputFields::add);
+                    }
+                    else {
+                        outputFields.add(Field.newUnqualified(Optional.empty(), elementType));
+                    }
                 }
                 else if (expressionType instanceof MapType) {
                     outputFields.add(Field.newUnqualified(Optional.empty(), ((MapType) expressionType).getKeyType()));
@@ -799,8 +805,6 @@ class StatementAnalyzer
 
                 analysis.registerNamedQuery(table, query);
 
-                accessControl.checkCanSelectFromView(session.getRequiredTransactionId(), session.getIdentity(), name);
-
                 analysis.registerTableForView(table);
                 RelationType descriptor = analyzeView(query, name, view.getCatalog(), view.getSchema(), view.getOwner(), table);
                 analysis.unregisterTableForView();
@@ -837,7 +841,6 @@ class StatementAnalyzer
                 }
                 throw new SemanticException(MISSING_TABLE, table, "Table %s does not exist", name);
             }
-            accessControl.checkCanSelectFromTable(session.getRequiredTransactionId(), session.getIdentity(), name);
             TableMetadata tableMetadata = metadata.getTableMetadata(session, tableHandle.get());
             Map<String, ColumnHandle> columnHandles = metadata.getColumnHandles(session, tableHandle.get());
 
@@ -899,7 +902,7 @@ class StatementAnalyzer
                     session,
                     metadata,
                     sqlParser,
-                    ImmutableMap.of(),
+                    TypeProvider.empty(),
                     relation.getSamplePercentage(),
                     analysis.getParameters(),
                     analysis.isDescribe());
@@ -961,8 +964,7 @@ class StatementAnalyzer
                 analysis.setOrderByExpressions(node, emptyList());
             }
 
-            List<Expression> sourceExpressions = new ArrayList<>();
-            sourceExpressions.addAll(outputExpressions);
+            List<Expression> sourceExpressions = new ArrayList<>(outputExpressions);
             node.getHaving().ifPresent(sourceExpressions::add);
 
             analyzeGroupingOperations(node, sourceExpressions, orderByExpressions);
@@ -1090,10 +1092,6 @@ class StatementAnalyzer
             Scope right = process(node.getRight(), isLateralRelation(node.getRight()) ? Optional.of(left) : scope);
 
             if (criteria instanceof JoinUsing) {
-                if (SystemSessionProperties.isLegacyJoinUsingEnabled(session)) {
-                    return analyzeLegacyJoinUsing(node, ((JoinUsing) criteria).getColumns(), scope, left, right);
-                }
-
                 return analyzeJoinUsing(node, ((JoinUsing) criteria).getColumns(), scope, left, right);
             }
 
@@ -1126,41 +1124,6 @@ class StatementAnalyzer
             }
 
             return output;
-        }
-
-        private Scope analyzeLegacyJoinUsing(Join node, List<Identifier> columns, Optional<Scope> scope, Scope left, Scope right)
-        {
-            List<Expression> expressions = new ArrayList<>();
-            for (Identifier column : columns) {
-                Expression leftExpression = new Identifier(column.getValue());
-                Expression rightExpression = new Identifier(column.getValue());
-
-                ExpressionAnalysis leftExpressionAnalysis = analyzeExpression(leftExpression, left);
-                ExpressionAnalysis rightExpressionAnalysis = analyzeExpression(rightExpression, right);
-                checkState(leftExpressionAnalysis.getSubqueryInPredicates().isEmpty(), "INVARIANT");
-                checkState(rightExpressionAnalysis.getSubqueryInPredicates().isEmpty(), "INVARIANT");
-                checkState(leftExpressionAnalysis.getScalarSubqueries().isEmpty(), "INVARIANT");
-                checkState(rightExpressionAnalysis.getScalarSubqueries().isEmpty(), "INVARIANT");
-
-                Type leftType = analysis.getTypeWithCoercions(leftExpression);
-                Type rightType = analysis.getTypeWithCoercions(rightExpression);
-                Optional<Type> superType = metadata.getTypeManager().getCommonSuperType(leftType, rightType);
-                if (!superType.isPresent()) {
-                    throw new SemanticException(TYPE_MISMATCH, node, "Join criteria has incompatible types: %s, %s", leftType.getDisplayName(), rightType.getDisplayName());
-                }
-                if (!leftType.equals(superType.get())) {
-                    analysis.addCoercion(leftExpression, superType.get(), metadata.getTypeManager().isTypeOnlyCoercion(leftType, rightType));
-                }
-                if (!rightType.equals(superType.get())) {
-                    analysis.addCoercion(rightExpression, superType.get(), metadata.getTypeManager().isTypeOnlyCoercion(rightType, leftType));
-                }
-
-                expressions.add(new ComparisonExpression(ComparisonExpressionType.EQUAL, leftExpression, rightExpression));
-            }
-
-            analysis.setJoinCriteria(node, ExpressionUtils.and(expressions));
-
-            return createAndAssignScope(node, scope, left.getRelationType().joinWith(right.getRelationType()));
         }
 
         private Scope analyzeJoinUsing(Join node, List<Identifier> columns, Optional<Scope> scope, Scope left, Scope right)
