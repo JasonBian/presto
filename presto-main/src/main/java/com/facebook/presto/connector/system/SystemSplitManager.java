@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.connector.system;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.InternalNodeManager;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorSession;
@@ -21,13 +23,11 @@ import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
 import com.facebook.presto.spi.FixedSplitSource;
 import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.SystemTable.Distribution;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
@@ -54,7 +54,11 @@ public class SystemSplitManager
     }
 
     @Override
-    public ConnectorSplitSource getSplits(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorTableLayoutHandle layout, SplitSchedulingStrategy splitSchedulingStrategy)
+    public ConnectorSplitSource getSplits(
+            ConnectorTransactionHandle transactionHandle,
+            ConnectorSession session,
+            ConnectorTableLayoutHandle layout,
+            SplitSchedulingContext splitSchedulingContext)
     {
         SystemTableLayoutHandle layoutHandle = (SystemTableLayoutHandle) layout;
         SystemTableHandle tableHandle = layoutHandle.getTable();
@@ -72,15 +76,15 @@ public class SystemSplitManager
         }
 
         ImmutableList.Builder<ConnectorSplit> splits = ImmutableList.builder();
-        ImmutableSet.Builder<Node> nodes = ImmutableSet.builder();
+        ImmutableSet.Builder<InternalNode> nodes = ImmutableSet.builder();
         if (tableDistributionMode == ALL_COORDINATORS) {
             nodes.addAll(nodeManager.getCoordinators());
         }
         else if (tableDistributionMode == ALL_NODES) {
             nodes.addAll(nodeManager.getNodes(ACTIVE));
         }
-        Set<Node> nodeSet = nodes.build();
-        for (Node node : nodeSet) {
+        Set<InternalNode> nodeSet = nodes.build();
+        for (InternalNode node : nodeSet) {
             splits.add(new SystemSplit(tableHandle.getConnectorId(), tableHandle, node.getHostAndPort(), constraint));
         }
         return new FixedSplitSource(splits.build());

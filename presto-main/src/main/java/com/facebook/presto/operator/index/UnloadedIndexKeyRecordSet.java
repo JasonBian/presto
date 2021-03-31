@@ -14,14 +14,14 @@
 package com.facebook.presto.operator.index;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.GroupByHash;
 import com.facebook.presto.operator.GroupByIdBlock;
 import com.facebook.presto.operator.Work;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordSet;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.gen.JoinCompiler;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
@@ -74,13 +74,8 @@ public class UnloadedIndexKeyRecordSet
         for (UpdateRequest request : requests) {
             Page page = request.getPage();
 
-            Block[] distinctBlocks = new Block[distinctChannels.length];
-            for (int i = 0; i < distinctBlocks.length; i++) {
-                distinctBlocks[i] = page.getBlock(distinctChannels[i]);
-            }
-
             // Move through the positions while advancing the cursors in lockstep
-            Work<GroupByIdBlock> work = groupByHash.getGroupIds(new Page(distinctBlocks));
+            Work<GroupByIdBlock> work = groupByHash.getGroupIds(page.extractChannels(distinctChannels));
             boolean done = work.process();
             // TODO: this class does not yield wrt memory limit; enable it
             verify(done);

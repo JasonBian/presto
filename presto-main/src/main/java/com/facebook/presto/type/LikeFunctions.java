@@ -13,22 +13,24 @@
  */
 package com.facebook.presto.type;
 
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.function.LiteralParameters;
-import com.facebook.presto.spi.function.OperatorType;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.ScalarOperator;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import io.airlift.jcodings.specific.NonStrictUTF8Encoding;
+import io.airlift.joni.Matcher;
 import io.airlift.joni.Option;
 import io.airlift.joni.Regex;
 import io.airlift.joni.Syntax;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 
+import static com.facebook.presto.common.type.Chars.padSpaces;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.Chars.padSpaces;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 import static com.facebook.presto.util.Failures.checkCondition;
 import static io.airlift.joni.constants.MetaChar.INEFFECTIVE_META_CHAR;
 import static io.airlift.joni.constants.SyntaxProperties.OP_ASTERISK_ZERO_INF;
@@ -53,7 +55,7 @@ public final class LikeFunctions
 
     private LikeFunctions() {}
 
-    @ScalarFunction(value = "like", hidden = true)
+    @ScalarFunction(value = "like", visibility = HIDDEN)
     @LiteralParameters("x")
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean likeChar(@LiteralParameter("x") Long x, @SqlType("char(x)") Slice value, @SqlType(LikePatternType.NAME) Regex pattern)
@@ -62,15 +64,24 @@ public final class LikeFunctions
     }
 
     // TODO: this should not be callable from SQL
-    @ScalarFunction(value = "like", hidden = true)
+    @ScalarFunction(value = "like", visibility = HIDDEN)
     @LiteralParameters("x")
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean likeVarchar(@SqlType("varchar(x)") Slice value, @SqlType(LikePatternType.NAME) Regex pattern)
     {
         // Joni can infinite loop with UTF8Encoding when invalid UTF-8 is encountered.
         // NonStrictUTF8Encoding must be used to avoid this issue.
-        byte[] bytes = value.getBytes();
-        return regexMatches(pattern, bytes);
+        Matcher matcher;
+        int offset;
+        if (value.hasByteArray()) {
+            offset = value.byteArrayOffset();
+            matcher = pattern.matcher(value.byteArray(), offset, offset + value.length());
+        }
+        else {
+            offset = 0;
+            matcher = pattern.matcher(value.getBytes());
+        }
+        return matcher.match(offset, offset + value.length(), Option.NONE) != -1;
     }
 
     @ScalarOperator(OperatorType.CAST)
@@ -94,7 +105,7 @@ public final class LikeFunctions
         return likePattern(pattern.toStringUtf8(), '0', false);
     }
 
-    @ScalarFunction
+    @ScalarFunction(visibility = HIDDEN)
     @LiteralParameters({"x", "y"})
     @SqlType(LikePatternType.NAME)
     public static Regex likePattern(@SqlType("varchar(x)") Slice pattern, @SqlType("varchar(y)") Slice escape)
@@ -157,11 +168,6 @@ public final class LikeFunctions
     private static void checkEscape(boolean condition)
     {
         checkCondition(condition, INVALID_FUNCTION_ARGUMENT, "Escape character must be followed by '%%', '_' or the escape character itself");
-    }
-
-    private static boolean regexMatches(Regex regex, byte[] bytes)
-    {
-        return regex.matcher(bytes).match(0, bytes.length, Option.NONE) != -1;
     }
 
     @SuppressWarnings("NestedSwitchStatement")

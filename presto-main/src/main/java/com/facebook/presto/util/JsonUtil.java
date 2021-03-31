@@ -13,23 +13,24 @@
  */
 package com.facebook.presto.util;
 
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.SingleRowBlockWriter;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.RowType.Field;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.UnknownType;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.SingleRowBlockWriter;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.RowType.Field;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.type.BigintOperators;
 import com.facebook.presto.type.BooleanOperators;
 import com.facebook.presto.type.DoubleOperators;
-import com.facebook.presto.type.UnknownType;
 import com.facebook.presto.type.VarcharOperators;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
@@ -55,22 +56,22 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.TreeMap;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.Decimals.decodeUnscaledValue;
+import static com.facebook.presto.common.type.Decimals.encodeUnscaledValue;
+import static com.facebook.presto.common.type.Decimals.isShortDecimal;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.JsonType.JSON;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INSUFFICIENT_RESOURCES;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.Decimals.decodeUnscaledValue;
-import static com.facebook.presto.spi.type.Decimals.encodeUnscaledValue;
-import static com.facebook.presto.spi.type.Decimals.isShortDecimal;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.type.JsonType.JSON;
 import static com.facebook.presto.type.TypeUtils.hashPosition;
 import static com.facebook.presto.type.TypeUtils.positionEqualsPosition;
 import static com.facebook.presto.util.DateTimeUtils.printDate;
@@ -132,7 +133,7 @@ public final class JsonUtil
 
     public static boolean canCastToJson(Type type)
     {
-        String baseType = type.getTypeSignature().getBase();
+        String baseType = type.getTypeSignature().getStandardTypeSignature().getBase();
         if (baseType.equals(UnknownType.NAME) ||
                 baseType.equals(StandardTypes.BOOLEAN) ||
                 baseType.equals(StandardTypes.TINYINT) ||
@@ -145,7 +146,9 @@ public final class JsonUtil
                 baseType.equals(StandardTypes.VARCHAR) ||
                 baseType.equals(StandardTypes.JSON) ||
                 baseType.equals(StandardTypes.TIMESTAMP) ||
-                baseType.equals(StandardTypes.DATE)) {
+                baseType.equals(StandardTypes.DATE) ||
+                baseType.equals(StandardTypes.VARCHAR_ENUM) ||
+                baseType.equals(StandardTypes.BIGINT_ENUM)) {
             return true;
         }
         if (type instanceof ArrayType) {
@@ -165,7 +168,11 @@ public final class JsonUtil
 
     public static boolean canCastFromJson(Type type)
     {
-        String baseType = type.getTypeSignature().getBase();
+        TypeSignature signature = type.getTypeSignature();
+        String baseType = signature.getBase();
+        if (signature.isEnum()) {
+            return true;
+        }
         if (baseType.equals(StandardTypes.BOOLEAN) ||
                 baseType.equals(StandardTypes.TINYINT) ||
                 baseType.equals(StandardTypes.SMALLINT) ||
@@ -201,7 +208,8 @@ public final class JsonUtil
                 baseType.equals(StandardTypes.REAL) ||
                 baseType.equals(StandardTypes.DOUBLE) ||
                 baseType.equals(StandardTypes.DECIMAL) ||
-                baseType.equals(StandardTypes.VARCHAR);
+                baseType.equals(StandardTypes.VARCHAR) ||
+                type.getTypeSignature().isEnum();
     }
 
     // transform the map key into string for use as JSON object key
@@ -211,7 +219,14 @@ public final class JsonUtil
 
         static ObjectKeyProvider createObjectKeyProvider(Type type)
         {
-            String baseType = type.getTypeSignature().getBase();
+            TypeSignature signature = type.getTypeSignature();
+            String baseType = signature.getBase();
+            if (signature.isBigintEnum()) {
+                return (block, position) -> String.valueOf(type.getLong(block, position));
+            }
+            if (signature.isVarcharEnum()) {
+                return (block, position) -> type.getSlice(block, position).toStringUtf8();
+            }
             switch (baseType) {
                 case UnknownType.NAME:
                     return (block, position) -> null;
@@ -248,12 +263,19 @@ public final class JsonUtil
     public interface JsonGeneratorWriter
     {
         // write a Json value into the JsonGenerator, provided by block and position
-        void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException;
 
         static JsonGeneratorWriter createJsonGeneratorWriter(Type type)
         {
-            String baseType = type.getTypeSignature().getBase();
+            TypeSignature signature = type.getTypeSignature();
+            String baseType = signature.getBase();
+            if (signature.isBigintEnum()) {
+                return new LongJsonGeneratorWriter(type);
+            }
+            if (signature.isVarcharEnum()) {
+                return new VarcharJsonGeneratorWriter(type);
+            }
             switch (baseType) {
                 case UnknownType.NAME:
                     return new UnknownJsonGeneratorWriter();
@@ -311,7 +333,7 @@ public final class JsonUtil
             implements JsonGeneratorWriter
     {
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             jsonGenerator.writeNull();
@@ -322,7 +344,7 @@ public final class JsonUtil
             implements JsonGeneratorWriter
     {
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -346,7 +368,7 @@ public final class JsonUtil
         }
 
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -363,7 +385,7 @@ public final class JsonUtil
             implements JsonGeneratorWriter
     {
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -380,7 +402,7 @@ public final class JsonUtil
             implements JsonGeneratorWriter
     {
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -404,7 +426,7 @@ public final class JsonUtil
         }
 
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -428,7 +450,7 @@ public final class JsonUtil
         }
 
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -454,7 +476,7 @@ public final class JsonUtil
         }
 
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -471,7 +493,7 @@ public final class JsonUtil
             implements JsonGeneratorWriter
     {
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -488,7 +510,7 @@ public final class JsonUtil
             implements JsonGeneratorWriter
     {
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -496,7 +518,7 @@ public final class JsonUtil
             }
             else {
                 long value = TIMESTAMP.getLong(block, position);
-                jsonGenerator.writeString(printTimestampWithoutTimeZone(session.getTimeZoneKey(), value));
+                jsonGenerator.writeString(printTimestampWithoutTimeZone(properties.getTimeZoneKey(), value));
             }
         }
     }
@@ -505,7 +527,7 @@ public final class JsonUtil
             implements JsonGeneratorWriter
     {
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -531,7 +553,7 @@ public final class JsonUtil
         }
 
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -541,7 +563,7 @@ public final class JsonUtil
                 Block arrayBlock = type.getObject(block, position);
                 jsonGenerator.writeStartArray();
                 for (int i = 0; i < arrayBlock.getPositionCount(); i++) {
-                    elementWriter.writeJsonValue(jsonGenerator, arrayBlock, i, session);
+                    elementWriter.writeJsonValue(jsonGenerator, arrayBlock, i, properties);
                 }
                 jsonGenerator.writeEndArray();
             }
@@ -563,7 +585,7 @@ public final class JsonUtil
         }
 
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -580,7 +602,7 @@ public final class JsonUtil
                 jsonGenerator.writeStartObject();
                 for (Map.Entry<String, Integer> entry : orderedKeyToValuePosition.entrySet()) {
                     jsonGenerator.writeFieldName(entry.getKey());
-                    valueWriter.writeJsonValue(jsonGenerator, mapBlock, entry.getValue(), session);
+                    valueWriter.writeJsonValue(jsonGenerator, mapBlock, entry.getValue(), properties);
                 }
                 jsonGenerator.writeEndObject();
             }
@@ -600,7 +622,7 @@ public final class JsonUtil
         }
 
         @Override
-        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, ConnectorSession session)
+        public void writeJsonValue(JsonGenerator jsonGenerator, Block block, int position, SqlFunctionProperties properties)
                 throws IOException
         {
             if (block.isNull(position)) {
@@ -610,7 +632,7 @@ public final class JsonUtil
                 Block rowBlock = type.getObject(block, position);
                 jsonGenerator.writeStartArray();
                 for (int i = 0; i < rowBlock.getPositionCount(); i++) {
-                    fieldWriters.get(i).writeJsonValue(jsonGenerator, rowBlock, i, session);
+                    fieldWriters.get(i).writeJsonValue(jsonGenerator, rowBlock, i, properties);
                 }
                 jsonGenerator.writeEndArray();
             }
@@ -864,7 +886,14 @@ public final class JsonUtil
 
         static BlockBuilderAppender createBlockBuilderAppender(Type type)
         {
-            String baseType = type.getTypeSignature().getBase();
+            TypeSignature signature = type.getTypeSignature();
+            String baseType = signature.getBase();
+            if (signature.isBigintEnum()) {
+                return new BigintBlockBuilderAppender();
+            }
+            if (signature.isVarcharEnum()) {
+                return new VarcharBlockBuilderAppender(type);
+            }
             switch (baseType) {
                 case StandardTypes.BOOLEAN:
                     return new BooleanBlockBuilderAppender();

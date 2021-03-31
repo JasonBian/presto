@@ -13,9 +13,13 @@
  */
 package com.facebook.presto.kafka;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Marker;
+import com.facebook.presto.common.predicate.Range;
 import com.facebook.presto.decoder.dummy.DummyRowDecoder;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ConnectorTableLayout;
@@ -27,21 +31,24 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
+import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
+import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
+import io.airlift.slice.Slice;
 
 import javax.inject.Inject;
 
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.function.Supplier;
 
 import static com.facebook.presto.kafka.KafkaHandleResolver.convertColumnHandle;
 import static com.facebook.presto.kafka.KafkaHandleResolver.convertTableHandle;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 
@@ -55,49 +62,48 @@ public class KafkaMetadata
 {
     private final String connectorId;
     private final boolean hideInternalColumns;
-    private final Map<SchemaTableName, KafkaTopicDescription> tableDescriptions;
+    private final Set<TableDescriptionSupplier> tableDescriptions;
 
     @Inject
     public KafkaMetadata(
             KafkaConnectorId connectorId,
             KafkaConnectorConfig kafkaConnectorConfig,
-            Supplier<Map<SchemaTableName, KafkaTopicDescription>> kafkaTableDescriptionSupplier)
+            Set<TableDescriptionSupplier> tableDescriptions)
     {
         this.connectorId = requireNonNull(connectorId, "connectorId is null").toString();
 
         requireNonNull(kafkaConnectorConfig, "kafkaConfig is null");
         this.hideInternalColumns = kafkaConnectorConfig.isHideInternalColumns();
-
-        requireNonNull(kafkaTableDescriptionSupplier, "kafkaTableDescriptionSupplier is null");
-        this.tableDescriptions = kafkaTableDescriptionSupplier.get();
+        this.tableDescriptions = requireNonNull(tableDescriptions, "tableDescriptions is null");
     }
 
     @Override
     public List<String> listSchemaNames(ConnectorSession session)
     {
-        ImmutableSet.Builder<String> builder = ImmutableSet.builder();
-        for (SchemaTableName tableName : tableDescriptions.keySet()) {
-            builder.add(tableName.getSchemaName());
-        }
-        return ImmutableList.copyOf(builder.build());
+        return tableDescriptions.stream()
+                .map(TableDescriptionSupplier::listTables)
+                .flatMap(Set::stream)
+                .map(SchemaTableName::getSchemaName)
+                .collect(toImmutableList());
     }
 
     @Override
     public KafkaTableHandle getTableHandle(ConnectorSession session, SchemaTableName schemaTableName)
     {
-        KafkaTopicDescription table = tableDescriptions.get(schemaTableName);
-        if (table == null) {
-            return null;
-        }
-
-        return new KafkaTableHandle(connectorId,
-                schemaTableName.getSchemaName(),
-                schemaTableName.getTableName(),
-                table.getTopicName(),
-                getDataFormat(table.getKey()),
-                getDataFormat(table.getMessage()),
-                table.getKey().flatMap(KafkaTopicFieldGroup::getDataSchema),
-                table.getMessage().flatMap(KafkaTopicFieldGroup::getDataSchema));
+        return getTopicDescription(schemaTableName)
+                .map(kafkaTopicDescription -> new KafkaTableHandle(
+                        connectorId,
+                        schemaTableName.getSchemaName(),
+                        schemaTableName.getTableName(),
+                        kafkaTopicDescription.getTopicName(),
+                        getDataFormat(kafkaTopicDescription.getKey()),
+                        getDataFormat(kafkaTopicDescription.getMessage()),
+                        kafkaTopicDescription.getKey().flatMap(KafkaTopicFieldGroup::getDataSchema),
+                        kafkaTopicDescription.getMessage().flatMap(KafkaTopicFieldGroup::getDataSchema),
+                        getColumnHandles(schemaTableName).values().stream()
+                                .map(KafkaColumnHandle.class::cast)
+                                .collect(toImmutableList())))
+                .orElse(null);
     }
 
     private static String getDataFormat(Optional<KafkaTopicFieldGroup> fieldGroup)
@@ -112,28 +118,25 @@ public class KafkaMetadata
     }
 
     @Override
-    public List<SchemaTableName> listTables(ConnectorSession session, String schemaNameOrNull)
+    public List<SchemaTableName> listTables(ConnectorSession session, Optional<String> schemaName)
     {
-        ImmutableList.Builder<SchemaTableName> builder = ImmutableList.builder();
-        for (SchemaTableName tableName : tableDescriptions.keySet()) {
-            if (schemaNameOrNull == null || tableName.getSchemaName().equals(schemaNameOrNull)) {
-                builder.add(tableName);
-            }
-        }
-
-        return builder.build();
+        return tableDescriptions.stream()
+                .map(TableDescriptionSupplier::listTables)
+                .flatMap(Set::stream)
+                .filter(tableName -> schemaName.map(tableName.getSchemaName()::equals).orElse(true))
+                .collect(toImmutableList());
     }
 
-    @SuppressWarnings("ValueOfIncrementOrDecrementUsed")
     @Override
     public Map<String, ColumnHandle> getColumnHandles(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
         KafkaTableHandle kafkaTableHandle = convertTableHandle(tableHandle);
+        return getColumnHandles(kafkaTableHandle.toSchemaTableName());
+    }
 
-        KafkaTopicDescription kafkaTopicDescription = tableDescriptions.get(kafkaTableHandle.toSchemaTableName());
-        if (kafkaTopicDescription == null) {
-            throw new TableNotFoundException(kafkaTableHandle.toSchemaTableName());
-        }
+    private Map<String, ColumnHandle> getColumnHandles(SchemaTableName schemaTableName)
+    {
+        KafkaTopicDescription kafkaTopicDescription = getRequiredTopicDescription(schemaTableName);
 
         ImmutableMap.Builder<String, ColumnHandle> columnHandles = ImmutableMap.builder();
 
@@ -204,7 +207,27 @@ public class KafkaMetadata
     public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session, ConnectorTableHandle table, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns)
     {
         KafkaTableHandle handle = convertTableHandle(table);
-        ConnectorTableLayout layout = new ConnectorTableLayout(new KafkaTableLayoutHandle(handle));
+        long startTimestamp = 0;
+        long endTimestamp = 0;
+        Optional<Map<ColumnHandle, Domain>> domains = constraint.getSummary().getDomains();
+        if (domains.isPresent()) {
+            Map<ColumnHandle, Domain> columnHandleDomainMap = domains.get();
+            for (Map.Entry<ColumnHandle, Domain> entry : columnHandleDomainMap.entrySet()) {
+                if (entry.getKey() instanceof KafkaColumnHandle && ((KafkaColumnHandle) entry.getKey()).getName().equals(KafkaInternalFieldDescription.OFFSET_TIMESTAMP_FIELD.getColumnName())) {
+                    Range span = entry.getValue().getValues().getRanges().getSpan();
+                    Marker low = span.getLow();
+                    Marker high = span.getHigh();
+                    if (!low.isLowerUnbounded()) {
+                        startTimestamp = (long) low.getValue();
+                    }
+                    if (!high.isUpperUnbounded()) {
+                        endTimestamp = (long) high.getValue();
+                    }
+                }
+            }
+        }
+
+        ConnectorTableLayout layout = new ConnectorTableLayout(new KafkaTableLayoutHandle(handle, startTimestamp, endTimestamp));
         return ImmutableList.of(new ConnectorTableLayoutResult(layout, constraint.getSummary()));
     }
 
@@ -214,13 +237,9 @@ public class KafkaMetadata
         return new ConnectorTableLayout(handle);
     }
 
-    @SuppressWarnings("ValueOfIncrementOrDecrementUsed")
     private ConnectorTableMetadata getTableMetadata(SchemaTableName schemaTableName)
     {
-        KafkaTopicDescription table = tableDescriptions.get(schemaTableName);
-        if (table == null) {
-            throw new TableNotFoundException(schemaTableName);
-        }
+        KafkaTopicDescription table = getRequiredTopicDescription(schemaTableName);
 
         ImmutableList.Builder<ColumnMetadata> builder = ImmutableList.builder();
 
@@ -247,5 +266,47 @@ public class KafkaMetadata
         }
 
         return new ConnectorTableMetadata(schemaTableName, builder.build());
+    }
+
+    @Override
+    public ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        // TODO: support transactional inserts
+        KafkaTableHandle table = (KafkaTableHandle) tableHandle;
+        List<KafkaColumnHandle> actualColumns = table.getColumns().stream()
+                .filter(col -> !col.isInternal())
+                .collect(toImmutableList());
+
+        return new KafkaTableHandle(
+                connectorId,
+                table.getSchemaName(),
+                table.getTableName(),
+                table.getTopicName(),
+                table.getKeyDataFormat(),
+                table.getMessageDataFormat(),
+                table.getKeyDataSchemaLocation(),
+                table.getMessageDataSchemaLocation(),
+                actualColumns);
+    }
+
+    @Override
+    public Optional<ConnectorOutputMetadata> finishInsert(ConnectorSession session, ConnectorInsertTableHandle insertHandle, Collection<Slice> fragments, Collection<ComputedStatistics> computedStatistics)
+    {
+        // TODO: support transactional inserts
+        return Optional.empty();
+    }
+
+    private KafkaTopicDescription getRequiredTopicDescription(SchemaTableName schemaTableName)
+    {
+        return getTopicDescription(schemaTableName).orElseThrow(() -> new TableNotFoundException(schemaTableName));
+    }
+
+    private Optional<KafkaTopicDescription> getTopicDescription(SchemaTableName schemaTableName)
+    {
+        return tableDescriptions.stream()
+                .map(kafkaTableDescriptionSupplier -> kafkaTableDescriptionSupplier.getTopicDescription(schemaTableName))
+                .filter(Optional::isPresent)
+                .map(Optional::get)
+                .findFirst();
     }
 }

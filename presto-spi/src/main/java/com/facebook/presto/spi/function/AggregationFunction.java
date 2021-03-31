@@ -16,6 +16,7 @@ package com.facebook.presto.spi.function;
 import java.lang.annotation.Retention;
 import java.lang.annotation.Target;
 
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.PUBLIC;
 import static java.lang.annotation.ElementType.METHOD;
 import static java.lang.annotation.ElementType.TYPE;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
@@ -28,9 +29,13 @@ public @interface AggregationFunction
 
     boolean decomposable() default true;
 
+    /**
+     * Indicates whether the result of the function depends on the order in which data is fed in,
+     * which allows the engine to optimize away ORDER BY clauses in aggregation calls
+     */
     boolean isOrderSensitive() default false;
 
-    boolean hidden() default false;
+    SqlFunctionVisibility visibility() default PUBLIC;
 
     String[] alias() default {};
 }

@@ -16,31 +16,31 @@ package com.facebook.presto.sql.planner.iterative.rule;
 import com.facebook.presto.matching.Capture;
 import com.facebook.presto.matching.Captures;
 import com.facebook.presto.matching.Pattern;
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.function.StandardFunctionResolution;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.Assignments;
+import com.facebook.presto.spi.plan.ProjectNode;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.ConstantExpression;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.iterative.Rule;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
-import com.facebook.presto.sql.planner.plan.Assignments;
-import com.facebook.presto.sql.planner.plan.ProjectNode;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.FunctionCall;
-import com.facebook.presto.sql.tree.Literal;
-import com.facebook.presto.sql.tree.NullLiteral;
-import com.facebook.presto.sql.tree.QualifiedName;
-import com.facebook.presto.sql.tree.SymbolReference;
+import com.facebook.presto.sql.relational.FunctionResolution;
 import com.google.common.collect.ImmutableList;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.Optional;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.matching.Capture.newCapture;
-import static com.facebook.presto.metadata.FunctionKind.AGGREGATE;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.sql.planner.plan.Patterns.aggregation;
 import static com.facebook.presto.sql.planner.plan.Patterns.project;
 import static com.facebook.presto.sql.planner.plan.Patterns.source;
+import static com.facebook.presto.sql.relational.Expressions.isNull;
+import static java.util.Objects.requireNonNull;
 
 public class SimplifyCountOverConstant
         implements Rule<AggregationNode>
@@ -49,6 +49,14 @@ public class SimplifyCountOverConstant
 
     private static final Pattern<AggregationNode> PATTERN = aggregation()
             .with(source().matching(project().capturedAs(CHILD)));
+
+    private final StandardFunctionResolution functionResolution;
+
+    public SimplifyCountOverConstant(FunctionAndTypeManager functionAndTypeManager)
+    {
+        requireNonNull(functionAndTypeManager, "functionManager is null");
+        this.functionResolution = new FunctionResolution(functionAndTypeManager);
+    }
 
     @Override
     public Pattern<AggregationNode> getPattern()
@@ -62,17 +70,23 @@ public class SimplifyCountOverConstant
         ProjectNode child = captures.get(CHILD);
 
         boolean changed = false;
-        Map<Symbol, AggregationNode.Aggregation> aggregations = new LinkedHashMap<>(parent.getAggregations());
+        Map<VariableReferenceExpression, AggregationNode.Aggregation> aggregations = new LinkedHashMap<>(parent.getAggregations());
 
-        for (Entry<Symbol, AggregationNode.Aggregation> entry : parent.getAggregations().entrySet()) {
-            Symbol symbol = entry.getKey();
+        for (Entry<VariableReferenceExpression, AggregationNode.Aggregation> entry : parent.getAggregations().entrySet()) {
+            VariableReferenceExpression variable = entry.getKey();
             AggregationNode.Aggregation aggregation = entry.getValue();
 
             if (isCountOverConstant(aggregation, child.getAssignments())) {
                 changed = true;
-                aggregations.put(symbol, new AggregationNode.Aggregation(
-                        new FunctionCall(QualifiedName.of("count"), ImmutableList.of()),
-                        new Signature("count", AGGREGATE, parseTypeSignature(StandardTypes.BIGINT)),
+                aggregations.put(variable, new AggregationNode.Aggregation(
+                        new CallExpression(
+                                "count",
+                                functionResolution.countFunction(),
+                                BIGINT,
+                                ImmutableList.of()),
+                        Optional.empty(),
+                        Optional.empty(),
+                        false,
                         aggregation.getMask()));
             }
         }
@@ -88,22 +102,22 @@ public class SimplifyCountOverConstant
                 parent.getGroupingSets(),
                 ImmutableList.of(),
                 parent.getStep(),
-                parent.getHashSymbol(),
-                parent.getGroupIdSymbol()));
+                parent.getHashVariable(),
+                parent.getGroupIdVariable()));
     }
 
-    private static boolean isCountOverConstant(AggregationNode.Aggregation aggregation, Assignments inputs)
+    private boolean isCountOverConstant(AggregationNode.Aggregation aggregation, Assignments inputs)
     {
-        Signature signature = aggregation.getSignature();
-        if (!signature.getName().equals("count") || signature.getArgumentTypes().size() != 1) {
+        if (!functionResolution.isCountFunction(aggregation.getFunctionHandle()) || aggregation.getArguments().size() != 1) {
             return false;
         }
 
-        Expression argument = aggregation.getCall().getArguments().get(0);
-        if (argument instanceof SymbolReference) {
-            argument = inputs.get(Symbol.from(argument));
+        RowExpression argument = aggregation.getArguments().get(0);
+        RowExpression assigned = null;
+        if (argument instanceof VariableReferenceExpression) {
+            assigned = inputs.get((VariableReferenceExpression) argument);
         }
 
-        return argument instanceof Literal && !(argument instanceof NullLiteral);
+        return assigned instanceof ConstantExpression && !isNull(assigned);
     }
 }

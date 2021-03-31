@@ -24,6 +24,8 @@ ARTIFACTS = {
     'jdbc': ('presto-jdbc', 'jar', None),
     'verifier': ('presto-verifier', 'jar', 'executable'),
     'benchmark-driver': ('presto-benchmark-driver', 'jar', 'executable'),
+    'spark-package': ('presto-spark-package', 'tar.gz', None),
+    'spark-launcher': ('presto-spark-launcher', 'jar', None),
 }
 
 
@@ -57,3 +59,7 @@ def setup(app):
 
         return [node], []
     app.add_role('maven_download', download_link_role)
+
+    return {
+        'parallel_read_safe': True,
+    }

@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.execution.buffer;
 
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -37,8 +37,8 @@ public final class PageSplitterUtil
         // for Pages with certain types of Blocks (e.g., RLE blocks) the size in bytes may remain constant
         // through the recursive calls, which causes the recursion to only terminate when page.getPositionCount() == 1
         // and create potentially a large number of Page's of size 1. So we check here that
-        // if the size of the page doesn't improve from the previous call we terminate the recursion.
-        if (page.getSizeInBytes() == previousPageSize || page.getSizeInBytes() <= maxPageSizeInBytes || page.getPositionCount() == 1) {
+        // if the size of the page doesn't improve too much from the previous call we terminate the recursion.
+        if (page.getSizeInBytes() > previousPageSize * 0.9 || page.getSizeInBytes() <= maxPageSizeInBytes || page.getPositionCount() == 1) {
             return ImmutableList.of(page);
         }
 

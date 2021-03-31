@@ -13,8 +13,11 @@
  */
 package com.facebook.presto.cli;
 
+import com.facebook.airlift.log.Logging;
+import com.facebook.airlift.log.LoggingConfiguration;
 import com.facebook.presto.cli.ClientOptions.OutputFormat;
 import com.facebook.presto.client.ClientSession;
+import com.facebook.presto.spi.security.SelectedRole;
 import com.facebook.presto.sql.parser.StatementSplitter;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.Strings;
@@ -22,8 +25,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Files;
 import io.airlift.airline.Command;
 import io.airlift.airline.HelpOption;
-import io.airlift.log.Logging;
-import io.airlift.log.LoggingConfiguration;
 import io.airlift.units.Duration;
 import jline.console.history.FileHistory;
 import jline.console.history.History;
@@ -35,7 +36,6 @@ import javax.inject.Inject;
 import java.io.File;
 import java.io.IOException;
 import java.io.PrintStream;
-import java.io.UncheckedIOException;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -103,7 +103,7 @@ public class Console
                 throw new RuntimeException("both --execute and --file specified");
             }
             try {
-                query = Files.toString(new File(clientOptions.file), UTF_8);
+                query = Files.asCharSource(new File(clientOptions.file), UTF_8).read();
                 hasQuery = true;
             }
             catch (IOException e) {
@@ -270,7 +270,8 @@ public class Console
         }
     }
 
-    private static boolean executeCommand(QueryRunner queryRunner, String query, OutputFormat outputFormat, boolean ignoreErrors)
+    @VisibleForTesting
+    static boolean executeCommand(QueryRunner queryRunner, String query, OutputFormat outputFormat, boolean ignoreErrors)
     {
         boolean success = true;
         StatementSplitter splitter = new StatementSplitter(query);
@@ -333,11 +334,6 @@ public class Console
                 builder = builder.withTransactionId(query.getStartedTransactionId());
             }
 
-            // update path if present
-            if (query.getSetPath().isPresent()) {
-                builder = builder.withPath(query.getSetPath().get());
-            }
-
             // update session properties if present
             if (!query.getSetSessionProperties().isEmpty() || !query.getResetSessionProperties().isEmpty()) {
                 Map<String, String> sessionProperties = new HashMap<>(session.getProperties());
@@ -346,12 +342,27 @@ public class Console
                 builder = builder.withProperties(sessionProperties);
             }
 
+            // update session roles
+            if (!query.getSetRoles().isEmpty()) {
+                Map<String, SelectedRole> roles = new HashMap<>(session.getRoles());
+                roles.putAll(query.getSetRoles());
+                builder = builder.withRoles(roles);
+            }
+
             // update prepared statements if present
             if (!query.getAddedPreparedStatements().isEmpty() || !query.getDeallocatedPreparedStatements().isEmpty()) {
                 Map<String, String> preparedStatements = new HashMap<>(session.getPreparedStatements());
                 preparedStatements.putAll(query.getAddedPreparedStatements());
                 preparedStatements.keySet().removeAll(query.getDeallocatedPreparedStatements());
                 builder = builder.withPreparedStatements(preparedStatements);
+            }
+
+            // update session functions if present
+            if (!query.getAddedSessionFunctions().isEmpty() || !query.getRemovedSessionFunctions().isEmpty()) {
+                Map<String, String> sessionFunctions = new HashMap<>(session.getSessionFunctions());
+                sessionFunctions.putAll(query.getAddedSessionFunctions());
+                sessionFunctions.keySet().removeAll(query.getRemovedSessionFunctions());
+                builder = builder.withSessionFunctions(sessionFunctions);
             }
 
             session = builder.build();
@@ -424,9 +435,6 @@ public class Console
 
             Logging logging = Logging.initialize();
             logging.configure(config);
-        }
-        catch (IOException e) {
-            throw new UncheckedIOException(e);
         }
         finally {
             System.setOut(out);

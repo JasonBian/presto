@@ -15,60 +15,21 @@ package com.facebook.presto.sql.analyzer;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.connector.ConnectorId;
-import com.facebook.presto.connector.informationSchema.InformationSchemaConnector;
-import com.facebook.presto.connector.system.SystemConnector;
 import com.facebook.presto.execution.QueryManagerConfig;
 import com.facebook.presto.execution.TaskManagerConfig;
+import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
+import com.facebook.presto.execution.warnings.WarningCollectorConfig;
 import com.facebook.presto.memory.MemoryManagerConfig;
-import com.facebook.presto.metadata.Catalog;
-import com.facebook.presto.metadata.CatalogManager;
-import com.facebook.presto.metadata.ColumnPropertyManager;
-import com.facebook.presto.metadata.InMemoryNodeManager;
-import com.facebook.presto.metadata.InternalNodeManager;
-import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.QualifiedObjectName;
-import com.facebook.presto.metadata.SchemaPropertyManager;
+import com.facebook.presto.memory.NodeMemoryConfig;
 import com.facebook.presto.metadata.SessionPropertyManager;
-import com.facebook.presto.metadata.TablePropertyManager;
-import com.facebook.presto.metadata.ViewDefinition;
-import com.facebook.presto.security.AccessControl;
-import com.facebook.presto.security.AccessControlManager;
-import com.facebook.presto.security.AllowAllAccessControl;
-import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.ConnectorTableMetadata;
-import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.connector.Connector;
-import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.connector.ConnectorSplitManager;
-import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.transaction.IsolationLevel;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.sql.parser.SqlParser;
-import com.facebook.presto.sql.tree.NodeLocation;
-import com.facebook.presto.sql.tree.Statement;
-import com.facebook.presto.testing.TestingMetadata;
-import com.facebook.presto.transaction.TransactionManager;
-import com.facebook.presto.type.TypeRegistry;
-import com.google.common.collect.ImmutableList;
-import io.airlift.json.JsonCodec;
-import org.intellij.lang.annotations.Language;
-import org.testng.annotations.BeforeClass;
+import com.facebook.presto.spi.PrestoWarning;
+import com.facebook.presto.spi.StandardWarningCode;
+import com.facebook.presto.spi.WarningCollector;
 import org.testng.annotations.Test;
 
-import java.util.Optional;
-import java.util.function.Consumer;
+import java.util.List;
 
-import static com.facebook.presto.connector.ConnectorId.createInformationSchemaConnectorId;
-import static com.facebook.presto.connector.ConnectorId.createSystemTablesConnectorId;
-import static com.facebook.presto.metadata.ViewDefinition.ViewColumn;
-import static com.facebook.presto.operator.scalar.ApplyFunction.APPLY_FUNCTION;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.spi.StandardWarningCode.PERFORMANCE_WARNING;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.AMBIGUOUS_ATTRIBUTE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.CANNOT_HAVE_AGGREGATIONS_WINDOWS_OR_GROUPING;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.CATALOG_NOT_SPECIFIED;
@@ -77,6 +38,7 @@ import static com.facebook.presto.sql.analyzer.SemanticErrorCode.COLUMN_TYPE_UNK
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.DUPLICATE_COLUMN_NAME;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.DUPLICATE_PROPERTY;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.DUPLICATE_RELATION;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_FUNCTION_NAME;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_LITERAL;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_ORDINAL;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_PARAMETER_USAGE;
@@ -112,37 +74,31 @@ import static com.facebook.presto.sql.analyzer.SemanticErrorCode.VIEW_ANALYSIS_E
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.VIEW_IS_RECURSIVE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.VIEW_IS_STALE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.WILDCARD_WITHOUT_FROM;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.WINDOW_FUNCTION_ORDERBY_LITERAL;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.WINDOW_REQUIRES_OVER;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
-import static com.facebook.presto.transaction.InMemoryTransactionManager.createTestTransactionManager;
-import static com.facebook.presto.transaction.TransactionBuilder.transaction;
 import static java.lang.String.format;
-import static java.util.Collections.emptyList;
-import static org.testng.Assert.fail;
+import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
 
 @Test(singleThreaded = true)
 public class TestAnalyzer
+        extends AbstractAnalyzerTest
 {
-    private static final String TPCH_CATALOG = "tpch";
-    private static final ConnectorId TPCH_CONNECTOR_ID = new ConnectorId(TPCH_CATALOG);
-    private static final String SECOND_CATALOG = "c2";
-    private static final ConnectorId SECOND_CONNECTOR_ID = new ConnectorId(SECOND_CATALOG);
-    private static final String THIRD_CATALOG = "c3";
-    private static final ConnectorId THIRD_CONNECTOR_ID = new ConnectorId(THIRD_CATALOG);
-    private static final Session SETUP_SESSION = testSessionBuilder()
-            .setCatalog("c1")
-            .setSchema("s1")
-            .build();
-    private static final Session CLIENT_SESSION = testSessionBuilder()
-            .setCatalog(TPCH_CATALOG)
-            .setSchema("s1")
-            .build();
+    private static void assertHasWarning(WarningCollector warningCollector, StandardWarningCode code, String match)
+    {
+        List<PrestoWarning> warnings = warningCollector.getWarnings();
+        assertEquals(warnings.size(), 1);
+        PrestoWarning warning = warnings.get(0);
+        assertEquals(warning.getWarningCode(), code.toWarningCode());
+        assertTrue(warning.getMessage().startsWith(match));
+    }
 
-    private static final SqlParser SQL_PARSER = new SqlParser();
-
-    private TransactionManager transactionManager;
-    private AccessControl accessControl;
-    private Metadata metadata;
+    private static void assertNoWarning(WarningCollector warningCollector)
+    {
+        List<PrestoWarning> warnings = warningCollector.getWarnings();
+        assertTrue(warnings.isEmpty());
+    }
 
     @Test
     public void testNonComparableGroupBy()
@@ -160,6 +116,58 @@ public class TestAnalyzer
     public void testNonComparableWindowOrder()
     {
         assertFails(TYPE_MISMATCH, "SELECT row_number() OVER (ORDER BY t.x) FROM (VALUES(color('red'))) AS t(x)");
+    }
+
+    @Test
+    public void testORWarning()
+    {
+        assertHasWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a OR t1.b = t2.b"),
+                PERFORMANCE_WARNING, "line 1:41: JOIN conditions with an OR can cause performance issues as it may lead to a cross join with filter");
+        assertHasWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a OR t1.a != t2.b AND t1.b > t2.b"),
+                PERFORMANCE_WARNING, "line 1:41: JOIN conditions with an OR can cause performance issues as it may lead to a cross join with filter");
+        assertHasWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a AND t1.a != t2.b OR t1.b > t2.b"),
+                PERFORMANCE_WARNING, "line 1:58: JOIN conditions with an OR can cause performance issues as it may lead to a cross join with filter");
+        assertHasWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a OR IF(t2.b = t1.a OR t2.b = null, 'YES', 'NO') = 'YES'"),
+                PERFORMANCE_WARNING, "line 1:41: JOIN conditions with an OR can cause performance issues as it may lead to a cross join with filter");
+        assertHasWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON (t1.a = t2.a AND t1.b = t2.b) OR (t1.a > t1.b AND t1.b > t1.a)"),
+                PERFORMANCE_WARNING, "line 1:59: JOIN conditions with an OR can cause performance issues as it may lead to a cross join with filter");
+    }
+
+    @Test void testNoORWarning()
+    {
+        assertNoWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a"));
+        assertNoWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a AND t1.b = t2.b"));
+        assertNoWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a AND IF(t2.b = t1.a OR t2.b = null, 'YES', 'NO') = 'YES'"));
+        assertNoWarning(analyzeWithWarnings("SELECT * FROM t1 JOIN t2 ON t1.a = t2.a \n" + "AND (t1.b = t2.b OR t1.b > t2.b)"));
+    }
+
+    @Test
+    public void testWindowOrderByAnalysis()
+    {
+        assertHasWarning(analyzeWithWarnings("SELECT SUM(x) OVER (PARTITION BY y ORDER BY 1) AS s\n" +
+                "FROM (values (1,10), (2, 10)) AS T(x, y)"), PERFORMANCE_WARNING, "ORDER BY literals/constants with window function:");
+
+        assertHasWarning(analyzeWithWarnings("SELECT SUM(x) OVER (ORDER BY 1) AS s\n" +
+                "FROM (values (1,10), (2, 10)) AS T(x, y)"), PERFORMANCE_WARNING, "ORDER BY literals/constants with window function:");
+
+        // Now test for error when the session param is set to disallow this.
+        Session session = testSessionBuilder(new SessionPropertyManager(new SystemSessionProperties(
+                new QueryManagerConfig(),
+                new TaskManagerConfig(),
+                new MemoryManagerConfig(),
+                new FeaturesConfig().setAllowWindowOrderByLiterals(false),
+                new NodeMemoryConfig(),
+                new WarningCollectorConfig(),
+                new NodeSchedulerConfig()))).build();
+        assertFails(session, WINDOW_FUNCTION_ORDERBY_LITERAL,
+                "SELECT SUM(x) OVER (PARTITION BY y ORDER BY 1) AS s\n" +
+                        "FROM (values (1,10), (2, 10)) AS T(x, y)");
+        assertFails(session, WINDOW_FUNCTION_ORDERBY_LITERAL,
+                "SELECT SUM(x) OVER (ORDER BY 1) AS s\n" +
+                        "FROM (values (1,10), (2, 10)) AS T(x, y)");
+
+        analyze(session, "SELECT SUM(x) OVER (PARTITION BY y ORDER BY y) AS s\n" +
+                        "FROM (values (1,10), (2, 10)) AS T(x, y)");
     }
 
     @Test
@@ -340,7 +348,7 @@ public class TestAnalyzer
     @Test
     public void testWindowsNotAllowed()
     {
-        assertFails(CANNOT_HAVE_AGGREGATIONS_WINDOWS_OR_GROUPING, "SELECT * FROM t1 WHERE foo() over () > 1");
+        assertFails(CANNOT_HAVE_AGGREGATIONS_WINDOWS_OR_GROUPING, "SELECT * FROM t1 WHERE pi() over () > 1");
         assertFails(CANNOT_HAVE_AGGREGATIONS_WINDOWS_OR_GROUPING, "SELECT * FROM t1 GROUP BY rank() over ()");
         assertFails(CANNOT_HAVE_AGGREGATIONS_WINDOWS_OR_GROUPING, "SELECT * FROM t1 JOIN t2 ON sum(t1.a) over () = t2.a");
         assertFails(NESTED_WINDOW, "SELECT 1 FROM (VALUES 1) HAVING count(*) OVER () > 1");
@@ -423,7 +431,7 @@ public class TestAnalyzer
         assertFails(MISSING_ATTRIBUTE, "SELECT * FROM t1 WHERE f > 1");
     }
 
-    @Test(expectedExceptions = SemanticException.class, expectedExceptionsMessageRegExp = "line 1:8: Column 't.y' cannot be resolved")
+    @Test(expectedExceptions = SemanticException.class, expectedExceptionsMessageRegExp = "line 1:8: 't.y' cannot be resolved")
     public void testInvalidAttributeCorrectErrorMessage()
     {
         analyze("SELECT t.y FROM (VALUES 1) t(x)");
@@ -532,7 +540,10 @@ public class TestAnalyzer
                 new QueryManagerConfig(),
                 new TaskManagerConfig(),
                 new MemoryManagerConfig(),
-                new FeaturesConfig().setMaxGroupingSets(2048)))).build();
+                new FeaturesConfig().setMaxGroupingSets(2048),
+                new NodeMemoryConfig(),
+                new WarningCollectorConfig(),
+                new NodeSchedulerConfig()))).build();
         analyze(session, "SELECT a, b, c, d, e, f, g, h, i, j, k, SUM(l)" +
                 "FROM (VALUES (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12))\n" +
                 "t (a, b, c, d, e, f, g, h, i, j, k, l)\n" +
@@ -744,7 +755,7 @@ public class TestAnalyzer
     @Test
     public void testInsert()
     {
-        assertFails(MISMATCHED_SET_COLUMN_TYPES, "INSERT INTO t6 (a) SELECT b from t6");
+        assertFails(MISMATCHED_SET_COLUMN_TYPES, "Mismatch at column 1: 'a' is of type bigint but expression is of type varchar", "INSERT INTO t6 (a) SELECT b from t6");
         analyze("INSERT INTO t1 SELECT * FROM t1");
         analyze("INSERT INTO t3 SELECT * FROM t3");
         analyze("INSERT INTO t3 SELECT a, b FROM t3");
@@ -793,10 +804,33 @@ public class TestAnalyzer
         assertFails(MISMATCHED_SET_COLUMN_TYPES, "INSERT INTO t1 (a, b) VALUES (1), (1, 2)");
         assertFails(MISMATCHED_SET_COLUMN_TYPES, "INSERT INTO t1 (a, b) VALUES (1, 2), (1, 2), (1, 2, 3)");
         assertFails(MISMATCHED_SET_COLUMN_TYPES, "INSERT INTO t1 (a, b) VALUES ('a', 'b'), ('a', 'b', 'c')");
+        assertFails(MISMATCHED_SET_COLUMN_TYPES,
+                "line 1:51: Insert query has 5 expression.s. but expected 4 target column.s.. Mismatch at column 5",
+                "INSERT INTO t6 (a, b, c, d) VALUES (1, 'a', 1, 1, 1)");
+        assertFails(MISMATCHED_SET_COLUMN_TYPES,
+                "line 1:38: Insert query has 5 expression.s. but expected 4 target column.s.. Mismatch at column 5",
+                "INSERT INTO t6 VALUES (1, 'a', 1, 1, 1)");
+        assertFails(MISMATCHED_SET_COLUMN_TYPES,
+                "line 3:3: Insert query has 3 expression.s. but expected 4 target column.s.. Mismatch at column 4: 'd'",
+                "INSERT INTO t6 (a, b, c, d) VALUES (1\n, 'a'\n, 1)");
 
         // fail if mismatched column types
+        assertFails(MISMATCHED_SET_COLUMN_TYPES,
+                "line 1:45: Mismatch at column 3: 'c' is of type bigint but expression is of type varchar.*",
+                "INSERT INTO t6 (a, b, c, d) VALUES (1, 'a', 'a', 1)");
         assertFails(MISMATCHED_SET_COLUMN_TYPES, "INSERT INTO t1 (a, b) VALUES ('a', 'b'), (1, 'b')");
         assertFails(MISMATCHED_SET_COLUMN_TYPES, "INSERT INTO t1 (a, b) VALUES ('a', 'b'), ('a', 'b'), (1, 'b')");
+
+        // show size mismatch as well as the first mismatched column position
+        assertFails(MISMATCHED_SET_COLUMN_TYPES,
+                "line 1:45: Insert query has 5 expression.s. but expected 4 target column.s.. Mismatch at column 3: 'c' is of type bigint but expression is of type varchar.*",
+                "INSERT INTO t6 (a, b, c, d) VALUES (1, 'a', 'a', 1, 1)");
+        assertFails(MISMATCHED_SET_COLUMN_TYPES,
+                "line 1:32: Insert query has 5 expression.s. but expected 4 target column.s.. Mismatch at column 3: 'c' is of type bigint but expression is of type varchar.*",
+                "INSERT INTO t6 VALUES (1, 'a', 'a', 1, 1)");
+        assertFails(MISMATCHED_SET_COLUMN_TYPES,
+                "line 1:40: Insert query has 3 expression.s. but expected 4 target column.s.. Mismatch at column 2: 'b' is of type varchar but expression is of type integer",
+                "INSERT INTO t6 (a, b, c, d) VALUES (1, 1, 1)");
     }
 
     @Test
@@ -893,6 +927,13 @@ public class TestAnalyzer
         // row type
         assertFails(TYPE_MISMATCH, "SELECT t.x.f1 FROM (VALUES 1) t(x)");
         assertFails(TYPE_MISMATCH, "SELECT x.f1 FROM (VALUES 1) t(x)");
+
+        // subscript on Row
+        assertFails(INVALID_PARAMETER_USAGE, "line 1:20: Subscript expression on ROW requires a constant index", "SELECT ROW(1, 'a')[x]");
+        assertFails(INVALID_PARAMETER_USAGE, "line 1:20: Subscript expression on ROW requires a constant index", "SELECT ROW(1, 'a')[-1]");
+        assertFails(TYPE_MISMATCH, "line 1:20: Subscript expression on ROW requires integer index, found bigint", "SELECT ROW(1, 'a')[9999999999]");
+        assertFails(INVALID_PARAMETER_USAGE, "line 1:20: Invalid subscript index: 0. ROW indices start at 1", "SELECT ROW(1, 'a')[0]");
+        assertFails(INVALID_PARAMETER_USAGE, "line 1:20: Subscript index out of bounds: 5, max value is 2", "SELECT ROW(1, 'a')[5]");
     }
 
     @Test
@@ -1015,6 +1056,46 @@ public class TestAnalyzer
     }
 
     @Test
+    public void testUnionDistinctPerformanceWarning()
+    {
+        WarningCollector warningCollector = analyzeWithWarnings("SELECT a,b,c,d FROM t8 UNION DISTINCT SELECT a,b,c,d FROM t9");
+        List<PrestoWarning> warnings = warningCollector.getWarnings();
+        assertEquals(warnings.size(), 1);
+
+        // Ensure warning is the performance warning we expect
+        PrestoWarning warning = warnings.get(0);
+        assertEquals(warning.getWarningCode(), PERFORMANCE_WARNING.toWarningCode());
+        assertTrue(warning.getMessage().startsWith("UNION DISTINCT"));
+    }
+
+    @Test
+    public void testCountDistinctPerformanceWarning()
+    {
+        WarningCollector warningCollector = analyzeWithWarnings("SELECT COUNT(DISTINCT a) FROM t1 GROUP BY b");
+        List<PrestoWarning> warnings = warningCollector.getWarnings();
+        assertEquals(warnings.size(), 1);
+
+        // Ensure warning is the performance warning we expect
+        PrestoWarning warning = warnings.get(0);
+        assertEquals(warning.getWarningCode(), PERFORMANCE_WARNING.toWarningCode());
+        assertTrue(warning.getMessage().contains("COUNT(DISTINCT xxx)"));
+    }
+
+    @Test
+    public void testUnionNoPerformanceWarning()
+    {
+        // <= 3 fields
+        WarningCollector warningCollector = analyzeWithWarnings("SELECT a,b,c FROM t8 UNION DISTINCT SELECT a,b,c FROM t9");
+        assertTrue(warningCollector.getWarnings().isEmpty());
+        // > 3 fields, no expensive types
+        //warningCollector = analyzeWithWarnings("SELECT a,b,c,d FROM t1 UNION DISTINCT SELECT a,b,c,d FROM t1");
+        assertTrue(warningCollector.getWarnings().isEmpty());
+        // > 3 fields, expensive types, not distinct
+        warningCollector = analyzeWithWarnings("SELECT a,b,c,d FROM t8 UNION ALL SELECT a,b,c,d FROM t9");
+        assertTrue(warningCollector.getWarnings().isEmpty());
+    }
+
+    @Test
     public void testMismatchedUnionQueries()
     {
         assertFails(TYPE_MISMATCH, "SELECT 1 UNION SELECT 'a'");
@@ -1079,7 +1160,7 @@ public class TestAnalyzer
         assertFails(MISMATCHED_COLUMN_ALIASES, 1, 19, "CREATE TABLE test(x, y) AS (VALUES 1)");
         assertFails(DUPLICATE_COLUMN_NAME, 1, 24, "CREATE TABLE test(abc, AbC) AS SELECT 1, 2");
         assertFails(COLUMN_TYPE_UNKNOWN, 1, 1, "CREATE TABLE test(x) AS SELECT null");
-        assertFails(MISSING_ATTRIBUTE, ".*Column 'y' cannot be resolved", "CREATE TABLE test(x) WITH (p1 = y) AS SELECT null");
+        assertFails(MISSING_ATTRIBUTE, ".*'y' cannot be resolved", "CREATE TABLE test(x) WITH (p1 = y) AS SELECT null");
         assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "CREATE TABLE test(x) WITH (p1 = 'p1', p2 = 'p2', p1 = 'p3') AS SELECT null");
         assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "CREATE TABLE test(x) WITH (p1 = 'p1', \"p1\" = 'p2') AS SELECT null");
     }
@@ -1090,9 +1171,19 @@ public class TestAnalyzer
         analyze("CREATE TABLE test (id bigint)");
         analyze("CREATE TABLE test (id bigint) WITH (p1 = 'p1')");
 
-        assertFails(MISSING_ATTRIBUTE, ".*Column 'y' cannot be resolved", "CREATE TABLE test (x bigint) WITH (p1 = y)");
+        assertFails(MISSING_ATTRIBUTE, ".*'y' cannot be resolved", "CREATE TABLE test (x bigint) WITH (p1 = y)");
         assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "CREATE TABLE test (id bigint) WITH (p1 = 'p1', p2 = 'p2', p1 = 'p3')");
         assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "CREATE TABLE test (id bigint) WITH (p1 = 'p1', \"p1\" = 'p2')");
+    }
+
+    @Test
+    public void testAnalyze()
+    {
+        analyze("ANALYZE t1");
+        analyze("ANALYZE t1 WITH (p1 = 'p1')");
+
+        assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "ANALYZE t1 WITH (p1 = 'p1', p2 = 2, p1 = 'p3')");
+        assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "ANALYZE t1 WITH (p1 = 'p1', \"p1\" = 'p2')");
     }
 
     @Test
@@ -1101,7 +1192,7 @@ public class TestAnalyzer
         analyze("CREATE SCHEMA test");
         analyze("CREATE SCHEMA test WITH (p1 = 'p1')");
 
-        assertFails(MISSING_ATTRIBUTE, ".*Column 'y' cannot be resolved", "CREATE SCHEMA test WITH (p1 = y)");
+        assertFails(MISSING_ATTRIBUTE, ".*'y' cannot be resolved", "CREATE SCHEMA test WITH (p1 = y)");
         assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "CREATE SCHEMA test WITH (p1 = 'p1', p2 = 'p2', p1 = 'p3')");
         assertFails(DUPLICATE_PROPERTY, ".* Duplicate property: p1", "CREATE SCHEMA test WITH (p1 = 'p1', \"p1\" = 'p2')");
     }
@@ -1163,6 +1254,8 @@ public class TestAnalyzer
     {
         // it should be possible to qualify the column reference with the view name
         analyze("SELECT v1.a FROM v1");
+        analyze("SELECT s1.v1.a FROM s1.v1");
+        analyze("SELECT tpch.s1.v1.a FROM tpch.s1.v1");
     }
 
     @Test
@@ -1459,6 +1552,10 @@ public class TestAnalyzer
         // HLL is neither orderable nor comparable
         assertFails(TYPE_MISMATCH, "SELECT cast(NULL AS HyperLogLog) < ALL (VALUES cast(NULL AS HyperLogLog))");
         assertFails(TYPE_MISMATCH, "SELECT cast(NULL AS HyperLogLog) = ANY (VALUES cast(NULL AS HyperLogLog))");
+
+        // qdigest is neither orderable nor comparable
+        assertFails(TYPE_MISMATCH, "SELECT cast(NULL AS qdigest(double)) < ALL (VALUES cast(NULL AS qdigest(double)))");
+        assertFails(TYPE_MISMATCH, "SELECT cast(NULL AS qdigest(double)) = ANY (VALUES cast(NULL AS qdigest(double)))");
     }
 
     @Test
@@ -1479,284 +1576,28 @@ public class TestAnalyzer
         analyze("SELECT * FROM (VALUES array[2, 2]) a(x) FULL OUTER JOIN LATERAL(VALUES x) ON true");
     }
 
-    @BeforeClass
-    public void setup()
+    @Test
+    public void testEmptyTableName()
     {
-        TypeManager typeManager = new TypeRegistry();
-        CatalogManager catalogManager = new CatalogManager();
-        transactionManager = createTestTransactionManager(catalogManager);
-        accessControl = new AccessControlManager(transactionManager);
-
-        metadata = new MetadataManager(
-                new FeaturesConfig(),
-                typeManager,
-                new BlockEncodingManager(typeManager),
-                new SessionPropertyManager(),
-                new SchemaPropertyManager(),
-                new TablePropertyManager(),
-                new ColumnPropertyManager(),
-                transactionManager);
-
-        metadata.getFunctionRegistry().addFunctions(ImmutableList.of(APPLY_FUNCTION));
-
-        catalogManager.registerCatalog(createTestingCatalog(TPCH_CATALOG, TPCH_CONNECTOR_ID));
-        catalogManager.registerCatalog(createTestingCatalog(SECOND_CATALOG, SECOND_CONNECTOR_ID));
-        catalogManager.registerCatalog(createTestingCatalog(THIRD_CATALOG, THIRD_CONNECTOR_ID));
-
-        SchemaTableName table1 = new SchemaTableName("s1", "t1");
-        inSetupTransaction(session -> metadata.createTable(session, TPCH_CATALOG, new ConnectorTableMetadata(table1,
-                ImmutableList.of(
-                        new ColumnMetadata("a", BIGINT),
-                        new ColumnMetadata("b", BIGINT),
-                        new ColumnMetadata("c", BIGINT),
-                        new ColumnMetadata("d", BIGINT))),
-                false));
-
-        SchemaTableName table2 = new SchemaTableName("s1", "t2");
-        inSetupTransaction(session -> metadata.createTable(session, TPCH_CATALOG, new ConnectorTableMetadata(table2,
-                ImmutableList.of(
-                        new ColumnMetadata("a", BIGINT),
-                        new ColumnMetadata("b", BIGINT))),
-                false));
-
-        SchemaTableName table3 = new SchemaTableName("s1", "t3");
-        inSetupTransaction(session -> metadata.createTable(session, TPCH_CATALOG, new ConnectorTableMetadata(table3,
-                ImmutableList.of(
-                        new ColumnMetadata("a", BIGINT),
-                        new ColumnMetadata("b", BIGINT),
-                        new ColumnMetadata("x", BIGINT, null, true))),
-                false));
-
-        // table in different catalog
-        SchemaTableName table4 = new SchemaTableName("s2", "t4");
-        inSetupTransaction(session -> metadata.createTable(session, SECOND_CATALOG, new ConnectorTableMetadata(table4,
-                ImmutableList.of(
-                        new ColumnMetadata("a", BIGINT))),
-                false));
-
-        // table with a hidden column
-        SchemaTableName table5 = new SchemaTableName("s1", "t5");
-        inSetupTransaction(session -> metadata.createTable(session, TPCH_CATALOG, new ConnectorTableMetadata(table5,
-                ImmutableList.of(
-                        new ColumnMetadata("a", BIGINT),
-                        new ColumnMetadata("b", BIGINT, null, true))),
-                false));
-
-        // table with a varchar column
-        SchemaTableName table6 = new SchemaTableName("s1", "t6");
-        inSetupTransaction(session -> metadata.createTable(session, TPCH_CATALOG, new ConnectorTableMetadata(table6,
-                ImmutableList.of(
-                        new ColumnMetadata("a", BIGINT),
-                        new ColumnMetadata("b", VARCHAR),
-                        new ColumnMetadata("c", BIGINT),
-                        new ColumnMetadata("d", BIGINT))),
-                false));
-
-        // table with bigint, double, array of bigints and array of doubles column
-        SchemaTableName table7 = new SchemaTableName("s1", "t7");
-        inSetupTransaction(session -> metadata.createTable(session, TPCH_CATALOG, new ConnectorTableMetadata(table7,
-                ImmutableList.of(
-                        new ColumnMetadata("a", BIGINT),
-                        new ColumnMetadata("b", DOUBLE),
-                        new ColumnMetadata("c", new ArrayType(BIGINT)),
-                        new ColumnMetadata("d", new ArrayType(DOUBLE)))),
-                false));
-
-        // valid view referencing table in same schema
-        String viewData1 = JsonCodec.jsonCodec(ViewDefinition.class).toJson(
-                new ViewDefinition(
-                        "select a from t1",
-                        Optional.of(TPCH_CATALOG),
-                        Optional.of("s1"),
-                        ImmutableList.of(new ViewColumn("a", BIGINT)),
-                        Optional.of("user")));
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v1"), viewData1, false));
-
-        // stale view (different column type)
-        String viewData2 = JsonCodec.jsonCodec(ViewDefinition.class).toJson(
-                new ViewDefinition(
-                        "select a from t1",
-                        Optional.of(TPCH_CATALOG),
-                        Optional.of("s1"),
-                        ImmutableList.of(new ViewColumn("a", VARCHAR)),
-                        Optional.of("user")));
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v2"), viewData2, false));
-
-        // view referencing table in different schema from itself and session
-        String viewData3 = JsonCodec.jsonCodec(ViewDefinition.class).toJson(
-                new ViewDefinition(
-                        "select a from t4",
-                        Optional.of(SECOND_CATALOG),
-                        Optional.of("s2"),
-                        ImmutableList.of(new ViewColumn("a", BIGINT)),
-                        Optional.of("owner")));
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(THIRD_CATALOG, "s3", "v3"), viewData3, false));
-
-        // valid view with uppercase column name
-        String viewData4 = JsonCodec.jsonCodec(ViewDefinition.class).toJson(
-                new ViewDefinition(
-                        "select A from t1",
-                        Optional.of("tpch"),
-                        Optional.of("s1"),
-                        ImmutableList.of(new ViewColumn("a", BIGINT)),
-                        Optional.of("user")));
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName("tpch", "s1", "v4"), viewData4, false));
-
-        // recursive view referencing to itself
-        String viewData5 = JsonCodec.jsonCodec(ViewDefinition.class).toJson(
-                new ViewDefinition(
-                        "select * from v5",
-                        Optional.of(TPCH_CATALOG),
-                        Optional.of("s1"),
-                        ImmutableList.of(new ViewColumn("a", BIGINT)),
-                        Optional.of("user")));
-        inSetupTransaction(session -> metadata.createView(session, new QualifiedObjectName(TPCH_CATALOG, "s1", "v5"), viewData5, false));
+        assertFails(MISSING_TABLE, "SELECT * FROM \"\"");
     }
 
-    private void inSetupTransaction(Consumer<Session> consumer)
+    @Test
+    public void testEmptySchemaName()
     {
-        transaction(transactionManager, accessControl)
-                .singleStatement()
-                .readUncommitted()
-                .execute(SETUP_SESSION, consumer);
+        assertFails(MISSING_SCHEMA, "SELECT * FROM \"\".foo");
     }
 
-    private static Analyzer createAnalyzer(Session session, Metadata metadata)
+    @Test
+    public void testReplaceTemporaryFunctionFails()
     {
-        return new Analyzer(
-                session,
-                metadata,
-                SQL_PARSER,
-                new AllowAllAccessControl(),
-                Optional.empty(),
-                emptyList());
+        assertFails(NOT_SUPPORTED, "CREATE OR REPLACE TEMPORARY FUNCTION foo() RETURNS INT RETURN 1");
     }
 
-    private void analyze(@Language("SQL") String query)
+    @Test
+    public void testInvalidTemporaryFunctionName()
     {
-        analyze(CLIENT_SESSION, query);
-    }
-
-    private void analyze(Session clientSession, @Language("SQL") String query)
-    {
-        transaction(transactionManager, accessControl)
-                .singleStatement()
-                .readUncommitted()
-                .readOnly()
-                .execute(clientSession, session -> {
-                    Analyzer analyzer = createAnalyzer(session, metadata);
-                    Statement statement = SQL_PARSER.createStatement(query);
-                    analyzer.analyze(statement);
-                });
-    }
-
-    private void assertFails(SemanticErrorCode error, @Language("SQL") String query)
-    {
-        assertFails(CLIENT_SESSION, error, query);
-    }
-
-    private void assertFails(SemanticErrorCode error, int line, int column, @Language("SQL") String query)
-    {
-        assertFails(CLIENT_SESSION, error, Optional.of(new NodeLocation(line, column - 1)), query);
-    }
-
-    private void assertFails(SemanticErrorCode error, String message, @Language("SQL") String query)
-    {
-        assertFails(CLIENT_SESSION, error, message, query);
-    }
-
-    private void assertFails(Session session, SemanticErrorCode error, @Language("SQL") String query)
-    {
-        assertFails(session, error, Optional.empty(), query);
-    }
-
-    private void assertFails(Session session, SemanticErrorCode error, Optional<NodeLocation> location, @Language("SQL") String query)
-    {
-        try {
-            analyze(session, query);
-            fail(format("Expected error %s, but analysis succeeded", error));
-        }
-        catch (SemanticException e) {
-            if (e.getCode() != error) {
-                fail(format("Expected error %s, but found %s: %s", error, e.getCode(), e.getMessage()), e);
-            }
-
-            if (location.isPresent()) {
-                NodeLocation expected = location.get();
-                NodeLocation actual = e.getNode().getLocation().get();
-
-                if (expected.getLineNumber() != actual.getLineNumber() || expected.getColumnNumber() != actual.getColumnNumber()) {
-                    fail(format(
-                            "Expected error '%s' to occur at line %s, offset %s, but was: line %s, offset %s",
-                            e.getCode(),
-                            expected.getLineNumber(),
-                            expected.getColumnNumber(),
-                            actual.getLineNumber(),
-                            actual.getColumnNumber()));
-                }
-            }
-        }
-    }
-
-    private void assertFails(Session session, SemanticErrorCode error, String message, @Language("SQL") String query)
-    {
-        try {
-            analyze(session, query);
-            fail(format("Expected error %s, but analysis succeeded", error));
-        }
-        catch (SemanticException e) {
-            if (e.getCode() != error) {
-                fail(format("Expected error %s, but found %s: %s", error, e.getCode(), e.getMessage()), e);
-            }
-
-            if (!e.getMessage().matches(message)) {
-                fail(format("Expected error '%s', but got '%s'", message, e.getMessage()), e);
-            }
-        }
-    }
-
-    private Catalog createTestingCatalog(String catalogName, ConnectorId connectorId)
-    {
-        ConnectorId systemId = createSystemTablesConnectorId(connectorId);
-        Connector connector = createTestingConnector();
-        InternalNodeManager nodeManager = new InMemoryNodeManager();
-        return new Catalog(
-                catalogName,
-                connectorId,
-                connector,
-                createInformationSchemaConnectorId(connectorId),
-                new InformationSchemaConnector(catalogName, nodeManager, metadata, accessControl),
-                systemId,
-                new SystemConnector(
-                        systemId,
-                        nodeManager,
-                        connector.getSystemTables(),
-                        transactionId -> transactionManager.getConnectorTransaction(transactionId, connectorId)));
-    }
-
-    private static Connector createTestingConnector()
-    {
-        return new Connector()
-        {
-            private final ConnectorMetadata metadata = new TestingMetadata();
-
-            @Override
-            public ConnectorTransactionHandle beginTransaction(IsolationLevel isolationLevel, boolean readOnly)
-            {
-                return new ConnectorTransactionHandle() {};
-            }
-
-            @Override
-            public ConnectorMetadata getMetadata(ConnectorTransactionHandle transaction)
-            {
-                return metadata;
-            }
-
-            @Override
-            public ConnectorSplitManager getSplitManager()
-            {
-                throw new UnsupportedOperationException();
-            }
-        };
+        assertFails(INVALID_FUNCTION_NAME, "CREATE TEMPORARY FUNCTION sum() RETURNS INT RETURN 1");
+        assertFails(INVALID_FUNCTION_NAME, "CREATE TEMPORARY FUNCTION dev.test.foo() RETURNS INT RETURN 1");
     }
 }

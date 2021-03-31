@@ -17,7 +17,7 @@ import com.facebook.presto.testing.MaterializedResult;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 import static com.facebook.presto.tests.QueryAssertions.assertContains;
 
@@ -190,7 +190,7 @@ public abstract class AbstractTestIntegrationSmokeTest
                 "line 1:49: Column name 'orderkey' specified more than once");
     }
 
-    private MaterializedResult getExpectedOrdersTableDescription(boolean dateSupported, boolean parametrizedVarchar)
+    protected MaterializedResult getExpectedOrdersTableDescription(boolean dateSupported, boolean parametrizedVarchar)
     {
         String orderDateType;
         if (dateSupported) {

@@ -16,21 +16,21 @@ package com.facebook.presto.sql.planner.iterative.rule;
 import com.facebook.presto.matching.Capture;
 import com.facebook.presto.matching.Captures;
 import com.facebook.presto.matching.Pattern;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
-import com.facebook.presto.sql.planner.Partitioning;
+import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.Assignments;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.ProjectNode;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.LambdaDefinitionExpression;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.PartitioningScheme;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.iterative.Rule;
 import com.facebook.presto.sql.planner.optimizations.SymbolMapper;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
-import com.facebook.presto.sql.planner.plan.Assignments;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.planner.plan.ProjectNode;
-import com.facebook.presto.sql.tree.FunctionCall;
-import com.facebook.presto.sql.tree.QualifiedName;
 import com.google.common.collect.ImmutableList;
 
 import java.util.ArrayList;
@@ -42,9 +42,11 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 import static com.facebook.presto.SystemSessionProperties.preferPartialAggregation;
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.FINAL;
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.PARTIAL;
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.SINGLE;
+import static com.facebook.presto.operator.aggregation.AggregationUtils.isDecomposable;
+import static com.facebook.presto.spi.plan.AggregationNode.Step.FINAL;
+import static com.facebook.presto.spi.plan.AggregationNode.Step.PARTIAL;
+import static com.facebook.presto.spi.plan.AggregationNode.Step.SINGLE;
+import static com.facebook.presto.spi.plan.ProjectNode.Locality.LOCAL;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.GATHER;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static com.facebook.presto.sql.planner.plan.Patterns.aggregation;
@@ -52,16 +54,17 @@ import static com.facebook.presto.sql.planner.plan.Patterns.exchange;
 import static com.facebook.presto.sql.planner.plan.Patterns.source;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 public class PushPartialAggregationThroughExchange
         implements Rule<AggregationNode>
 {
-    private final FunctionRegistry functionRegistry;
+    private final FunctionAndTypeManager functionAndTypeManager;
 
-    public PushPartialAggregationThroughExchange(FunctionRegistry functionRegistry)
+    public PushPartialAggregationThroughExchange(FunctionAndTypeManager functionAndTypeManager)
     {
-        this.functionRegistry = requireNonNull(functionRegistry, "functionRegistry is null");
+        this.functionAndTypeManager = requireNonNull(functionAndTypeManager, "functionManager is null");
     }
 
     private static final Capture<ExchangeNode> EXCHANGE_NODE = Capture.newCapture();
@@ -83,7 +86,7 @@ public class PushPartialAggregationThroughExchange
     {
         ExchangeNode exchangeNode = captures.get(EXCHANGE_NODE);
 
-        boolean decomposable = aggregationNode.isDecomposable(functionRegistry);
+        boolean decomposable = isDecomposable(aggregationNode, functionAndTypeManager);
 
         if (aggregationNode.getStep().equals(SINGLE) &&
                 aggregationNode.hasEmptyGroupingSet() &&
@@ -112,12 +115,12 @@ public class PushPartialAggregationThroughExchange
         if (exchangeNode.getType() == REPARTITION) {
             // if partitioning columns are not a subset of grouping keys,
             // we can't push this through
-            List<Symbol> partitioningColumns = exchangeNode.getPartitioningScheme()
+            List<VariableReferenceExpression> partitioningColumns = exchangeNode.getPartitioningScheme()
                     .getPartitioning()
                     .getArguments()
                     .stream()
-                    .filter(Partitioning.ArgumentBinding::isVariable)
-                    .map(Partitioning.ArgumentBinding::getColumn)
+                    .filter(VariableReferenceExpression.class::isInstance)
+                    .map(VariableReferenceExpression.class::cast)
                     .collect(Collectors.toList());
 
             if (!aggregationNode.getGroupingKeys().containsAll(partitioningColumns)) {
@@ -126,7 +129,7 @@ public class PushPartialAggregationThroughExchange
         }
 
         // currently, we only support plans that don't use pre-computed hash functions
-        if (aggregationNode.getHashSymbol().isPresent() || exchangeNode.getPartitioningScheme().getHashColumn().isPresent()) {
+        if (aggregationNode.getHashVariable().isPresent() || exchangeNode.getPartitioningScheme().getHashColumn().isPresent()) {
             return Result.empty();
         }
 
@@ -149,9 +152,9 @@ public class PushPartialAggregationThroughExchange
             PlanNode source = exchange.getSources().get(i);
 
             SymbolMapper.Builder mappingsBuilder = SymbolMapper.builder();
-            for (int outputIndex = 0; outputIndex < exchange.getOutputSymbols().size(); outputIndex++) {
-                Symbol output = exchange.getOutputSymbols().get(outputIndex);
-                Symbol input = exchange.getInputs().get(i).get(outputIndex);
+            for (int outputIndex = 0; outputIndex < exchange.getOutputVariables().size(); outputIndex++) {
+                VariableReferenceExpression output = exchange.getOutputVariables().get(outputIndex);
+                VariableReferenceExpression input = exchange.getInputs().get(i).get(outputIndex);
                 if (!output.equals(input)) {
                     mappingsBuilder.put(output, input);
                 }
@@ -162,22 +165,22 @@ public class PushPartialAggregationThroughExchange
 
             Assignments.Builder assignments = Assignments.builder();
 
-            for (Symbol output : aggregation.getOutputSymbols()) {
-                Symbol input = symbolMapper.map(output);
-                assignments.put(output, input.toSymbolReference());
+            for (VariableReferenceExpression output : aggregation.getOutputVariables()) {
+                VariableReferenceExpression input = symbolMapper.map(output);
+                assignments.put(output, input);
             }
-            partials.add(new ProjectNode(context.getIdAllocator().getNextId(), mappedPartial, assignments.build()));
+            partials.add(new ProjectNode(context.getIdAllocator().getNextId(), mappedPartial, assignments.build(), LOCAL));
         }
 
         for (PlanNode node : partials) {
-            verify(aggregation.getOutputSymbols().equals(node.getOutputSymbols()));
+            verify(aggregation.getOutputVariables().equals(node.getOutputVariables()));
         }
-
         // Since this exchange source is now guaranteed to have the same symbols as the inputs to the the partial
         // aggregation, we don't need to rewrite symbols in the partitioning function
+        List<VariableReferenceExpression> aggregationOutputs = aggregation.getOutputVariables();
         PartitioningScheme partitioning = new PartitioningScheme(
                 exchange.getPartitioningScheme().getPartitioning(),
-                aggregation.getOutputSymbols(),
+                aggregationOutputs,
                 exchange.getPartitioningScheme().getHashColumn(),
                 exchange.getPartitioningScheme().isReplicateNullsAndAny(),
                 exchange.getPartitioningScheme().getBucketToPartition());
@@ -188,29 +191,52 @@ public class PushPartialAggregationThroughExchange
                 exchange.getScope(),
                 partitioning,
                 partials,
-                ImmutableList.copyOf(Collections.nCopies(partials.size(), aggregation.getOutputSymbols())),
+                ImmutableList.copyOf(Collections.nCopies(partials.size(), aggregationOutputs)),
+                exchange.isEnsureSourceOrdering(),
                 Optional.empty());
     }
 
     private PlanNode split(AggregationNode node, Context context)
     {
         // otherwise, add a partial and final with an exchange in between
-        Map<Symbol, AggregationNode.Aggregation> intermediateAggregation = new HashMap<>();
-        Map<Symbol, AggregationNode.Aggregation> finalAggregation = new HashMap<>();
-        for (Map.Entry<Symbol, AggregationNode.Aggregation> entry : node.getAggregations().entrySet()) {
+        Map<VariableReferenceExpression, AggregationNode.Aggregation> intermediateAggregation = new HashMap<>();
+        Map<VariableReferenceExpression, AggregationNode.Aggregation> finalAggregation = new HashMap<>();
+        for (Map.Entry<VariableReferenceExpression, AggregationNode.Aggregation> entry : node.getAggregations().entrySet()) {
             AggregationNode.Aggregation originalAggregation = entry.getValue();
-            Signature signature = originalAggregation.getSignature();
-            InternalAggregationFunction function = functionRegistry.getAggregateFunctionImplementation(signature);
-            Symbol intermediateSymbol = context.getSymbolAllocator().newSymbol(signature.getName(), function.getIntermediateType());
+            String functionName = functionAndTypeManager.getFunctionMetadata(originalAggregation.getFunctionHandle()).getName().getObjectName();
+            FunctionHandle functionHandle = originalAggregation.getFunctionHandle();
+            InternalAggregationFunction function = functionAndTypeManager.getAggregateFunctionImplementation(functionHandle);
+            VariableReferenceExpression intermediateVariable = context.getVariableAllocator().newVariable(functionName, function.getIntermediateType());
 
-            checkState(!originalAggregation.getCall().getOrderBy().isPresent(), "Aggregate with ORDER BY does not support partial aggregation");
-            intermediateAggregation.put(intermediateSymbol, new AggregationNode.Aggregation(originalAggregation.getCall(), signature, originalAggregation.getMask()));
+            checkState(!originalAggregation.getOrderBy().isPresent(), "Aggregate with ORDER BY does not support partial aggregation");
+            intermediateAggregation.put(intermediateVariable, new AggregationNode.Aggregation(
+                    new CallExpression(
+                            functionName,
+                            functionHandle,
+                            function.getIntermediateType(),
+                            originalAggregation.getArguments()),
+                    originalAggregation.getFilter(),
+                    originalAggregation.getOrderBy(),
+                    originalAggregation.isDistinct(),
+                    originalAggregation.getMask()));
 
             // rewrite final aggregation in terms of intermediate function
             finalAggregation.put(entry.getKey(),
                     new AggregationNode.Aggregation(
-                            new FunctionCall(QualifiedName.of(signature.getName()), ImmutableList.of(intermediateSymbol.toSymbolReference())),
-                            signature,
+                            new CallExpression(
+                                    functionName,
+                                    functionHandle,
+                                    function.getFinalType(),
+                                    ImmutableList.<RowExpression>builder()
+                                            .add(intermediateVariable)
+                                            .addAll(originalAggregation.getArguments()
+                                                    .stream()
+                                                    .filter(PushPartialAggregationThroughExchange::isLambda)
+                                                    .collect(toImmutableList()))
+                                            .build()),
+                            Optional.empty(),
+                            Optional.empty(),
+                            false,
                             Optional.empty()));
         }
 
@@ -223,8 +249,8 @@ public class PushPartialAggregationThroughExchange
                 // through the exchange may or may not preserve these properties. Hence, it is safest to drop preGroupedSymbols here.
                 ImmutableList.of(),
                 PARTIAL,
-                node.getHashSymbol(),
-                node.getGroupIdSymbol());
+                node.getHashVariable(),
+                node.getGroupIdVariable());
 
         return new AggregationNode(
                 node.getId(),
@@ -235,7 +261,12 @@ public class PushPartialAggregationThroughExchange
                 // through the exchange may or may not preserve these properties. Hence, it is safest to drop preGroupedSymbols here.
                 ImmutableList.of(),
                 FINAL,
-                node.getHashSymbol(),
-                node.getGroupIdSymbol());
+                node.getHashVariable(),
+                node.getGroupIdVariable());
+    }
+
+    private static boolean isLambda(RowExpression rowExpression)
+    {
+        return rowExpression instanceof LambdaDefinitionExpression;
     }
 }

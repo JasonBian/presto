@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.operator.aggregation.state;
 
+import com.facebook.airlift.stats.QuantileDigest;
 import com.facebook.presto.array.DoubleBigArray;
 import com.facebook.presto.array.ObjectBigArray;
 import com.facebook.presto.spi.function.AccumulatorStateFactory;
-import io.airlift.stats.QuantileDigest;
 import org.openjdk.jol.info.ClassLayout;
 
 import static java.util.Objects.requireNonNull;
@@ -90,7 +90,7 @@ public class DigestAndPercentileStateFactory
         }
 
         @Override
-        public void addMemoryUsage(int value)
+        public void addMemoryUsage(long value)
         {
             size += value;
         }
@@ -134,7 +134,7 @@ public class DigestAndPercentileStateFactory
         }
 
         @Override
-        public void addMemoryUsage(int value)
+        public void addMemoryUsage(long value)
         {
             // noop
         }

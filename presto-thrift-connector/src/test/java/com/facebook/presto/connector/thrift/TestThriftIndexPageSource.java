@@ -13,25 +13,25 @@
  */
 package com.facebook.presto.connector.thrift;
 
-import com.facebook.presto.connector.thrift.api.PrestoThriftId;
-import com.facebook.presto.connector.thrift.api.PrestoThriftNullableColumnSet;
-import com.facebook.presto.connector.thrift.api.PrestoThriftNullableSchemaName;
-import com.facebook.presto.connector.thrift.api.PrestoThriftNullableTableMetadata;
-import com.facebook.presto.connector.thrift.api.PrestoThriftNullableToken;
-import com.facebook.presto.connector.thrift.api.PrestoThriftPageResult;
-import com.facebook.presto.connector.thrift.api.PrestoThriftSchemaTableName;
-import com.facebook.presto.connector.thrift.api.PrestoThriftService;
-import com.facebook.presto.connector.thrift.api.PrestoThriftServiceException;
-import com.facebook.presto.connector.thrift.api.PrestoThriftSplit;
-import com.facebook.presto.connector.thrift.api.PrestoThriftSplitBatch;
-import com.facebook.presto.connector.thrift.api.PrestoThriftTupleDomain;
-import com.facebook.presto.connector.thrift.api.datatypes.PrestoThriftInteger;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.InMemoryRecordSet;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.thrift.api.connector.PrestoThriftId;
+import com.facebook.presto.thrift.api.connector.PrestoThriftNullableColumnSet;
+import com.facebook.presto.thrift.api.connector.PrestoThriftNullableSchemaName;
+import com.facebook.presto.thrift.api.connector.PrestoThriftNullableTableMetadata;
+import com.facebook.presto.thrift.api.connector.PrestoThriftNullableToken;
+import com.facebook.presto.thrift.api.connector.PrestoThriftPageResult;
+import com.facebook.presto.thrift.api.connector.PrestoThriftSchemaTableName;
+import com.facebook.presto.thrift.api.connector.PrestoThriftService;
+import com.facebook.presto.thrift.api.connector.PrestoThriftServiceException;
+import com.facebook.presto.thrift.api.connector.PrestoThriftSplit;
+import com.facebook.presto.thrift.api.connector.PrestoThriftSplitBatch;
+import com.facebook.presto.thrift.api.connector.PrestoThriftTupleDomain;
+import com.facebook.presto.thrift.api.datatypes.PrestoThriftInteger;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.primitives.Ints;
@@ -46,8 +46,8 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CountDownLatch;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.connector.thrift.api.PrestoThriftBlock.integerData;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.thrift.api.datatypes.PrestoThriftBlock.integerData;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 import static java.util.Collections.shuffle;
@@ -119,7 +119,7 @@ public class TestThriftIndexPageSource
         assertEquals((long) stats.getIndexPageSize().getAllTime().getTotal(), pageSizeReceived);
         assertNotNull(page);
         assertEquals(page.getPositionCount(), 1);
-        assertEquals(page.getBlock(0).getInt(0, 0), 20);
+        assertEquals(page.getBlock(0).getInt(0), 20);
         // not complete yet
         assertFalse(pageSource.isFinished());
 
@@ -134,7 +134,7 @@ public class TestThriftIndexPageSource
         pageSizeReceived += page.getSizeInBytes();
         assertEquals((long) stats.getIndexPageSize().getAllTime().getTotal(), pageSizeReceived);
         assertEquals(page.getPositionCount(), 1);
-        assertEquals(page.getBlock(0).getInt(0, 0), 10);
+        assertEquals(page.getBlock(0).getInt(0), 10);
         // still not complete
         assertFalse(pageSource.isFinished());
 
@@ -145,7 +145,7 @@ public class TestThriftIndexPageSource
         pageSizeReceived += page.getSizeInBytes();
         assertEquals((long) stats.getIndexPageSize().getAllTime().getTotal(), pageSizeReceived);
         assertEquals(page.getPositionCount(), 1);
-        assertEquals(page.getBlock(0).getInt(0, 0), 30);
+        assertEquals(page.getBlock(0).getInt(0), 30);
         // finished now
         assertTrue(pageSource.isFinished());
 
@@ -205,7 +205,7 @@ public class TestThriftIndexPageSource
             if (page != null) {
                 Block block = page.getBlock(0);
                 for (int position = 0; position < block.getPositionCount(); position++) {
-                    actual.add(block.getInt(position, 0));
+                    actual.add(block.getInt(position));
                 }
             }
         }

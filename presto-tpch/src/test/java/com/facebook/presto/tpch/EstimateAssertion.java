@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.tpch;
 
+import com.facebook.presto.spi.statistics.DoubleRange;
 import com.facebook.presto.spi.statistics.Estimate;
 import io.airlift.slice.Slice;
 
 import java.util.Optional;
 
 import static java.lang.String.format;
-import static java.util.Optional.empty;
 import static org.testng.Assert.assertEquals;
 
 class EstimateAssertion
@@ -38,7 +38,7 @@ class EstimateAssertion
 
     private Optional<Double> toOptional(Estimate estimate)
     {
-        return estimate.isValueUnknown() ? empty() : Optional.of(estimate.getValue());
+        return estimate.isUnknown() ? Optional.empty() : Optional.of(estimate.getValue());
     }
 
     public void assertClose(Optional<?> actual, Optional<?> expected, String comparedValue)
@@ -59,6 +59,12 @@ class EstimateAssertion
         if (actual instanceof Slice) {
             assertEquals(actual.getClass(), expected.getClass(), comparedValue);
             assertEquals(((Slice) actual).toStringUtf8(), ((Slice) expected).toStringUtf8());
+        }
+        else if (actual instanceof DoubleRange) {
+            DoubleRange actualRange = (DoubleRange) actual;
+            DoubleRange expectedRange = (DoubleRange) expected;
+            assertClose(actualRange.getMin(), expectedRange.getMin(), comparedValue);
+            assertClose(actualRange.getMax(), expectedRange.getMax(), comparedValue);
         }
         else {
             double actualDouble = toDouble(actual);

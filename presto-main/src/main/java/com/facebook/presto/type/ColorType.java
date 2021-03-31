@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.type;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.AbstractIntType;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.operator.scalar.ColorFunctions;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.AbstractIntType;
-import com.facebook.presto.spi.type.TypeSignature;
 
 public class ColorType
         extends AbstractIntType
@@ -43,13 +43,13 @@ public class ColorType
     }
 
     @Override
-    public Object getObjectValue(ConnectorSession session, Block block, int position)
+    public Object getObjectValue(SqlFunctionProperties properties, Block block, int position)
     {
         if (block.isNull(position)) {
             return null;
         }
 
-        int color = block.getInt(position, 0);
+        int color = block.getInt(position);
         if (color < 0) {
             return ColorFunctions.SystemColor.valueOf(-(color + 1)).getName();
         }

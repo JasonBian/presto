@@ -16,7 +16,8 @@ package com.facebook.presto.execution.scheduler;
 import com.facebook.presto.execution.RemoteTask;
 import com.facebook.presto.execution.SqlStageExecution;
 import com.facebook.presto.execution.TaskStatus;
-import com.facebook.presto.spi.Node;
+import com.facebook.presto.execution.scheduler.nodeSelection.NodeSelector;
+import com.facebook.presto.metadata.InternalNode;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.SettableFuture;
 import io.airlift.units.DataSize;
@@ -24,7 +25,7 @@ import io.airlift.units.DataSize;
 import java.util.Collection;
 import java.util.HashSet;
 import java.util.List;
-import java.util.OptionalInt;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -39,18 +40,17 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 public class ScaledWriterScheduler
         implements StageScheduler
 {
-    private interface TaskScheduler
-    {
-        RemoteTask scheduleTask(Node node, int partition, OptionalInt totalPartitions);
-    }
-
-    private final TaskScheduler taskScheduler;
+    private final SqlStageExecution stage;
     private final Supplier<Collection<TaskStatus>> sourceTasksProvider;
     private final Supplier<Collection<TaskStatus>> writerTasksProvider;
     private final NodeSelector nodeSelector;
     private final ScheduledExecutorService executor;
+
+    private final boolean optimizedScaleWriterProducerBuffer;
     private final long writerMinSizeBytes;
-    private final Set<Node> scheduledNodes = new HashSet<>();
+
+    private final Set<InternalNode> scheduledNodes = new HashSet<>();
+
     private final AtomicBoolean done = new AtomicBoolean();
     private volatile SettableFuture<?> future = SettableFuture.create();
 
@@ -60,15 +60,16 @@ public class ScaledWriterScheduler
             Supplier<Collection<TaskStatus>> writerTasksProvider,
             NodeSelector nodeSelector,
             ScheduledExecutorService executor,
-            DataSize writerMinSize)
+            DataSize writerMinSize,
+            boolean optimizedScaleWriterProducerBuffer)
     {
-        requireNonNull(stage, "stage is null");
-        this.taskScheduler = stage::scheduleTask;
+        this.stage = requireNonNull(stage, "stage is null");
         this.sourceTasksProvider = requireNonNull(sourceTasksProvider, "sourceTasksProvider is null");
         this.writerTasksProvider = requireNonNull(writerTasksProvider, "writerTasksProvider is null");
         this.nodeSelector = requireNonNull(nodeSelector, "nodeSelector is null");
         this.executor = requireNonNull(executor, "executor is null");
         this.writerMinSizeBytes = requireNonNull(writerMinSize, "minWriterSize is null").toBytes();
+        this.optimizedScaleWriterProducerBuffer = optimizedScaleWriterProducerBuffer;
     }
 
     public void finish()
@@ -86,7 +87,7 @@ public class ScaledWriterScheduler
         future = SettableFuture.create();
         executor.schedule(() -> future.set(null), 200, MILLISECONDS);
 
-        return new ScheduleResult(done.get(), writers, future, WRITER_SCALING, 0);
+        return ScheduleResult.blocked(done.get(), writers, future, WRITER_SCALING, 0);
     }
 
     private int getNewTaskCount()
@@ -102,12 +103,23 @@ public class ScaledWriterScheduler
                 .average().orElse(0.0);
 
         long writtenBytes = writerTasksProvider.get().stream()
-                .map(TaskStatus::getPhysicalWrittenDataSize)
-                .mapToLong(DataSize::toBytes)
+                .mapToLong(TaskStatus::getPhysicalWrittenDataSizeInBytes)
                 .sum();
 
         if ((fullTasks >= 0.5) && (writtenBytes >= (writerMinSizeBytes * scheduledNodes.size()))) {
             return 1;
+        }
+
+        if (optimizedScaleWriterProducerBuffer) {
+            double totalProducerBufferUtilization = sourceTasksProvider.get().stream()
+                    .filter(task -> !task.getState().isDone())
+                    .mapToDouble(TaskStatus::getOutputBufferUtilization)
+                    .sum();
+
+            if (totalProducerBufferUtilization >= scheduledNodes.size() &&
+                    writtenBytes >= writerMinSizeBytes * scheduledNodes.size()) {
+                return 1;
+            }
         }
 
         return 0;
@@ -119,14 +131,17 @@ public class ScaledWriterScheduler
             return ImmutableList.of();
         }
 
-        List<Node> nodes = nodeSelector.selectRandomNodes(count, scheduledNodes);
+        List<InternalNode> nodes = nodeSelector.selectRandomNodes(count, scheduledNodes);
 
         checkCondition(!scheduledNodes.isEmpty() || !nodes.isEmpty(), NO_NODES_AVAILABLE, "No nodes available to run query");
 
         ImmutableList.Builder<RemoteTask> tasks = ImmutableList.builder();
-        for (Node node : nodes) {
-            tasks.add(taskScheduler.scheduleTask(node, scheduledNodes.size(), OptionalInt.empty()));
-            scheduledNodes.add(node);
+        for (InternalNode node : nodes) {
+            Optional<RemoteTask> remoteTask = stage.scheduleTask(node, scheduledNodes.size());
+            remoteTask.ifPresent(task -> {
+                tasks.add(task);
+                scheduledNodes.add(node);
+            });
         }
 
         return tasks.build();

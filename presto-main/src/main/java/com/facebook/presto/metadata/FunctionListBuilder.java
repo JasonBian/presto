@@ -14,7 +14,9 @@
 package com.facebook.presto.metadata;
 
 import com.facebook.presto.operator.scalar.annotations.ScalarFromAnnotationsParser;
+import com.facebook.presto.operator.scalar.annotations.SqlInvokedScalarFromAnnotationsParser;
 import com.facebook.presto.operator.window.WindowAnnotationsParser;
+import com.facebook.presto.spi.function.SqlFunction;
 import com.facebook.presto.spi.function.WindowFunction;
 import com.google.common.collect.ImmutableList;
 
@@ -57,15 +59,27 @@ public class FunctionListBuilder
         return this;
     }
 
-    public FunctionListBuilder functions(SqlFunction... sqlFunctions)
+    public FunctionListBuilder sqlInvokedScalar(Class<?> clazz)
     {
-        for (SqlFunction sqlFunction : sqlFunctions) {
+        functions.addAll(SqlInvokedScalarFromAnnotationsParser.parseFunctionDefinition(clazz));
+        return this;
+    }
+
+    public FunctionListBuilder sqlInvokedScalars(Class<?> clazz)
+    {
+        functions.addAll(SqlInvokedScalarFromAnnotationsParser.parseFunctionDefinitions(clazz));
+        return this;
+    }
+
+    public FunctionListBuilder functions(BuiltInFunction... sqlFunctions)
+    {
+        for (BuiltInFunction sqlFunction : sqlFunctions) {
             function(sqlFunction);
         }
         return this;
     }
 
-    public FunctionListBuilder function(SqlFunction sqlFunction)
+    public FunctionListBuilder function(BuiltInFunction sqlFunction)
     {
         requireNonNull(sqlFunction, "parametricFunction is null");
         functions.add(sqlFunction);

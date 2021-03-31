@@ -13,9 +13,11 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.operator.aggregation.state.NullableLongState;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.AggregationFunction;
 import com.facebook.presto.spi.function.AggregationState;
 import com.facebook.presto.spi.function.BlockIndex;
@@ -25,12 +27,11 @@ import com.facebook.presto.spi.function.InputFunction;
 import com.facebook.presto.spi.function.OutputFunction;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.StandardTypes;
 
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 import static java.lang.Math.max;
 
-@AggregationFunction(value = MaxDataSizeForStats.NAME, hidden = true)
+@AggregationFunction(value = MaxDataSizeForStats.NAME, visibility = HIDDEN)
 public final class MaxDataSizeForStats
 {
     public static final String NAME = "$internal$max_data_size_for_stats";

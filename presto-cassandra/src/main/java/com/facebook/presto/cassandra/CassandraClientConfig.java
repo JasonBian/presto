@@ -14,13 +14,14 @@
 package com.facebook.presto.cassandra;
 
 import com.datastax.driver.core.ConsistencyLevel;
+import com.datastax.driver.core.ProtocolVersion;
 import com.datastax.driver.core.SocketOptions;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.ConfigSecuritySensitive;
+import com.facebook.airlift.configuration.DefunctConfig;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.configuration.ConfigSecuritySensitive;
-import io.airlift.configuration.DefunctConfig;
 import io.airlift.units.Duration;
 import io.airlift.units.MaxDuration;
 import io.airlift.units.MinDuration;
@@ -29,8 +30,10 @@ import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
 import javax.validation.constraints.Size;
 
+import java.io.File;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Optional;
 
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.MINUTES;
@@ -48,6 +51,7 @@ public class CassandraClientConfig
     private int nativeProtocolPort = 9042;
     private int partitionSizeForBatchSelect = 100;
     private int splitSize = 1_024;
+    private Long splitsPerNode;
     private boolean allowDropTable;
     private String username;
     private String password;
@@ -66,6 +70,12 @@ public class CassandraClientConfig
     private Duration noHostAvailableRetryTimeout = new Duration(1, MINUTES);
     private int speculativeExecutionLimit = 1;
     private Duration speculativeExecutionDelay = new Duration(500, MILLISECONDS);
+    private ProtocolVersion protocolVersion = ProtocolVersion.V3;
+    private boolean tlsEnabled;
+    private File truststorePath;
+    private String truststorePassword;
+    private File keystorePath;
+    private String keystorePassword;
 
     @NotNull
     @Size(min = 1)
@@ -149,6 +159,18 @@ public class CassandraClientConfig
     public CassandraClientConfig setSplitSize(int splitSize)
     {
         this.splitSize = splitSize;
+        return this;
+    }
+
+    public Optional<Long> getSplitsPerNode()
+    {
+        return Optional.ofNullable(splitsPerNode);
+    }
+
+    @Config("cassandra.splits-per-node")
+    public CassandraClientConfig setSplitsPerNode(Long splitsPerNode)
+    {
+        this.splitsPerNode = splitsPerNode;
         return this;
     }
 
@@ -377,6 +399,81 @@ public class CassandraClientConfig
     public CassandraClientConfig setSpeculativeExecutionDelay(Duration speculativeExecutionDelay)
     {
         this.speculativeExecutionDelay = speculativeExecutionDelay;
+        return this;
+    }
+
+    @NotNull
+    public ProtocolVersion getProtocolVersion()
+    {
+        return protocolVersion;
+    }
+
+    @Config("cassandra.protocol-version")
+    public CassandraClientConfig setProtocolVersion(ProtocolVersion version)
+    {
+        this.protocolVersion = version;
+        return this;
+    }
+
+    public boolean isTlsEnabled()
+    {
+        return tlsEnabled;
+    }
+
+    @Config("cassandra.tls.enabled")
+    public CassandraClientConfig setTlsEnabled(boolean tlsEnabled)
+    {
+        this.tlsEnabled = tlsEnabled;
+        return this;
+    }
+
+    public Optional<File> getKeystorePath()
+    {
+        return Optional.ofNullable(keystorePath);
+    }
+
+    @Config("cassandra.tls.keystore-path")
+    public CassandraClientConfig setKeystorePath(File keystorePath)
+    {
+        this.keystorePath = keystorePath;
+        return this;
+    }
+
+    public Optional<String> getKeystorePassword()
+    {
+        return Optional.ofNullable(keystorePassword);
+    }
+
+    @Config("cassandra.tls.keystore-password")
+    @ConfigSecuritySensitive
+    public CassandraClientConfig setKeystorePassword(String keystorePassword)
+    {
+        this.keystorePassword = keystorePassword;
+        return this;
+    }
+
+    public Optional<File> getTruststorePath()
+    {
+        return Optional.ofNullable(truststorePath);
+    }
+
+    @Config("cassandra.tls.truststore-path")
+    public CassandraClientConfig setTruststorePath(File truststorePath)
+    {
+        this.truststorePath = truststorePath;
+        return this;
+    }
+
+    public Optional<String> getTruststorePassword()
+    {
+        return Optional.ofNullable(truststorePassword);
+    }
+
+    @Config("cassandra.tls.truststore-password")
+    @ConfigSecuritySensitive
+    public CassandraClientConfig setTruststorePassword(String truststorePassword)
+    {
+        this.truststorePassword = truststorePassword;
         return this;
     }
 }

@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.split;
 
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
 import com.facebook.presto.spi.UpdatablePageSource;
-import com.facebook.presto.spi.block.Block;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 
@@ -41,6 +41,12 @@ public class EmptySplitPageSource
 
     @Override
     public long getCompletedBytes()
+    {
+        return 0;
+    }
+
+    @Override
+    public long getCompletedPositions()
     {
         return 0;
     }

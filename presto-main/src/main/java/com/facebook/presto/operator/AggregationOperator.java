@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.aggregation.AccumulatorFactory;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.AggregationNode.Step;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.spi.plan.AggregationNode.Step;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -35,8 +35,6 @@ import static java.util.Objects.requireNonNull;
 public class AggregationOperator
         implements Operator
 {
-    private final boolean partial;
-
     public static class AggregationOperatorFactory
             implements OperatorFactory
     {
@@ -44,14 +42,16 @@ public class AggregationOperator
         private final PlanNodeId planNodeId;
         private final Step step;
         private final List<AccumulatorFactory> accumulatorFactories;
+        private final boolean useSystemMemory;
         private boolean closed;
 
-        public AggregationOperatorFactory(int operatorId, PlanNodeId planNodeId, Step step, List<AccumulatorFactory> accumulatorFactories)
+        public AggregationOperatorFactory(int operatorId, PlanNodeId planNodeId, Step step, List<AccumulatorFactory> accumulatorFactories, boolean useSystemMemory)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
             this.step = step;
             this.accumulatorFactories = ImmutableList.copyOf(accumulatorFactories);
+            this.useSystemMemory = useSystemMemory;
         }
 
         @Override
@@ -59,7 +59,7 @@ public class AggregationOperator
         {
             checkState(!closed, "Factory is already closed");
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, AggregationOperator.class.getSimpleName());
-            return new AggregationOperator(operatorContext, step, accumulatorFactories);
+            return new AggregationOperator(operatorContext, step, accumulatorFactories, useSystemMemory);
         }
 
         @Override
@@ -71,7 +71,7 @@ public class AggregationOperator
         @Override
         public OperatorFactory duplicate()
         {
-            return new AggregationOperatorFactory(operatorId, planNodeId, step, accumulatorFactories);
+            return new AggregationOperatorFactory(operatorId, planNodeId, step, accumulatorFactories, useSystemMemory);
         }
     }
 
@@ -86,23 +86,24 @@ public class AggregationOperator
     private final LocalMemoryContext systemMemoryContext;
     private final LocalMemoryContext userMemoryContext;
     private final List<Aggregator> aggregates;
+    private final boolean useSystemMemory;
 
     private State state = State.NEEDS_INPUT;
 
-    public AggregationOperator(OperatorContext operatorContext, Step step, List<AccumulatorFactory> accumulatorFactories)
+    public AggregationOperator(OperatorContext operatorContext, Step step, List<AccumulatorFactory> accumulatorFactories, boolean useSystemMemory)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext(AggregationOperator.class.getSimpleName());
         this.userMemoryContext = operatorContext.localUserMemoryContext();
+        this.useSystemMemory = useSystemMemory;
 
         requireNonNull(step, "step is null");
-        this.partial = step.isOutputPartial();
 
         // wrapper each function with an aggregator
         requireNonNull(accumulatorFactories, "accumulatorFactories is null");
         ImmutableList.Builder<Aggregator> builder = ImmutableList.builder();
         for (AccumulatorFactory accumulatorFactory : accumulatorFactories) {
-            builder.add(new Aggregator(accumulatorFactory, step));
+            builder.add(new Aggregator(accumulatorFactory, step, this::updateMemory));
         }
         aggregates = builder.build();
     }
@@ -146,17 +147,10 @@ public class AggregationOperator
         checkState(needsInput(), "Operator is already finishing");
         requireNonNull(page, "page is null");
 
-        long memorySize = 0;
         for (Aggregator aggregate : aggregates) {
             aggregate.processPage(page);
-            memorySize += aggregate.getEstimatedSize();
         }
-        if (partial) {
-            systemMemoryContext.setBytes(memorySize);
-        }
-        else {
-            userMemoryContext.setBytes(memorySize);
-        }
+        updateMemory();
     }
 
     @Override
@@ -182,5 +176,21 @@ public class AggregationOperator
 
         state = State.FINISHED;
         return pageBuilder.build();
+    }
+
+    private boolean updateMemory()
+    {
+        long memorySize = 0;
+        for (Aggregator aggregate : aggregates) {
+            memorySize += aggregate.getEstimatedSize();
+        }
+        if (useSystemMemory) {
+            systemMemoryContext.setBytes(memorySize);
+        }
+        else {
+            userMemoryContext.setBytes(memorySize);
+        }
+        // If memory is not available, inform the caller that we cannot proceed for allocation.
+        return operatorContext.isWaitingForMemory().isDone();
     }
 }

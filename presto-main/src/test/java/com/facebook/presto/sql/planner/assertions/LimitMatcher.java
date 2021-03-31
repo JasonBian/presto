@@ -16,8 +16,8 @@ package com.facebook.presto.sql.planner.assertions;
 import com.facebook.presto.Session;
 import com.facebook.presto.cost.StatsProvider;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.sql.planner.plan.LimitNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
+import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.PlanNode;
 
 import static com.google.common.base.Preconditions.checkState;
 
@@ -25,10 +25,12 @@ public class LimitMatcher
         implements Matcher
 {
     private final long limit;
+    private final boolean partial;
 
-    public LimitMatcher(long limit)
+    public LimitMatcher(long limit, boolean partial)
     {
         this.limit = limit;
+        this.partial = partial;
     }
 
     @Override
@@ -39,7 +41,7 @@ public class LimitMatcher
         }
 
         LimitNode limitNode = (LimitNode) node;
-        return limitNode.getCount() == limit;
+        return limitNode.getCount() == limit && limitNode.isPartial() == partial;
     }
 
     @Override

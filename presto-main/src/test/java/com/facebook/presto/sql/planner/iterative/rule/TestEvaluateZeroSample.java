@@ -19,9 +19,10 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.values;
+import static com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder.constantExpressions;
 import static com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder.expression;
-import static com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder.expressions;
 
 public class TestEvaluateZeroSample
         extends BaseRuleTest
@@ -34,7 +35,7 @@ public class TestEvaluateZeroSample
                         p.sample(
                                 0.15,
                                 Type.BERNOULLI,
-                                p.values(p.symbol("a"))))
+                                p.values(p.variable("a"))))
                 .doesNotFire();
     }
 
@@ -49,10 +50,10 @@ public class TestEvaluateZeroSample
                                 p.filter(
                                         expression("b > 5"),
                                         p.values(
-                                                ImmutableList.of(p.symbol("a"), p.symbol("b")),
+                                                ImmutableList.of(p.variable("a"), p.variable("b")),
                                                 ImmutableList.of(
-                                                        expressions("1", "10"),
-                                                        expressions("2", "11"))))))
+                                                        constantExpressions(BIGINT, 1L, 10L),
+                                                        constantExpressions(BIGINT, 2L, 11L))))))
                 // TODO: verify contents
                 .matches(values(ImmutableMap.of()));
     }

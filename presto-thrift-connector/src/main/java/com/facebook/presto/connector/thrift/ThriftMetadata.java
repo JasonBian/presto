@@ -13,12 +13,11 @@
  */
 package com.facebook.presto.connector.thrift;
 
+import com.facebook.drift.TException;
+import com.facebook.drift.client.DriftClient;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.connector.thrift.annotations.ForMetadataRefresh;
-import com.facebook.presto.connector.thrift.api.PrestoThriftNullableSchemaName;
-import com.facebook.presto.connector.thrift.api.PrestoThriftNullableTableMetadata;
-import com.facebook.presto.connector.thrift.api.PrestoThriftSchemaTableName;
-import com.facebook.presto.connector.thrift.api.PrestoThriftService;
-import com.facebook.presto.connector.thrift.api.PrestoThriftServiceException;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorResolvedIndex;
@@ -34,14 +33,15 @@ import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.TableNotFoundException;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.thrift.api.connector.PrestoThriftNullableSchemaName;
+import com.facebook.presto.thrift.api.connector.PrestoThriftNullableTableMetadata;
+import com.facebook.presto.thrift.api.connector.PrestoThriftSchemaTableName;
+import com.facebook.presto.thrift.api.connector.PrestoThriftService;
+import com.facebook.presto.thrift.api.connector.PrestoThriftServiceException;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableList;
-import io.airlift.drift.TException;
-import io.airlift.drift.client.DriftClient;
 import io.airlift.units.Duration;
 
 import javax.inject.Inject;
@@ -176,7 +176,7 @@ public class ThriftMetadata
         ThriftTableHandle table = (ThriftTableHandle) tableHandle;
         ThriftTableMetadata tableMetadata = getRequiredTableMetadata(new SchemaTableName(table.getSchemaName(), table.getTableName()));
         if (tableMetadata.containsIndexableColumns(indexableColumns)) {
-            return Optional.of(new ConnectorResolvedIndex(new ThriftIndexHandle(tableMetadata.getSchemaTableName(), tupleDomain), tupleDomain));
+            return Optional.of(new ConnectorResolvedIndex(new ThriftIndexHandle(tableMetadata.getSchemaTableName(), tupleDomain, session), tupleDomain));
         }
         else {
             return Optional.empty();

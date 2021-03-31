@@ -14,6 +14,7 @@
 package com.facebook.presto.sql.query;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.sql.planner.assertions.PlanAssert;
 import com.facebook.presto.sql.planner.assertions.PlanMatchPattern;
@@ -27,9 +28,9 @@ import java.io.Closeable;
 import java.util.List;
 import java.util.function.Consumer;
 
+import static com.facebook.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.base.Strings.nullToEmpty;
-import static io.airlift.testing.Assertions.assertEqualsIgnoreOrder;
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.fail;
@@ -52,6 +53,11 @@ class QueryAssertions
         runner = new LocalQueryRunner(session);
     }
 
+    public QueryRunner getQueryRunner()
+    {
+        return runner;
+    }
+
     public void assertFails(@Language("SQL") String sql, @Language("RegExp") String expectedMessageRegExp)
     {
         try {
@@ -72,7 +78,7 @@ class QueryAssertions
             Consumer<Plan> planValidator)
     {
         assertQuery(actual, expected);
-        Plan plan = runner.createPlan(runner.getDefaultSession(), actual);
+        Plan plan = runner.createPlan(runner.getDefaultSession(), actual, WarningCollector.NOOP);
         PlanAssert.assertPlan(runner.getDefaultSession(), runner.getMetadata(), runner.getStatsCalculator(), plan, pattern);
         planValidator.accept(plan);
     }

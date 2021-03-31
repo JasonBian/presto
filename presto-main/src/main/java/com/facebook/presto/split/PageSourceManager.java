@@ -14,16 +14,23 @@
 package com.facebook.presto.split;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.FixedPageSource;
+import com.facebook.presto.spi.SplitContext;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
+import com.google.common.collect.ImmutableList;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.function.Supplier;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -47,13 +54,38 @@ public class PageSourceManager
     }
 
     @Override
-    public ConnectorPageSource createPageSource(Session session, Split split, List<ColumnHandle> columns)
+    public ConnectorPageSource createPageSource(Session session, Split split, TableHandle table, List<ColumnHandle> columns)
     {
         requireNonNull(split, "split is null");
         requireNonNull(columns, "columns is null");
 
+        Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilter = table.getDynamicFilter();
+
+        // directly return the result if the given constraint is always false
+        if (dynamicFilter.isPresent() && dynamicFilter.get().get().isNone()) {
+            return new FixedPageSource(ImmutableList.of());
+        }
+
+        if (dynamicFilter.isPresent()) {
+            split = new Split(
+                    split.getConnectorId(),
+                    split.getTransactionHandle(),
+                    split.getConnectorSplit(),
+                    split.getLifespan(),
+                    new SplitContext(split.getSplitContext().isCacheable(), dynamicFilter.get().get()));
+        }
+
         ConnectorSession connectorSession = session.toConnectorSession(split.getConnectorId());
-        return getPageSourceProvider(split).createPageSource(split.getTransactionHandle(), connectorSession, split.getConnectorSplit(), columns);
+        if (table.getLayout().isPresent()) {
+            return getPageSourceProvider(split).createPageSource(
+                    split.getTransactionHandle(),
+                    connectorSession,
+                    split.getConnectorSplit(),
+                    table.getLayout().get(),
+                    columns,
+                    split.getSplitContext());
+        }
+        return getPageSourceProvider(split).createPageSource(split.getTransactionHandle(), connectorSession, split.getConnectorSplit(), columns, split.getSplitContext());
     }
 
     private ConnectorPageSourceProvider getPageSourceProvider(Split split)

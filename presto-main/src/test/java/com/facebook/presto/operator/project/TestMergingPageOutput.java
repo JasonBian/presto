@@ -13,20 +13,21 @@
  */
 package com.facebook.presto.operator.project;
 
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 
 import static com.facebook.presto.SequencePageBuilder.createSequencePage;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.execution.buffer.PageSplitterUtil.splitPage;
 import static com.facebook.presto.operator.PageAssertions.assertPageEquals;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.RealType.REAL;
 import static com.google.common.collect.Iterators.transform;
 import static java.lang.Math.toIntExact;
 import static org.testng.Assert.assertFalse;
@@ -48,7 +49,7 @@ public class TestMergingPageOutput
         assertTrue(output.needsInput());
         assertNull(output.getOutput());
 
-        output.addInput(createPageProcessorOutput(page));
+        output.addInput(createPagesIterator(page));
         assertFalse(output.needsInput());
         assertSame(output.getOutput(), page);
     }
@@ -63,7 +64,7 @@ public class TestMergingPageOutput
         assertTrue(output.needsInput());
         assertNull(output.getOutput());
 
-        output.addInput(createPageProcessorOutput(page));
+        output.addInput(createPagesIterator(page));
         assertFalse(output.needsInput());
         assertSame(output.getOutput(), page);
     }
@@ -80,12 +81,12 @@ public class TestMergingPageOutput
         assertTrue(output.needsInput());
         assertNull(output.getOutput());
 
-        output.addInput(createPageProcessorOutput(splits.get(0)));
+        output.addInput(createPagesIterator(splits.get(0)));
         assertFalse(output.needsInput());
         assertNull(output.getOutput());
         assertTrue(output.needsInput());
 
-        output.addInput(createPageProcessorOutput(splits.get(1)));
+        output.addInput(createPagesIterator(splits.get(1)));
         assertFalse(output.needsInput());
         assertNull(output.getOutput());
 
@@ -106,12 +107,12 @@ public class TestMergingPageOutput
         assertTrue(output.needsInput());
         assertNull(output.getOutput());
 
-        output.addInput(createPageProcessorOutput(smallPage));
+        output.addInput(createPagesIterator(smallPage));
         assertFalse(output.needsInput());
         assertNull(output.getOutput());
         assertTrue(output.needsInput());
 
-        output.addInput(createPageProcessorOutput(bigPage));
+        output.addInput(createPagesIterator(bigPage));
         assertFalse(output.needsInput());
         assertPageEquals(TYPES, output.getOutput(), smallPage);
         assertFalse(output.needsInput());
@@ -131,28 +132,27 @@ public class TestMergingPageOutput
         assertTrue(output.needsInput());
         assertNull(output.getOutput());
 
-        output.addInput(createPageProcessorOutput(splits.get(0)));
+        output.addInput(createPagesIterator(splits.get(0)));
         assertFalse(output.needsInput());
         assertNull(output.getOutput());
         assertTrue(output.needsInput());
 
-        output.addInput(createPageProcessorOutput(splits.get(1)));
+        output.addInput(createPagesIterator(splits.get(1)));
         assertFalse(output.needsInput());
         assertPageEquals(types, output.getOutput(), page);
 
-        output.addInput(createPageProcessorOutput(splits.get(0), splits.get(1)));
+        output.addInput(createPagesIterator(splits.get(0), splits.get(1)));
         assertFalse(output.needsInput());
         assertPageEquals(types, output.getOutput(), page);
     }
 
-    private static PageProcessorOutput createPageProcessorOutput(Page... pages)
+    private static Iterator<Optional<Page>> createPagesIterator(Page... pages)
     {
-        return createPageProcessorOutput(ImmutableList.copyOf(pages));
+        return createPagesIterator(ImmutableList.copyOf(pages));
     }
 
-    private static PageProcessorOutput createPageProcessorOutput(List<Page> pages)
+    private static Iterator<Optional<Page>> createPagesIterator(List<Page> pages)
     {
-        long retainedSizeInBytes = pages.stream().mapToLong(Page::getRetainedSizeInBytes).sum();
-        return new PageProcessorOutput(() -> retainedSizeInBytes, transform(pages.iterator(), Optional::of));
+        return transform(pages.iterator(), Optional::of);
     }
 }

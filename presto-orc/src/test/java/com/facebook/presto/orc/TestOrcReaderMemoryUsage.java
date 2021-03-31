@@ -13,18 +13,12 @@
  */
 package com.facebook.presto.orc;
 
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.metadata.CompressionKind;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.function.OperatorType;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.base.Strings;
-import com.google.common.collect.ImmutableList;
 import org.apache.hadoop.hive.ql.exec.FileSinkOperator;
 import org.apache.hadoop.hive.ql.io.orc.OrcSerde;
 import org.apache.hadoop.hive.serde2.SerDeException;
@@ -38,6 +32,11 @@ import java.io.IOException;
 import java.lang.invoke.MethodHandle;
 import java.util.HashMap;
 
+import static com.facebook.airlift.testing.Assertions.assertGreaterThan;
+import static com.facebook.presto.common.block.MethodHandleUtil.compose;
+import static com.facebook.presto.common.block.MethodHandleUtil.nativeValueGetter;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
 import static com.facebook.presto.orc.OrcReader.MAX_BATCH_SIZE;
@@ -45,32 +44,19 @@ import static com.facebook.presto.orc.OrcTester.Format.ORC_12;
 import static com.facebook.presto.orc.OrcTester.createCustomOrcRecordReader;
 import static com.facebook.presto.orc.OrcTester.createOrcRecordWriter;
 import static com.facebook.presto.orc.OrcTester.createSettableStructObjectInspector;
-import static com.facebook.presto.spi.block.MethodHandleUtil.compose;
-import static com.facebook.presto.spi.block.MethodHandleUtil.nativeValueGetter;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static io.airlift.testing.Assertions.assertGreaterThan;
-import static io.airlift.testing.Assertions.assertGreaterThanOrEqual;
+import static com.facebook.presto.testing.TestingEnvironment.getOperatorMethodHandle;
 import static org.testng.Assert.assertEquals;
 
 public class TestOrcReaderMemoryUsage
 {
-    private static final TypeManager TYPE_MANAGER = new TypeRegistry();
-
-    public TestOrcReaderMemoryUsage()
-    {
-        // Associate TYPE_MANAGER with a function registry.
-        new FunctionRegistry(TYPE_MANAGER, new BlockEncodingManager(TYPE_MANAGER), new FeaturesConfig());
-    }
-
     @Test
     public void testVarcharTypeWithoutNulls()
             throws Exception
     {
         int rows = 5000;
-        OrcRecordReader reader = null;
+        OrcBatchRecordReader reader = null;
         try (TempFile tempFile = createSingleColumnVarcharFile(rows, 10)) {
-            reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, VARCHAR, INITIAL_BATCH_SIZE);
+            reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, VARCHAR, INITIAL_BATCH_SIZE, false, false);
             assertInitialRetainedSizes(reader, rows);
 
             long stripeReaderRetainedSize = reader.getCurrentStripeRetainedSizeInBytes();
@@ -84,7 +70,7 @@ public class TestOrcReaderMemoryUsage
                     break;
                 }
 
-                Block block = reader.readBlock(BIGINT, 0);
+                Block block = reader.readBlock(0);
                 assertEquals(block.getPositionCount(), batchSize);
 
                 // We only verify the memory usage when the batchSize reaches MAX_BATCH_SIZE as batchSize may be
@@ -95,12 +81,11 @@ public class TestOrcReaderMemoryUsage
 
                 // StripeReader memory should increase after reading a block.
                 assertGreaterThan(reader.getCurrentStripeRetainedSizeInBytes(), stripeReaderRetainedSize);
-                // We also account for the StreamReader local buffers. For SliceDictionaryStreamReader, there are two
-                // buffers: isNullVector and inDictionaryVector, and each buffer has 1024 boolean values.
-                assertGreaterThanOrEqual(reader.getStreamReaderRetainedSizeInBytes() - streamReaderRetainedSize, 2048L);
-                // The total retained size and system memory usage should be strictly larger than 2048L because of the instance sizes.
-                assertGreaterThan(reader.getRetainedSizeInBytes() - readerRetainedSize, 2048L);
-                assertGreaterThan(reader.getSystemMemoryUsage() - readerSystemMemoryUsage, 2048L);
+                // SliceDictionaryBatchStreamReader uses stripeDictionaryLength local buffer.
+                assertEquals(reader.getStreamReaderRetainedSizeInBytes() - streamReaderRetainedSize, 49L);
+                // The total retained size and system memory usage should be greater than 0 byte because of the instance sizes.
+                assertGreaterThan(reader.getRetainedSizeInBytes() - readerRetainedSize, 0L);
+                assertGreaterThan(reader.getSystemMemoryUsage() - readerSystemMemoryUsage, 0L);
             }
         }
         finally {
@@ -116,9 +101,9 @@ public class TestOrcReaderMemoryUsage
             throws Exception
     {
         int rows = 10000;
-        OrcRecordReader reader = null;
+        OrcBatchRecordReader reader = null;
         try (TempFile tempFile = createSingleColumnFileWithNullValues(rows)) {
-            reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, INITIAL_BATCH_SIZE);
+            reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, BIGINT, INITIAL_BATCH_SIZE, false, false);
             assertInitialRetainedSizes(reader, rows);
 
             long stripeReaderRetainedSize = reader.getCurrentStripeRetainedSizeInBytes();
@@ -132,7 +117,7 @@ public class TestOrcReaderMemoryUsage
                     break;
                 }
 
-                Block block = reader.readBlock(BIGINT, 0);
+                Block block = reader.readBlock(0);
                 assertEquals(block.getPositionCount(), batchSize);
 
                 // We only verify the memory usage when the batchSize reaches MAX_BATCH_SIZE as batchSize may be
@@ -143,12 +128,11 @@ public class TestOrcReaderMemoryUsage
 
                 // StripeReader memory should increase after reading a block.
                 assertGreaterThan(reader.getCurrentStripeRetainedSizeInBytes(), stripeReaderRetainedSize);
-                // We also account for the StreamReader local buffers. For LongDirectStreamReader, there is one
-                // buffer isNullVector, and it has 1024 boolean values.
-                assertGreaterThanOrEqual(reader.getStreamReaderRetainedSizeInBytes() - streamReaderRetainedSize, 1024L);
-                // The total retained size and system memory usage should be strictly larger than 2048L because of the instance sizes.
-                assertGreaterThan(reader.getRetainedSizeInBytes() - readerRetainedSize, 1024L);
-                assertGreaterThan(reader.getSystemMemoryUsage() - readerSystemMemoryUsage, 1024L);
+                // There are no local buffers needed.
+                assertEquals(reader.getStreamReaderRetainedSizeInBytes() - streamReaderRetainedSize, 0L);
+                // The total retained size and system memory usage should be strictly larger than 0L because of the instance sizes.
+                assertGreaterThan(reader.getRetainedSizeInBytes() - readerRetainedSize, 0L);
+                assertGreaterThan(reader.getSystemMemoryUsage() - readerSystemMemoryUsage, 0L);
             }
         }
         finally {
@@ -166,24 +150,21 @@ public class TestOrcReaderMemoryUsage
         Type keyType = BIGINT;
         Type valueType = BIGINT;
 
-        MethodHandle keyNativeEquals = TYPE_MANAGER.resolveOperator(OperatorType.EQUAL, ImmutableList.of(keyType, keyType));
-        MethodHandle keyBlockNativeEquals = compose(keyNativeEquals, nativeValueGetter(keyType));
+        MethodHandle keyNativeEquals = getOperatorMethodHandle(OperatorType.EQUAL, keyType, keyType);
         MethodHandle keyBlockEquals = compose(keyNativeEquals, nativeValueGetter(keyType), nativeValueGetter(keyType));
-        MethodHandle keyNativeHashCode = TYPE_MANAGER.resolveOperator(OperatorType.HASH_CODE, ImmutableList.of(keyType));
+        MethodHandle keyNativeHashCode = getOperatorMethodHandle(OperatorType.HASH_CODE, keyType);
         MethodHandle keyBlockHashCode = compose(keyNativeHashCode, nativeValueGetter(keyType));
 
         MapType mapType = new MapType(
                 keyType,
                 valueType,
-                keyBlockNativeEquals,
                 keyBlockEquals,
-                keyNativeHashCode,
                 keyBlockHashCode);
 
         int rows = 10000;
-        OrcRecordReader reader = null;
+        OrcBatchRecordReader reader = null;
         try (TempFile tempFile = createSingleColumnMapFileWithNullValues(mapType, rows)) {
-            reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, mapType, INITIAL_BATCH_SIZE);
+            reader = createCustomOrcRecordReader(tempFile, ORC, OrcPredicate.TRUE, mapType, INITIAL_BATCH_SIZE, false, false);
             assertInitialRetainedSizes(reader, rows);
 
             long stripeReaderRetainedSize = reader.getCurrentStripeRetainedSizeInBytes();
@@ -197,7 +178,7 @@ public class TestOrcReaderMemoryUsage
                     break;
                 }
 
-                Block block = reader.readBlock(mapType, 0);
+                Block block = reader.readBlock(0);
                 assertEquals(block.getPositionCount(), batchSize);
 
                 // We only verify the memory usage when the batchSize reaches MAX_BATCH_SIZE as batchSize may be
@@ -208,13 +189,11 @@ public class TestOrcReaderMemoryUsage
 
                 // StripeReader memory should increase after reading a block.
                 assertGreaterThan(reader.getCurrentStripeRetainedSizeInBytes(), stripeReaderRetainedSize);
-                // We also account the StreamReader local buffers. For MapStreamReader, there is a
-                // keyStreamReader(LongStreamReader) and a valueStreamReader(LongStreamReader), and each of them is
-                // holding a isNullVector buffer which has 1024 boolean values.
-                assertGreaterThanOrEqual(reader.getStreamReaderRetainedSizeInBytes() - streamReaderRetainedSize, 2048L);
-                // The total retained size and system memory usage should be strictly larger than 2048L because of the instance sizes.
-                assertGreaterThan(reader.getRetainedSizeInBytes() - readerRetainedSize, 2048L);
-                assertGreaterThan(reader.getSystemMemoryUsage() - readerSystemMemoryUsage, 2048L);
+                // There are no local buffers needed.
+                assertEquals(reader.getStreamReaderRetainedSizeInBytes() - streamReaderRetainedSize, 0L);
+                // The total retained size and system memory usage should be strictly larger than 0L because of the instance sizes.
+                assertGreaterThan(reader.getRetainedSizeInBytes() - readerRetainedSize, 0L);
+                assertGreaterThan(reader.getSystemMemoryUsage() - readerSystemMemoryUsage, 0L);
             }
         }
         finally {
@@ -311,7 +290,7 @@ public class TestOrcReaderMemoryUsage
         return tempFile;
     }
 
-    private static void assertInitialRetainedSizes(OrcRecordReader reader, int rows)
+    private static void assertInitialRetainedSizes(OrcBatchRecordReader reader, int rows)
     {
         assertEquals(reader.getReaderRowCount(), rows);
         assertEquals(reader.getReaderPosition(), 0);
@@ -323,7 +302,7 @@ public class TestOrcReaderMemoryUsage
         assertEquals(reader.getSystemMemoryUsage(), 0);
     }
 
-    private static void assertClosedRetainedSizes(OrcRecordReader reader)
+    private static void assertClosedRetainedSizes(OrcBatchRecordReader reader)
     {
         assertEquals(reader.getCurrentStripeRetainedSizeInBytes(), 0);
         // after close() we still account for the StreamReader instance sizes.

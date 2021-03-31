@@ -14,15 +14,15 @@
 package com.facebook.presto.atop;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.spi.type.TimeZoneKey;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
 import java.util.TimeZone;
 
+import static com.facebook.airlift.testing.Closeables.closeAllSuppress;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
-import static io.airlift.testing.Closeables.closeAllSuppress;
 
 public final class LocalAtopQueryRunner
 {

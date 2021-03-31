@@ -13,22 +13,24 @@
  */
 package com.facebook.presto.mongodb;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
 import com.mongodb.client.MongoCursor;
 import io.airlift.slice.Slice;
 import org.bson.Document;
 import org.bson.types.Binary;
 import org.bson.types.ObjectId;
-import org.joda.time.chrono.ISOChronology;
 
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.temporal.ChronoField;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Date;
@@ -36,17 +38,17 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.mongodb.ObjectIdType.OBJECT_ID;
 import static com.facebook.presto.mongodb.TypeUtils.isArrayType;
 import static com.facebook.presto.mongodb.TypeUtils.isMapType;
 import static com.facebook.presto.mongodb.TypeUtils.isRowType;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
 import static io.airlift.slice.Slices.utf8Slice;
@@ -56,17 +58,18 @@ import static java.util.stream.Collectors.toList;
 public class MongoPageSource
         implements ConnectorPageSource
 {
-    private static final ISOChronology UTC_CHRONOLOGY = ISOChronology.getInstanceUTC();
+    private static final ZoneId UTC_ZONE_ID = ZoneId.of("UTC");
     private static final int ROWS_PER_REQUEST = 1024;
 
     private final MongoCursor<Document> cursor;
     private final List<String> columnNames;
     private final List<Type> columnTypes;
     private Document currentDoc;
-    private long count;
+    private long completedBytes;
+    private long completedPositions;
     private boolean finished;
 
-    private PageBuilder pageBuilder;
+    private final PageBuilder pageBuilder;
 
     public MongoPageSource(
             MongoSession mongoSession,
@@ -84,7 +87,13 @@ public class MongoPageSource
     @Override
     public long getCompletedBytes()
     {
-        return count;
+        return completedBytes;
+    }
+
+    @Override
+    public long getCompletedPositions()
+    {
+        return completedPositions;
     }
 
     @Override
@@ -109,14 +118,13 @@ public class MongoPageSource
     public Page getNextPage()
     {
         verify(pageBuilder.isEmpty());
-        count = 0;
+
         for (int i = 0; i < ROWS_PER_REQUEST; i++) {
             if (!cursor.hasNext()) {
                 finished = true;
                 break;
             }
             currentDoc = cursor.next();
-            count++;
 
             pageBuilder.declarePosition();
             for (int column = 0; column < columnTypes.size(); column++) {
@@ -127,6 +135,10 @@ public class MongoPageSource
 
         Page page = pageBuilder.build();
         pageBuilder.reset();
+
+        completedBytes += page.getSizeInBytes();
+        completedPositions += page.getPositionCount();
+
         return page;
     }
 
@@ -154,7 +166,7 @@ public class MongoPageSource
                     type.writeLong(output, TimeUnit.MILLISECONDS.toDays(utcMillis));
                 }
                 else if (type.equals(TIME)) {
-                    type.writeLong(output, UTC_CHRONOLOGY.millisOfDay().get(((Date) value).getTime()));
+                    type.writeLong(output, ZonedDateTime.ofInstant(((Date) value).toInstant(), UTC_ZONE_ID).get(ChronoField.MILLI_OF_DAY));
                 }
                 else if (type.equals(TIMESTAMP)) {
                     type.writeLong(output, ((Date) value).getTime());

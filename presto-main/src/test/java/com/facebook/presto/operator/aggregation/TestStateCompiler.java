@@ -21,23 +21,23 @@ import com.facebook.presto.array.IntBigArray;
 import com.facebook.presto.array.LongBigArray;
 import com.facebook.presto.array.ReferenceCountMap;
 import com.facebook.presto.array.SliceBigArray;
+import com.facebook.presto.bytecode.DynamicClassLoader;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.aggregation.state.LongState;
 import com.facebook.presto.operator.aggregation.state.NullableLongState;
 import com.facebook.presto.operator.aggregation.state.StateCompiler;
 import com.facebook.presto.operator.aggregation.state.VarianceState;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.AccumulatorState;
 import com.facebook.presto.spi.function.AccumulatorStateFactory;
 import com.facebook.presto.spi.function.AccumulatorStateSerializer;
 import com.facebook.presto.spi.function.GroupedAccumulatorState;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.util.Reflection;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.bytecode.DynamicClassLoader;
 import io.airlift.slice.Slice;
 import org.openjdk.jol.info.ClassLayout;
 import org.testng.annotations.Test;
@@ -47,13 +47,13 @@ import java.lang.reflect.Field;
 import java.util.Map;
 
 import static com.facebook.presto.block.BlockAssertions.createLongsBlock;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.util.StructuralTestUtil.mapBlockOf;
 import static com.facebook.presto.util.StructuralTestUtil.mapType;
 import static io.airlift.slice.Slices.utf8Slice;
@@ -235,8 +235,8 @@ public class TestStateCompiler
         assertEquals(deserializedState.getSlice(), singleState.getSlice());
         assertEquals(deserializedState.getAnotherSlice(), singleState.getAnotherSlice());
         assertEquals(deserializedState.getYetAnotherSlice(), singleState.getYetAnotherSlice());
-        assertEquals(deserializedState.getBlock().getLong(0, 0), singleState.getBlock().getLong(0, 0));
-        assertEquals(deserializedState.getAnotherBlock().getLong(0, 0), singleState.getAnotherBlock().getLong(0, 0));
+        assertEquals(deserializedState.getBlock().getLong(0), singleState.getBlock().getLong(0));
+        assertEquals(deserializedState.getAnotherBlock().getLong(0), singleState.getAnotherBlock().getLong(0));
         assertEquals(deserializedState.getAnotherBlock().getSlice(1, 0, 9), singleState.getAnotherBlock().getSlice(1, 0, 9));
     }
 
@@ -290,7 +290,7 @@ public class TestStateCompiler
         return overhead;
     }
 
-    @Test
+    @Test(invocationCount = 100, successPercentage = 90)
     public void testComplexStateEstimatedSize()
     {
         Map<String, Type> fieldMap = ImmutableMap.of("Block", new ArrayType(BIGINT), "AnotherBlock", mapType(BIGINT, VARCHAR));

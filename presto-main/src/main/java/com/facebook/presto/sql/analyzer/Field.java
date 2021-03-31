@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.sql.analyzer;
 
-import com.facebook.presto.metadata.QualifiedObjectName;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.sql.tree.QualifiedName;
 
 import java.util.Optional;
@@ -62,7 +62,6 @@ public class Field
         requireNonNull(name, "name is null");
         requireNonNull(type, "type is null");
         requireNonNull(originTable, "originTable is null");
-        requireNonNull(aliased, "aliased is null");
 
         return new Field(Optional.of(relationAlias), name, type, hidden, originTable, originColumn, aliased);
     }
@@ -74,7 +73,6 @@ public class Field
         requireNonNull(type, "type is null");
         requireNonNull(originTable, "originTable is null");
         requireNonNull(originColumnName, "originColumnName is null");
-        requireNonNull(aliased, "aliased is null");
 
         this.relationAlias = relationAlias;
         this.name = name;

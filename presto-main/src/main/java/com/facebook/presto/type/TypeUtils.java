@@ -13,31 +13,35 @@
  */
 package com.facebook.presto.type;
 
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.FixedWidthType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.operator.HashGenerator;
 import com.facebook.presto.operator.InterpretedHashGenerator;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.FixedWidthType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 
 import java.lang.invoke.MethodHandle;
 import java.util.List;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 public final class TypeUtils
 {
-    public static final int NULL_HASH_CODE = 0;
+    public static final long NULL_HASH_CODE = 0;
 
     private TypeUtils()
     {
@@ -97,7 +101,13 @@ public final class TypeUtils
         if (leftIsNull || rightIsNull) {
             return leftIsNull && rightIsNull;
         }
-        return type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition);
+
+        try {
+            return type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition);
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
+        }
     }
 
     public static Type resolveType(TypeSignature typeName, TypeManager typeManager)
@@ -105,10 +115,26 @@ public final class TypeUtils
         return typeManager.getType(typeName);
     }
 
-    public static List<Type> resolveTypes(List<TypeSignature> typeNames, TypeManager typeManager)
+    public static boolean isIntegralType(TypeSignature typeName, FunctionAndTypeManager functionAndTypeManager)
+    {
+        switch (typeName.getBase()) {
+            case StandardTypes.BIGINT:
+            case StandardTypes.INTEGER:
+            case StandardTypes.SMALLINT:
+            case StandardTypes.TINYINT:
+                return true;
+            case StandardTypes.DECIMAL:
+                DecimalType decimalType = (DecimalType) resolveType(typeName, functionAndTypeManager);
+                return decimalType.getScale() == 0;
+            default:
+                return false;
+        }
+    }
+
+    public static List<Type> resolveTypes(List<TypeSignature> typeNames, FunctionAndTypeManager functionAndTypeManager)
     {
         return typeNames.stream()
-                .map((TypeSignature type) -> resolveType(type, typeManager))
+                .map((TypeSignature type) -> resolveType(type, functionAndTypeManager))
                 .collect(toImmutableList());
     }
 

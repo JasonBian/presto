@@ -13,7 +13,12 @@
  */
 package com.facebook.presto.server;
 
-import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.airlift.log.Logger;
+import com.facebook.airlift.node.NodeInfo;
+import com.facebook.presto.common.block.BlockEncoding;
+import com.facebook.presto.common.block.BlockEncodingManager;
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.connector.ConnectorManager;
 import com.facebook.presto.eventlistener.EventListenerManager;
 import com.facebook.presto.execution.resourceGroups.ResourceGroupManager;
@@ -21,21 +26,19 @@ import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.security.AccessControlManager;
 import com.facebook.presto.server.security.PasswordAuthenticatorManager;
 import com.facebook.presto.spi.Plugin;
-import com.facebook.presto.spi.block.BlockEncoding;
 import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.connector.ConnectorFactory;
 import com.facebook.presto.spi.eventlistener.EventListenerFactory;
+import com.facebook.presto.spi.function.FunctionNamespaceManagerFactory;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupConfigurationManagerFactory;
 import com.facebook.presto.spi.security.PasswordAuthenticatorFactory;
 import com.facebook.presto.spi.security.SystemAccessControlFactory;
 import com.facebook.presto.spi.session.SessionPropertyConfigurationManagerFactory;
-import com.facebook.presto.spi.type.ParametricType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.type.TypeRegistry;
+import com.facebook.presto.spi.storage.TempStorageFactory;
+import com.facebook.presto.storage.TempStorageManager;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
-import io.airlift.log.Logger;
-import io.airlift.node.NodeInfo;
 import io.airlift.resolver.ArtifactResolver;
 import io.airlift.resolver.DefaultArtifact;
 import org.sonatype.aether.artifact.Artifact;
@@ -63,30 +66,45 @@ import static java.util.Objects.requireNonNull;
 @ThreadSafe
 public class PluginManager
 {
+    // When generating code the AfterBurner module loads classes with *some* classloader.
+    // When the AfterBurner module is configured not to use the value classloader
+    // (e.g., AfterBurner().setUseValueClassLoader(false)) AppClassLoader is used for loading those
+    // classes. Otherwise, the PluginClassLoader is used, which is the default behavior.
+    // Therefore, in the former case Afterburner won't be able to load the connector classes
+    // as AppClassLoader doesn't see them, and in the latter case the PluginClassLoader won't be
+    // able to load the AfterBurner classes themselves. So, our solution is to use the PluginClassLoader
+    // and whitelist the AfterBurner classes here, so that the PluginClassLoader can load the
+    // AfterBurner classes.
     private static final ImmutableList<String> SPI_PACKAGES = ImmutableList.<String>builder()
             .add("com.facebook.presto.spi.")
             .add("com.fasterxml.jackson.annotation.")
+            .add("com.fasterxml.jackson.module.afterburner.")
             .add("io.airlift.slice.")
             .add("io.airlift.units.")
             .add("org.openjdk.jol.")
+            .add("com.facebook.presto.common")
+            .add("com.facebook.drift.annotations.")
+            .add("com.facebook.drift.TException")
+            .add("com.facebook.drift.TApplicationException")
             .build();
 
     private static final Logger log = Logger.get(PluginManager.class);
 
     private final ConnectorManager connectorManager;
     private final Metadata metadata;
-    private final ResourceGroupManager resourceGroupManager;
+    private final ResourceGroupManager<?> resourceGroupManager;
     private final AccessControlManager accessControlManager;
     private final PasswordAuthenticatorManager passwordAuthenticatorManager;
     private final EventListenerManager eventListenerManager;
     private final BlockEncodingManager blockEncodingManager;
-    private final SessionSupplier sessionSupplier;
-    private final TypeRegistry typeRegistry;
+    private final TempStorageManager tempStorageManager;
+    private final SessionPropertyDefaults sessionPropertyDefaults;
     private final ArtifactResolver resolver;
     private final File installedPluginsDir;
     private final List<String> plugins;
     private final AtomicBoolean pluginsLoading = new AtomicBoolean();
     private final AtomicBoolean pluginsLoaded = new AtomicBoolean();
+    private final ImmutableSet<String> disabledConnectors;
 
     @Inject
     public PluginManager(
@@ -94,13 +112,13 @@ public class PluginManager
             PluginManagerConfig config,
             ConnectorManager connectorManager,
             Metadata metadata,
-            ResourceGroupManager resourceGroupManager,
+            ResourceGroupManager<?> resourceGroupManager,
             AccessControlManager accessControlManager,
             PasswordAuthenticatorManager passwordAuthenticatorManager,
             EventListenerManager eventListenerManager,
             BlockEncodingManager blockEncodingManager,
-            SessionSupplier sessionSupplier,
-            TypeRegistry typeRegistry)
+            TempStorageManager tempStorageManager,
+            SessionPropertyDefaults sessionPropertyDefaults)
     {
         requireNonNull(nodeInfo, "nodeInfo is null");
         requireNonNull(config, "config is null");
@@ -121,8 +139,9 @@ public class PluginManager
         this.passwordAuthenticatorManager = requireNonNull(passwordAuthenticatorManager, "passwordAuthenticatorManager is null");
         this.eventListenerManager = requireNonNull(eventListenerManager, "eventListenerManager is null");
         this.blockEncodingManager = requireNonNull(blockEncodingManager, "blockEncodingManager is null");
-        this.sessionSupplier = requireNonNull(sessionSupplier, "sessionSupplier is null");
-        this.typeRegistry = requireNonNull(typeRegistry, "typeRegistry is null");
+        this.tempStorageManager = requireNonNull(tempStorageManager, "tempStorageManager is null");
+        this.sessionPropertyDefaults = requireNonNull(sessionPropertyDefaults, "sessionPropertyDefaults is null");
+        this.disabledConnectors = requireNonNull(config.getDisabledConnectors(), "disabledConnectors is null");
     }
 
     public void loadPlugins()
@@ -182,27 +201,36 @@ public class PluginManager
 
         for (Type type : plugin.getTypes()) {
             log.info("Registering type %s", type.getTypeSignature());
-            typeRegistry.addType(type);
+            metadata.getFunctionAndTypeManager().addType(type);
         }
 
         for (ParametricType parametricType : plugin.getParametricTypes()) {
             log.info("Registering parametric type %s", parametricType.getName());
-            typeRegistry.addParametricType(parametricType);
+            metadata.getFunctionAndTypeManager().addParametricType(parametricType);
         }
 
         for (ConnectorFactory connectorFactory : plugin.getConnectorFactories()) {
+            if (disabledConnectors.contains(connectorFactory.getName())) {
+                log.info("Skipping disabled connector %s", connectorFactory.getName());
+                continue;
+            }
             log.info("Registering connector %s", connectorFactory.getName());
             connectorManager.addConnectorFactory(connectorFactory);
         }
 
         for (Class<?> functionClass : plugin.getFunctions()) {
             log.info("Registering functions from %s", functionClass.getName());
-            metadata.addFunctions(extractFunctions(functionClass));
+            metadata.registerBuiltInFunctions(extractFunctions(functionClass));
+        }
+
+        for (FunctionNamespaceManagerFactory functionNamespaceManagerFactory : plugin.getFunctionNamespaceManagerFactories()) {
+            log.info("Registering function namespace manager %s", functionNamespaceManagerFactory.getName());
+            metadata.getFunctionAndTypeManager().addFunctionNamespaceFactory(functionNamespaceManagerFactory);
         }
 
         for (SessionPropertyConfigurationManagerFactory sessionConfigFactory : plugin.getSessionPropertyConfigurationManagerFactories()) {
             log.info("Registering session property configuration manager %s", sessionConfigFactory.getName());
-            sessionSupplier.addConfigurationManager(sessionConfigFactory);
+            sessionPropertyDefaults.addConfigurationManagerFactory(sessionConfigFactory);
         }
 
         for (ResourceGroupConfigurationManagerFactory configurationManagerFactory : plugin.getResourceGroupConfigurationManagerFactories()) {
@@ -223,6 +251,11 @@ public class PluginManager
         for (EventListenerFactory eventListenerFactory : plugin.getEventListenerFactories()) {
             log.info("Registering event listener %s", eventListenerFactory.getName());
             eventListenerManager.addEventListenerFactory(eventListenerFactory);
+        }
+
+        for (TempStorageFactory tempStorageFactory : plugin.getTempStorageFactories()) {
+            log.info("Registering temp storage %s", tempStorageFactory.getName());
+            tempStorageManager.addTempStorageFactory(tempStorageFactory);
         }
     }
 

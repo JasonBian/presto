@@ -17,8 +17,14 @@ import java.net.URI;
 
 public interface Node
 {
+    String getHost();
+
     HostAddress getHostAndPort();
 
+    /**
+     * @deprecated Connectors should not access the HTTP endpoints of other nodes.
+     */
+    @Deprecated
     URI getHttpUri();
 
     String getNodeIdentifier();
@@ -26,4 +32,6 @@ public interface Node
     String getVersion();
 
     boolean isCoordinator();
+
+    boolean isResourceManager();
 }

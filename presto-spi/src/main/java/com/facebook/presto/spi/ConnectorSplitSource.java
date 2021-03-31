@@ -26,12 +26,17 @@ public interface ConnectorSplitSource
 {
     CompletableFuture<ConnectorSplitBatch> getNextBatch(ConnectorPartitionHandle partitionHandle, int maxSize);
 
+    default void rewind(ConnectorPartitionHandle partitionHandle)
+    {
+        throw new UnsupportedOperationException("rewind is not supported in this ConnectorSplitSource");
+    }
+
     @Override
     void close();
 
     /**
      * Returns whether any more {@link ConnectorSplit} may be produced.
-     *
+     * <p>
      * This method should only be called when there has been no invocation of getNextBatch,
      * or result Future of previous getNextBatch is done.
      * Calling this method at other time is not useful because the contract of such an invocation

@@ -13,28 +13,36 @@
  */
 package com.facebook.presto.sql.gen;
 
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.sql.relational.CallExpression;
-import com.facebook.presto.sql.relational.ConstantExpression;
-import com.facebook.presto.sql.relational.InputReferenceExpression;
-import com.facebook.presto.sql.relational.LambdaDefinitionExpression;
-import com.facebook.presto.sql.relational.RowExpression;
-import com.facebook.presto.sql.relational.RowExpressionVisitor;
-import com.facebook.presto.sql.relational.VariableReferenceExpression;
+import com.facebook.presto.bytecode.Access;
+import com.facebook.presto.bytecode.BytecodeBlock;
+import com.facebook.presto.bytecode.BytecodeNode;
+import com.facebook.presto.bytecode.ClassDefinition;
+import com.facebook.presto.bytecode.FieldDefinition;
+import com.facebook.presto.bytecode.MethodDefinition;
+import com.facebook.presto.bytecode.Parameter;
+import com.facebook.presto.bytecode.ParameterizedType;
+import com.facebook.presto.bytecode.Scope;
+import com.facebook.presto.bytecode.Variable;
+import com.facebook.presto.bytecode.expression.BytecodeExpression;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.operator.aggregation.AccumulatorCompiler;
+import com.facebook.presto.operator.aggregation.LambdaProvider;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.ConstantExpression;
+import com.facebook.presto.spi.relation.InputReferenceExpression;
+import com.facebook.presto.spi.relation.LambdaDefinitionExpression;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.RowExpressionVisitor;
+import com.facebook.presto.spi.relation.SpecialFormExpression;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Primitives;
-import io.airlift.bytecode.BytecodeBlock;
-import io.airlift.bytecode.BytecodeNode;
-import io.airlift.bytecode.ClassDefinition;
-import io.airlift.bytecode.MethodDefinition;
-import io.airlift.bytecode.Parameter;
-import io.airlift.bytecode.ParameterizedType;
-import io.airlift.bytecode.Scope;
-import io.airlift.bytecode.Variable;
-import io.airlift.bytecode.expression.BytecodeExpression;
 import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
@@ -43,20 +51,26 @@ import java.lang.reflect.Method;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
+import java.util.Set;
 
+import static com.facebook.presto.bytecode.Access.PRIVATE;
+import static com.facebook.presto.bytecode.Access.PUBLIC;
+import static com.facebook.presto.bytecode.Access.a;
+import static com.facebook.presto.bytecode.Parameter.arg;
+import static com.facebook.presto.bytecode.ParameterizedType.type;
+import static com.facebook.presto.bytecode.expression.BytecodeExpressions.constantFalse;
+import static com.facebook.presto.bytecode.expression.BytecodeExpressions.invokeDynamic;
 import static com.facebook.presto.spi.StandardErrorCode.COMPILER_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.sql.gen.BytecodeUtils.boxPrimitiveIfNecessary;
 import static com.facebook.presto.sql.gen.BytecodeUtils.unboxPrimitiveIfNecessary;
 import static com.facebook.presto.sql.gen.LambdaCapture.LAMBDA_CAPTURE_METHOD;
+import static com.facebook.presto.util.CompilerUtils.defineClass;
+import static com.facebook.presto.util.CompilerUtils.makeClassName;
 import static com.facebook.presto.util.Failures.checkCondition;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static io.airlift.bytecode.Access.PUBLIC;
-import static io.airlift.bytecode.Access.a;
-import static io.airlift.bytecode.Parameter.arg;
-import static io.airlift.bytecode.ParameterizedType.type;
-import static io.airlift.bytecode.expression.BytecodeExpressions.constantFalse;
-import static io.airlift.bytecode.expression.BytecodeExpressions.invokeDynamic;
+import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static java.util.Objects.requireNonNull;
 import static org.objectweb.asm.Type.getMethodType;
 import static org.objectweb.asm.Type.getType;
@@ -67,22 +81,137 @@ public class LambdaBytecodeGenerator
     {
     }
 
+    public static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            RowExpression expression,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions)
+    {
+        return generateMethodsForLambda(containerClassDefinition, callSiteBinder, cachedInstanceBinder, expression, metadata, sqlFunctionProperties, sessionFunctions, "");
+    }
+
+    public static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            RowExpression expression,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions,
+            String methodNamePrefix)
+    {
+        return generateMethodsForLambda(containerClassDefinition,
+                callSiteBinder,
+                cachedInstanceBinder,
+                ImmutableList.of(expression),
+                metadata,
+                sqlFunctionProperties,
+                sessionFunctions,
+                methodNamePrefix);
+    }
+
+    public static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            RowExpression expression,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions,
+            String methodNamePrefix,
+            Set<LambdaDefinitionExpression> existingCompiledLambdas)
+    {
+        return generateMethodsForLambda(containerClassDefinition,
+                callSiteBinder,
+                cachedInstanceBinder,
+                ImmutableList.of(expression),
+                metadata,
+                sqlFunctionProperties,
+                sessionFunctions,
+                methodNamePrefix,
+                existingCompiledLambdas);
+    }
+
+    public static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            List<RowExpression> expressions,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions,
+            String methodNamePrefix)
+    {
+        return generateMethodsForLambda(
+                containerClassDefinition,
+                callSiteBinder,
+                cachedInstanceBinder,
+                expressions,
+                metadata,
+                sqlFunctionProperties,
+                sessionFunctions,
+                methodNamePrefix,
+                ImmutableSet.of());
+    }
+
+    private static Map<LambdaDefinitionExpression, CompiledLambda> generateMethodsForLambda(
+            ClassDefinition containerClassDefinition,
+            CallSiteBinder callSiteBinder,
+            CachedInstanceBinder cachedInstanceBinder,
+            List<RowExpression> expressions,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions,
+            String methodNamePrefix,
+            Set<LambdaDefinitionExpression> existingCompiledLambdas)
+    {
+        Set<LambdaDefinitionExpression> lambdaExpressions = expressions.stream()
+                .map(LambdaExpressionExtractor::extractLambdaExpressions)
+                .flatMap(List::stream)
+                .filter(lambda -> !existingCompiledLambdas.contains(lambda))
+                .collect(toImmutableSet());
+        ImmutableMap.Builder<LambdaDefinitionExpression, CompiledLambda> compiledLambdaMap = ImmutableMap.builder();
+
+        int counter = existingCompiledLambdas.size();
+        for (LambdaDefinitionExpression lambdaExpression : lambdaExpressions) {
+            CompiledLambda compiledLambda = LambdaBytecodeGenerator.preGenerateLambdaExpression(
+                    lambdaExpression,
+                    methodNamePrefix + "lambda_" + counter,
+                    containerClassDefinition,
+                    compiledLambdaMap.build(),
+                    callSiteBinder,
+                    cachedInstanceBinder,
+                    metadata,
+                    sqlFunctionProperties,
+                    sessionFunctions);
+            compiledLambdaMap.put(lambdaExpression, compiledLambda);
+            counter++;
+        }
+
+        return compiledLambdaMap.build();
+    }
+
     /**
      * @return a MethodHandle field that represents the lambda expression
      */
-    public static CompiledLambda preGenerateLambdaExpression(
+    private static CompiledLambda preGenerateLambdaExpression(
             LambdaDefinitionExpression lambdaExpression,
             String methodName,
             ClassDefinition classDefinition,
             Map<LambdaDefinitionExpression, CompiledLambda> compiledLambdaMap,
             CallSiteBinder callSiteBinder,
             CachedInstanceBinder cachedInstanceBinder,
-            FunctionRegistry functionRegistry)
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions)
     {
         ImmutableList.Builder<Parameter> parameters = ImmutableList.builder();
         ImmutableMap.Builder<String, ParameterAndType> parameterMapBuilder = ImmutableMap.builder();
 
-        parameters.add(arg("session", ConnectorSession.class));
+        parameters.add(arg("properties", SqlFunctionProperties.class));
         for (int i = 0; i < lambdaExpression.getArguments().size(); i++) {
             Class<?> type = Primitives.wrap(lambdaExpression.getArgumentTypes().get(i).getJavaType());
             String argumentName = lambdaExpression.getArguments().get(i);
@@ -92,10 +221,13 @@ public class LambdaBytecodeGenerator
         }
 
         RowExpressionCompiler innerExpressionCompiler = new RowExpressionCompiler(
+                classDefinition,
                 callSiteBinder,
                 cachedInstanceBinder,
                 variableReferenceCompiler(parameterMapBuilder.build()),
-                functionRegistry,
+                metadata,
+                sqlFunctionProperties,
+                sessionFunctions,
                 compiledLambdaMap);
 
         return defineLambdaMethod(
@@ -119,7 +251,7 @@ public class LambdaBytecodeGenerator
 
         Scope scope = method.getScope();
         Variable wasNull = scope.declareVariable(boolean.class, "wasNull");
-        BytecodeNode compiledBody = innerExpressionCompiler.compile(lambda.getBody(), scope);
+        BytecodeNode compiledBody = innerExpressionCompiler.compile(lambda.getBody(), scope, Optional.empty());
         method.getBody()
                 .putVariable(wasNull, false)
                 .append(compiledBody)
@@ -160,7 +292,7 @@ public class LambdaBytecodeGenerator
         for (RowExpression captureExpression : captureExpressions) {
             Class<?> valueType = Primitives.wrap(captureExpression.getType().getJavaType());
             Variable valueVariable = scope.createTempVariable(valueType);
-            block.append(context.generate(captureExpression));
+            block.append(context.generate(captureExpression, Optional.empty()));
             block.append(boxPrimitiveIfNecessary(scope, valueType));
             block.putVariable(valueVariable);
             block.append(wasNull.set(constantFalse()));
@@ -168,7 +300,7 @@ public class LambdaBytecodeGenerator
         }
 
         List<BytecodeExpression> captureVariables = ImmutableList.<BytecodeExpression>builder()
-                .add(scope.getThis(), scope.getVariable("session"))
+                .add(scope.getThis(), scope.getVariable("properties"))
                 .addAll(captureVariableBuilder.build())
                 .build();
 
@@ -190,6 +322,86 @@ public class LambdaBytecodeGenerator
                         type(lambdaInterface),
                         captureVariables));
         return block;
+    }
+
+    public static Class<? extends LambdaProvider> compileLambdaProvider(LambdaDefinitionExpression lambdaExpression,
+            Metadata metadata,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions,
+            Class lambdaInterface)
+    {
+        ClassDefinition lambdaProviderClassDefinition = new ClassDefinition(
+                a(PUBLIC, Access.FINAL),
+                makeClassName("LambdaProvider"),
+                type(Object.class),
+                type(LambdaProvider.class));
+
+        FieldDefinition propertiesField = lambdaProviderClassDefinition.declareField(a(PRIVATE), "properties", SqlFunctionProperties.class);
+
+        CallSiteBinder callSiteBinder = new CallSiteBinder();
+        CachedInstanceBinder cachedInstanceBinder = new CachedInstanceBinder(lambdaProviderClassDefinition, callSiteBinder);
+
+        Map<LambdaDefinitionExpression, CompiledLambda> compiledLambdaMap = generateMethodsForLambda(
+                lambdaProviderClassDefinition,
+                callSiteBinder,
+                cachedInstanceBinder,
+                lambdaExpression,
+                metadata,
+                sqlFunctionProperties,
+                sessionFunctions);
+
+        MethodDefinition method = lambdaProviderClassDefinition.declareMethod(
+                a(PUBLIC),
+                "getLambda",
+                type(Object.class),
+                ImmutableList.of());
+
+        Scope scope = method.getScope();
+        BytecodeBlock body = method.getBody();
+        scope.declareVariable("wasNull", body, constantFalse());
+        scope.declareVariable("properties", body, method.getThis().getField(propertiesField));
+
+        RowExpressionCompiler rowExpressionCompiler = new RowExpressionCompiler(
+                lambdaProviderClassDefinition,
+                callSiteBinder,
+                cachedInstanceBinder,
+                variableReferenceCompiler(ImmutableMap.of()),
+                metadata,
+                sqlFunctionProperties,
+                sessionFunctions,
+                compiledLambdaMap);
+
+        BytecodeGeneratorContext generatorContext = new BytecodeGeneratorContext(
+                rowExpressionCompiler,
+                scope,
+                callSiteBinder,
+                cachedInstanceBinder,
+                metadata.getFunctionAndTypeManager());
+
+        body.append(
+                generateLambda(
+                        generatorContext,
+                        ImmutableList.of(),
+                        compiledLambdaMap.get(lambdaExpression),
+                        lambdaInterface))
+                .retObject();
+
+        // constructor
+        Parameter propertiesParameter = arg("properties", SqlFunctionProperties.class);
+
+        MethodDefinition constructorDefinition = lambdaProviderClassDefinition.declareConstructor(a(PUBLIC), propertiesParameter);
+        BytecodeBlock constructorBody = constructorDefinition.getBody();
+        Variable constructorThisVariable = constructorDefinition.getThis();
+
+        constructorBody.comment("super();")
+                .append(constructorThisVariable)
+                .invokeConstructor(Object.class)
+                .append(constructorThisVariable.setField(propertiesField, propertiesParameter));
+
+        cachedInstanceBinder.generateInitializations(constructorThisVariable, constructorBody);
+        constructorBody.ret();
+
+        return defineClass(lambdaProviderClassDefinition, LambdaProvider.class, callSiteBinder.getBindings(), AccumulatorCompiler.class.getClassLoader());
     }
 
     private static Method getSingleApplyMethod(Class lambdaFunctionInterface)
@@ -241,6 +453,12 @@ public class LambdaBytecodeGenerator
                 return new BytecodeBlock()
                         .append(parameter)
                         .append(unboxPrimitiveIfNecessary(context, type));
+            }
+
+            @Override
+            public BytecodeNode visitSpecialForm(SpecialFormExpression specialForm, Scope context)
+            {
+                throw new UnsupportedOperationException();
             }
         };
     }

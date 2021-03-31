@@ -13,62 +13,103 @@
  */
 package com.facebook.presto.spiller;
 
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.execution.buffer.PagesSerde;
-import com.facebook.presto.execution.buffer.PagesSerdeFactory;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.BlockEncodingManager;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.PageAssertions;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.type.TypeRegistry;
+import com.facebook.presto.spi.page.PageCodecMarker;
+import com.facebook.presto.spi.page.PagesSerdeUtil;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterators;
 import com.google.common.io.Files;
 import com.google.common.util.concurrent.ListeningExecutorService;
-import org.testng.annotations.AfterMethod;
+import io.airlift.slice.InputStreamSliceInput;
+import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
 import java.io.File;
+import java.io.InputStream;
 import java.util.Iterator;
 import java.util.List;
+import java.util.UUID;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.MoreFiles.listFiles;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
 import static java.lang.Double.doubleToLongBits;
+import static java.nio.file.Files.newInputStream;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
 
 public class TestFileSingleStreamSpiller
 {
     private static final List<Type> TYPES = ImmutableList.of(BIGINT, DOUBLE, VARBINARY);
 
     private final ListeningExecutorService executor = listeningDecorator(newCachedThreadPool());
-    private final File spillPath = Files.createTempDir();
+    private final File tempDirectory = Files.createTempDir();
 
-    @AfterMethod
+    @AfterClass(alwaysRun = true)
     public void tearDown()
             throws Exception
     {
         executor.shutdown();
-        deleteRecursively(spillPath.toPath(), ALLOW_INSECURE);
+        deleteRecursively(tempDirectory.toPath(), ALLOW_INSECURE);
     }
 
     @Test
     public void testSpill()
             throws Exception
     {
-        PagesSerdeFactory serdeFactory = new PagesSerdeFactory(new BlockEncodingManager(new TypeRegistry()), false);
-        PagesSerde serde = serdeFactory.createPagesSerde();
-        SpillerStats spillerStats = new SpillerStats();
+        assertSpill(false, false);
+    }
+
+    @Test
+    public void testSpillCompression()
+            throws Exception
+    {
+        assertSpill(true, false);
+    }
+
+    @Test
+    public void testSpillEncryption()
+            throws Exception
+    {
+        // Both with compression enabled and disabled
+        assertSpill(false, true);
+    }
+
+    @Test
+    public void testSpillEncryptionWithCompression()
+            throws Exception
+    {
+        assertSpill(true, true);
+    }
+
+    private void assertSpill(boolean compression, boolean encryption)
+            throws Exception
+    {
+        File spillPath = new File(tempDirectory, UUID.randomUUID().toString());
+        FileSingleStreamSpillerFactory spillerFactory = new FileSingleStreamSpillerFactory(
+                executor, // executor won't be closed, because we don't call destroy() on the spiller factory
+                new BlockEncodingManager(),
+                new SpillerStats(),
+                ImmutableList.of(spillPath.toPath()),
+                1.0,
+                compression,
+                encryption);
         LocalMemoryContext memoryContext = newSimpleAggregatedMemoryContext().newLocalMemoryContext("test");
-        FileSingleStreamSpiller spiller = new FileSingleStreamSpiller(serde, executor, spillPath.toPath(), spillerStats, bytes -> {}, memoryContext);
+        SingleStreamSpiller singleStreamSpiller = spillerFactory.create(TYPES, new TestingSpillContext(), memoryContext);
+        assertTrue(singleStreamSpiller instanceof FileSingleStreamSpiller);
+        FileSingleStreamSpiller spiller = (FileSingleStreamSpiller) singleStreamSpiller;
 
         Page page = buildPage();
 
@@ -77,6 +118,15 @@ public class TestFileSingleStreamSpiller
         spiller.spill(page).get();
         spiller.spill(Iterators.forArray(page, page, page)).get();
         assertEquals(listFiles(spillPath.toPath()).size(), 1);
+
+        // Assert the spill codec flags match the expected configuration
+        try (InputStream is = newInputStream(listFiles(spillPath.toPath()).get(0))) {
+            Iterator<SerializedPage> serializedPages = PagesSerdeUtil.readSerializedPages(new InputStreamSliceInput(is));
+            assertTrue(serializedPages.hasNext(), "at least one page should be successfully read back");
+            byte markers = serializedPages.next().getPageCodecMarkers();
+            assertEquals(PageCodecMarker.COMPRESSED.isSet(markers), compression);
+            assertEquals(PageCodecMarker.ENCRYPTED.isSet(markers), encryption);
+        }
 
         // The spillers release their memory reservations when they are closed, therefore at this point
         // they will have non-zero memory reservation.

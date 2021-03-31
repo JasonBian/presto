@@ -13,12 +13,9 @@
  */
 package com.facebook.presto.operator.exchange;
 
-import com.facebook.presto.operator.HashGenerator;
-import com.facebook.presto.operator.InterpretedHashGenerator;
-import com.facebook.presto.operator.PrecomputedHashGenerator;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.operator.PartitionFunction;
+import com.facebook.presto.operator.exchange.PageReference.PageReleasedListener;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -29,7 +26,6 @@ import java.util.List;
 import java.util.Optional;
 import java.util.function.Consumer;
 
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 class PartitioningExchanger
@@ -37,30 +33,25 @@ class PartitioningExchanger
 {
     private final List<Consumer<PageReference>> buffers;
     private final LocalExchangeMemoryManager memoryManager;
-    private final LocalPartitionGenerator partitionGenerator;
+    private final PartitionFunction partitionFunction;
+    private final int[] partitioningChannels;
+    private final Optional<Integer> hashChannel;
     private final IntArrayList[] partitionAssignments;
+    private final PageReleasedListener onPageReleased;
 
     public PartitioningExchanger(
             List<Consumer<PageReference>> partitions,
             LocalExchangeMemoryManager memoryManager,
-            List<? extends Type> types,
-            List<Integer> partitionChannels,
+            PartitionFunction partitionFunction,
+            List<Integer> partitioningChannels,
             Optional<Integer> hashChannel)
     {
         this.buffers = ImmutableList.copyOf(requireNonNull(partitions, "partitions is null"));
         this.memoryManager = requireNonNull(memoryManager, "memoryManager is null");
-
-        HashGenerator hashGenerator;
-        if (hashChannel.isPresent()) {
-            hashGenerator = new PrecomputedHashGenerator(hashChannel.get());
-        }
-        else {
-            List<Type> partitionChannelTypes = partitionChannels.stream()
-                    .map(types::get)
-                    .collect(toImmutableList());
-            hashGenerator = new InterpretedHashGenerator(partitionChannelTypes, Ints.toArray(partitionChannels));
-        }
-        partitionGenerator = new LocalPartitionGenerator(hashGenerator, buffers.size());
+        this.partitionFunction = requireNonNull(partitionFunction, "partitionFunction is null");
+        this.partitioningChannels = Ints.toArray(requireNonNull(partitioningChannels, "partitioningChannels is null"));
+        this.hashChannel = requireNonNull(hashChannel, "hashChannel is null");
+        this.onPageReleased = PageReleasedListener.forLocalExchangeMemoryManager(memoryManager);
 
         partitionAssignments = new IntArrayList[partitions.size()];
         for (int i = 0; i < partitionAssignments.length; i++) {
@@ -77,25 +68,32 @@ class PartitioningExchanger
         }
 
         // assign each row to a partition
-        for (int position = 0; position < page.getPositionCount(); position++) {
-            int partition = partitionGenerator.getPartition(page, position);
+        Page partitioningChannelsPage = extractPartitioningChannels(page);
+        for (int position = 0; position < partitioningChannelsPage.getPositionCount(); position++) {
+            int partition = partitionFunction.getPartition(partitioningChannelsPage, position);
             partitionAssignments[partition].add(position);
         }
 
         // build a page for each partition
-        Block[] outputBlocks = new Block[page.getChannelCount()];
         for (int partition = 0; partition < buffers.size(); partition++) {
             IntArrayList positions = partitionAssignments[partition];
             if (!positions.isEmpty()) {
-                for (int i = 0; i < page.getChannelCount(); i++) {
-                    outputBlocks[i] = page.getBlock(i).copyPositions(positions.elements(), 0, positions.size());
-                }
-
-                Page pageSplit = new Page(positions.size(), outputBlocks);
+                Page pageSplit = page.copyPositions(positions.elements(), 0, positions.size());
                 memoryManager.updateMemoryUsage(pageSplit.getRetainedSizeInBytes());
-                buffers.get(partition).accept(new PageReference(pageSplit, 1, () -> memoryManager.updateMemoryUsage(-pageSplit.getRetainedSizeInBytes())));
+                buffers.get(partition).accept(new PageReference(pageSplit, 1, onPageReleased));
             }
         }
+    }
+
+    private Page extractPartitioningChannels(Page inputPage)
+    {
+        // hash value is pre-computed, only needs to extract that channel
+        if (hashChannel.isPresent()) {
+            return new Page(inputPage.getBlock(hashChannel.get()));
+        }
+
+        // extract partitioning channels
+        return inputPage.extractChannels(partitioningChannels);
     }
 
     @Override

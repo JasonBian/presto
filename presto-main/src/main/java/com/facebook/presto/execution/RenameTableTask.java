@@ -14,10 +14,11 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
-import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.security.AccessControl;
+import com.facebook.presto.spi.ConnectorMaterializedViewDefinition;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.sql.analyzer.SemanticException;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.RenameTable;
@@ -50,7 +51,18 @@ public class RenameTableTask
         QualifiedObjectName tableName = createQualifiedObjectName(session, statement, statement.getSource());
         Optional<TableHandle> tableHandle = metadata.getTableHandle(session, tableName);
         if (!tableHandle.isPresent()) {
-            throw new SemanticException(MISSING_TABLE, statement, "Table '%s' does not exist", tableName);
+            if (!statement.isExists()) {
+                throw new SemanticException(MISSING_TABLE, statement, "Table '%s' does not exist", tableName);
+            }
+            return immediateFuture(null);
+        }
+
+        Optional<ConnectorMaterializedViewDefinition> optionalMaterializedView = metadata.getMaterializedView(session, tableName);
+        if (optionalMaterializedView.isPresent()) {
+            if (!statement.isExists()) {
+                throw new SemanticException(NOT_SUPPORTED, statement, "'%s' is a materialized view, and rename is not supported", tableName);
+            }
+            return immediateFuture(null);
         }
 
         QualifiedObjectName target = createQualifiedObjectName(session, statement, statement.getTarget());
@@ -63,7 +75,7 @@ public class RenameTableTask
         if (!tableName.getCatalogName().equals(target.getCatalogName())) {
             throw new SemanticException(NOT_SUPPORTED, statement, "Table rename across catalogs is not supported");
         }
-        accessControl.checkCanRenameTable(session.getRequiredTransactionId(), session.getIdentity(), tableName, target);
+        accessControl.checkCanRenameTable(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), tableName, target);
 
         metadata.renameTable(session, tableHandle.get(), target);
 

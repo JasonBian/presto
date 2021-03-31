@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.presto.common.Page;
 import io.airlift.slice.Slice;
 
 import java.util.Collection;
@@ -38,6 +39,17 @@ public interface ConnectorPageSink
      * @return the memory used so far in table read
      */
     default long getSystemMemoryUsage()
+    {
+        return 0;
+    }
+
+    /**
+     * ConnectorPageSink can provide optional validation to check
+     * the data is correctly consumed by connector (e.g. output table has the correct data).
+     * <p>
+     * This method returns the CPU spent on validation, if any.
+     */
+    default long getValidationCpuNanos()
     {
         return 0;
     }

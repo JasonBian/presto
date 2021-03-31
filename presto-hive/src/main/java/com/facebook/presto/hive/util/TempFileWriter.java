@@ -13,25 +13,29 @@
  */
 package com.facebook.presto.hive.util;
 
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.io.DataSink;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode;
 import com.facebook.presto.orc.OrcWriter;
 import com.facebook.presto.orc.OrcWriterOptions;
 import com.facebook.presto.orc.OrcWriterStats;
-import com.facebook.presto.orc.OutputStreamOrcDataSink;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.PrestoException;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 
 import java.io.Closeable;
 import java.io.IOException;
-import java.io.OutputStream;
 import java.io.UncheckedIOException;
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.metadata.CompressionKind.LZ4;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.airlift.units.DataSize.Unit.BYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -42,9 +46,9 @@ public class TempFileWriter
 {
     private final OrcWriter orcWriter;
 
-    public TempFileWriter(List<Type> types, OutputStream output)
+    public TempFileWriter(List<Type> types, DataSink sink)
     {
-        this.orcWriter = createOrcFileWriter(output, types);
+        this.orcWriter = createOrcFileWriter(sink, types);
     }
 
     public void writePage(Page page)
@@ -69,27 +73,33 @@ public class TempFileWriter
         return orcWriter.getWrittenBytes();
     }
 
-    private static OrcWriter createOrcFileWriter(OutputStream output, List<Type> types)
+    private static OrcWriter createOrcFileWriter(DataSink sink, List<Type> types)
     {
         List<String> columnNames = IntStream.range(0, types.size())
                 .mapToObj(String::valueOf)
                 .collect(toImmutableList());
 
-        return new OrcWriter(
-                new OutputStreamOrcDataSink(output),
-                columnNames,
-                types,
-                ORC,
-                LZ4,
-                new OrcWriterOptions()
-                        .withMaxStringStatisticsLimit(new DataSize(0, BYTE))
-                        .withStripeMinSize(new DataSize(4, MEGABYTE))
-                        .withStripeMaxSize(new DataSize(4, MEGABYTE))
-                        .withDictionaryMaxMemory(new DataSize(1, MEGABYTE)),
-                ImmutableMap.of(),
-                UTC,
-                false,
-                OrcWriteValidationMode.BOTH,
-                new OrcWriterStats());
+        try {
+            return new OrcWriter(
+                    sink,
+                    columnNames,
+                    types,
+                    ORC,
+                    LZ4,
+                    Optional.empty(),
+                    NO_ENCRYPTION,
+                    new OrcWriterOptions()
+                            .withMaxStringStatisticsLimit(new DataSize(0, BYTE))
+                            .withStripeMinSize(new DataSize(64, MEGABYTE))
+                            .withDictionaryMaxMemory(new DataSize(1, MEGABYTE)),
+                    ImmutableMap.of(),
+                    UTC,
+                    false,
+                    OrcWriteValidationMode.BOTH,
+                    new OrcWriterStats());
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
+        }
     }
 }

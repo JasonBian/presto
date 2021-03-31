@@ -13,10 +13,14 @@
  */
 package com.facebook.presto.orc.writer;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.CompressedMetadataWriter;
-import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.orc.metadata.CompressionParameters;
+import com.facebook.presto.orc.metadata.MetadataWriter;
 import com.facebook.presto.orc.metadata.RowGroupIndex;
 import com.facebook.presto.orc.metadata.Stream;
 import com.facebook.presto.orc.metadata.Stream.StreamKind;
@@ -25,8 +29,6 @@ import com.facebook.presto.orc.metadata.statistics.ColumnStatistics;
 import com.facebook.presto.orc.stream.BooleanOutputStream;
 import com.facebook.presto.orc.stream.PresentOutputStream;
 import com.facebook.presto.orc.stream.StreamDataOutput;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
@@ -55,21 +57,32 @@ public class BooleanColumnWriter
     private final boolean compressed;
     private final BooleanOutputStream dataStream;
     private final PresentOutputStream presentStream;
+    private final CompressedMetadataWriter metadataWriter;
 
     private final List<ColumnStatistics> rowGroupColumnStatistics = new ArrayList<>();
+    private long columnStatisticsRetainedSizeInBytes;
 
     private BooleanStatisticsBuilder statisticsBuilder = new BooleanStatisticsBuilder();
 
     private boolean closed;
 
-    public BooleanColumnWriter(int column, Type type, CompressionKind compression, int bufferSize)
+    public BooleanColumnWriter(
+            int column,
+            Type type,
+            CompressionParameters compressionParameters,
+            Optional<DwrfDataEncryptor> dwrfEncryptor,
+            MetadataWriter metadataWriter)
     {
         checkArgument(column >= 0, "column is negative");
+        requireNonNull(compressionParameters, "compressionParameters is null");
+        requireNonNull(dwrfEncryptor, "dwrfEncryptor is null");
+        requireNonNull(metadataWriter, "metadataWriter is null");
         this.column = column;
         this.type = requireNonNull(type, "type is null");
-        this.compressed = requireNonNull(compression, "compression is null") != NONE;
-        this.dataStream = new BooleanOutputStream(compression, bufferSize);
-        this.presentStream = new PresentOutputStream(compression, bufferSize);
+        this.compressed = compressionParameters.getKind() != NONE;
+        this.dataStream = new BooleanOutputStream(compressionParameters, dwrfEncryptor);
+        this.presentStream = new PresentOutputStream(compressionParameters, dwrfEncryptor);
+        this.metadataWriter = new CompressedMetadataWriter(metadataWriter, compressionParameters, dwrfEncryptor);
     }
 
     @Override
@@ -112,6 +125,7 @@ public class BooleanColumnWriter
         checkState(!closed);
         ColumnStatistics statistics = statisticsBuilder.buildColumnStatistics();
         rowGroupColumnStatistics.add(statistics);
+        columnStatisticsRetainedSizeInBytes += statistics.getRetainedSizeInBytes();
         statisticsBuilder = new BooleanStatisticsBuilder();
         return ImmutableMap.of(column, statistics);
     }
@@ -132,7 +146,7 @@ public class BooleanColumnWriter
     }
 
     @Override
-    public List<StreamDataOutput> getIndexStreams(CompressedMetadataWriter metadataWriter)
+    public List<StreamDataOutput> getIndexStreams()
             throws IOException
     {
         checkState(closed);
@@ -186,11 +200,7 @@ public class BooleanColumnWriter
     @Override
     public long getRetainedBytes()
     {
-        long retainedBytes = INSTANCE_SIZE + dataStream.getRetainedBytes() + presentStream.getRetainedBytes();
-        for (ColumnStatistics statistics : rowGroupColumnStatistics) {
-            retainedBytes += statistics.getRetainedSizeInBytes();
-        }
-        return retainedBytes;
+        return INSTANCE_SIZE + dataStream.getRetainedBytes() + presentStream.getRetainedBytes() + columnStatisticsRetainedSizeInBytes;
     }
 
     @Override
@@ -200,6 +210,7 @@ public class BooleanColumnWriter
         dataStream.reset();
         presentStream.reset();
         rowGroupColumnStatistics.clear();
+        columnStatisticsRetainedSizeInBytes = 0;
         statisticsBuilder = new BooleanStatisticsBuilder();
     }
 }

@@ -15,25 +15,26 @@ package com.facebook.presto.sql.planner.sanity;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.TableScanNode;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.ActualProperties;
 import com.facebook.presto.sql.planner.optimizations.PropertyDerivations;
 import com.facebook.presto.sql.planner.optimizations.StreamPropertyDerivations;
 import com.facebook.presto.sql.planner.optimizations.StreamPropertyDerivations.StreamProperties;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.planner.plan.PlanVisitor;
-import com.facebook.presto.sql.planner.sanity.PlanSanityChecker.Checker;
+import com.facebook.presto.sql.planner.plan.InternalPlanVisitor;
+import com.facebook.presto.sql.planner.sanity.PlanChecker.Checker;
 
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.FINAL;
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.INTERMEDIATE;
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.PARTIAL;
-import static com.facebook.presto.sql.planner.plan.ExchangeNode.Scope.REMOTE;
+import static com.facebook.presto.spi.plan.AggregationNode.Step.FINAL;
+import static com.facebook.presto.spi.plan.AggregationNode.Step.INTERMEDIATE;
+import static com.facebook.presto.spi.plan.AggregationNode.Step.PARTIAL;
 import static com.facebook.presto.sql.planner.plan.ExchangeNode.Type.REPARTITION;
 import static com.facebook.presto.util.Optionals.combine;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -59,13 +60,13 @@ public class ValidateAggregationsWithDefaultValues
     }
 
     @Override
-    public void validate(PlanNode planNode, Session session, Metadata metadata, SqlParser sqlParser, TypeProvider types)
+    public void validate(PlanNode planNode, Session session, Metadata metadata, SqlParser sqlParser, TypeProvider types, WarningCollector warningCollector)
     {
         planNode.accept(new Visitor(session, metadata, sqlParser, types), null);
     }
 
     private class Visitor
-            extends PlanVisitor<Optional<SeenExchanges>, Void>
+            extends InternalPlanVisitor<Optional<SeenExchanges>, Void>
     {
         final Session session;
         final Metadata metadata;
@@ -81,7 +82,7 @@ public class ValidateAggregationsWithDefaultValues
         }
 
         @Override
-        protected Optional<SeenExchanges> visitPlan(PlanNode node, Void context)
+        public Optional<SeenExchanges> visitPlan(PlanNode node, Void context)
         {
             return aggregatedSeenExchanges(node.getSources());
         }
@@ -104,6 +105,10 @@ public class ValidateAggregationsWithDefaultValues
                 return Optional.empty();
             }
 
+            // When partial aggregation is pushed down we do not have an intermediate aggregation step
+            if (isPartialAggregationPusheddown(node)) {
+                return Optional.empty();
+            }
             checkState(seenExchangesOptional.isPresent(), "No partial aggregation below final aggregation");
             SeenExchanges seenExchanges = seenExchangesOptional.get();
 
@@ -129,6 +134,19 @@ public class ValidateAggregationsWithDefaultValues
             return Optional.empty();
         }
 
+        private boolean isPartialAggregationPusheddown(AggregationNode node)
+        {
+            if (node.getStep().equals(FINAL)) {
+                if (node.getSource() instanceof ExchangeNode
+                        && node.getSource().getSources().get(0) instanceof ExchangeNode) {
+                    if (node.getSource().getSources().get(0).getSources().get(0) instanceof TableScanNode) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
         @Override
         public Optional<SeenExchanges> visitExchange(ExchangeNode node, Void context)
         {
@@ -143,7 +161,7 @@ public class ValidateAggregationsWithDefaultValues
             }
 
             SeenExchanges seenExchanges = seenExchangesOptional.get();
-            if (node.getScope().equals(REMOTE)) {
+            if (node.getScope().isRemote()) {
                 return Optional.of(new SeenExchanges(false, true));
             }
 

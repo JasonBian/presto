@@ -17,10 +17,12 @@ import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.PageSinkContext;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.google.common.util.concurrent.ListeningScheduledExecutorService;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 public class BlackHolePageSinkProvider
@@ -34,15 +36,17 @@ public class BlackHolePageSinkProvider
     }
 
     @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle)
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle, PageSinkContext pageSinkContext)
     {
+        checkArgument(!pageSinkContext.isCommitRequired(), "Black hole connector does not support page sink commit");
         BlackHoleOutputTableHandle handle = (BlackHoleOutputTableHandle) outputTableHandle;
         return new BlackHolePageSink(executorService, handle.getPageProcessingDelay());
     }
 
     @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle)
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle, PageSinkContext pageSinkContext)
     {
+        checkArgument(!pageSinkContext.isCommitRequired(), "Black hole connector does not support page sink commit");
         BlackHoleInsertTableHandle handle = (BlackHoleInsertTableHandle) insertTableHandle;
         return new BlackHolePageSink(executorService, handle.getPageProcessingDelay());
     }

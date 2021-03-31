@@ -13,16 +13,16 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.airlift.stats.TestingGcMonitor;
 import com.facebook.presto.RowPagesBuilder;
-import com.facebook.presto.memory.DefaultQueryContext;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.MemoryPool;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.memory.QueryContext;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.memory.MemoryPoolId;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spiller.SpillSpaceTracker;
 import com.google.common.collect.ImmutableList;
-import io.airlift.stats.TestingGcMonitor;
 import io.airlift.units.DataSize;
 
 import java.util.LinkedList;
@@ -31,16 +31,16 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Function;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.testing.Assertions.assertBetweenInclusive;
+import static com.facebook.airlift.testing.Assertions.assertGreaterThan;
+import static com.facebook.airlift.testing.Assertions.assertLessThan;
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.operator.OperatorAssertion.finishOperator;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.facebook.presto.testing.TestingTaskContext.createTaskContext;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.airlift.testing.Assertions.assertBetweenInclusive;
-import static io.airlift.testing.Assertions.assertGreaterThan;
-import static io.airlift.testing.Assertions.assertLessThan;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Objects.requireNonNull;
@@ -77,12 +77,15 @@ public final class GroupByHashYieldAssertion
         List<Page> result = new LinkedList<>();
 
         // mock an adjustable memory pool
-        QueryId queryId = new QueryId("test_query");
+        QueryId queryId1 = new QueryId("test_query1");
+        QueryId queryId2 = new QueryId("test_query2");
         MemoryPool memoryPool = new MemoryPool(new MemoryPoolId("test"), new DataSize(1, GIGABYTE));
-        DefaultQueryContext queryContext = new DefaultQueryContext(
-                queryId,
+        QueryContext queryContext = new QueryContext(
+                queryId2,
                 new DataSize(512, MEGABYTE),
                 new DataSize(1024, MEGABYTE),
+                new DataSize(512, MEGABYTE),
+                new DataSize(1, GIGABYTE),
                 memoryPool,
                 new TestingGcMonitor(),
                 EXECUTOR,
@@ -91,7 +94,7 @@ public final class GroupByHashYieldAssertion
                 new SpillSpaceTracker(new DataSize(512, MEGABYTE)));
 
         DriverContext driverContext = createTaskContext(queryContext, EXECUTOR, TEST_SESSION)
-                .addPipelineContext(0, true, true)
+                .addPipelineContext(0, true, true, false)
                 .addDriverContext();
         Operator operator = operatorFactory.createOperator(driverContext);
 
@@ -104,7 +107,7 @@ public final class GroupByHashYieldAssertion
 
             // saturate the pool with a tiny memory left
             long reservedMemoryInBytes = memoryPool.getFreeBytes() - additionalMemoryInBytes;
-            memoryPool.reserve(queryId, "test", reservedMemoryInBytes);
+            memoryPool.reserve(queryId1, "test", reservedMemoryInBytes);
 
             long oldMemoryUsage = operator.getOperatorContext().getDriverContext().getMemoryUsage();
             int oldCapacity = getHashCapacity.apply(operator);
@@ -124,7 +127,7 @@ public final class GroupByHashYieldAssertion
             // between rehash and memory used by aggregator
             if (newMemoryUsage < new DataSize(4, MEGABYTE).toBytes()) {
                 // free the pool for the next iteration
-                memoryPool.free(queryId, "test", reservedMemoryInBytes);
+                memoryPool.free(queryId1, "test", reservedMemoryInBytes);
                 // this required in case input is blocked
                 operator.getOutput();
                 continue;
@@ -145,7 +148,7 @@ public final class GroupByHashYieldAssertion
                 assertLessThan(actualIncreasedMemory, additionalMemoryInBytes);
 
                 // free the pool for the next iteration
-                memoryPool.free(queryId, "test", reservedMemoryInBytes);
+                memoryPool.free(queryId1, "test", reservedMemoryInBytes);
             }
             else {
                 // We failed to finish the page processing i.e. we yielded
@@ -172,7 +175,7 @@ public final class GroupByHashYieldAssertion
                 assertNull(operator.getOutput());
 
                 // Free the pool to unblock
-                memoryPool.free(queryId, "test", reservedMemoryInBytes);
+                memoryPool.free(queryId1, "test", reservedMemoryInBytes);
 
                 // Trigger a process through getOutput() or needsInput()
                 output = operator.getOutput();

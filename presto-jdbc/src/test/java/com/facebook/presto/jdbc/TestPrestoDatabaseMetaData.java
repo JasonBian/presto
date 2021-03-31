@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.jdbc;
 
-import com.facebook.presto.execution.QueryInfo;
+import com.facebook.airlift.log.Logging;
+import com.facebook.presto.server.BasicQueryInfo;
 import com.facebook.presto.server.testing.TestingPrestoServer;
 import com.facebook.presto.spi.QueryId;
-import io.airlift.log.Logging;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.BeforeClass;
@@ -27,18 +27,22 @@ import java.sql.Connection;
 import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.sql.Types;
 import java.util.Set;
 import java.util.concurrent.Callable;
 
+import static com.facebook.airlift.testing.Assertions.assertContains;
+import static com.facebook.presto.common.type.VarcharType.MAX_LENGTH;
 import static com.facebook.presto.jdbc.TestPrestoDriver.closeQuietly;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
-import static io.airlift.testing.Assertions.assertContains;
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNull;
+import static org.testng.Assert.assertTrue;
 
 @Test(singleThreaded = true)
 public class TestPrestoDatabaseMetaData
@@ -130,6 +134,46 @@ public class TestPrestoDatabaseMetaData
         }
     }
 
+    @Test
+    public void testGetClientInfoProperties()
+            throws Exception
+    {
+        try (ResultSet resultSet = connection.getMetaData().getClientInfoProperties()) {
+            ResultSetMetaData metadata = resultSet.getMetaData();
+            assertEquals(metadata.getColumnCount(), 4);
+            assertEquals(metadata.getColumnName(1), "NAME");
+            assertEquals(metadata.getColumnName(2), "MAX_LEN");
+            assertEquals(metadata.getColumnName(3), "DEFAULT_VALUE");
+            assertEquals(metadata.getColumnName(4), "DESCRIPTION");
+
+            assertTrue(resultSet.next());
+            assertEquals(resultSet.getString(1), "ApplicationName");
+            assertEquals(resultSet.getInt(2), MAX_LENGTH);
+            assertEquals(resultSet.getString(3), "presto-jdbc");
+            assertEquals(resultSet.getString(4), "Sets the source of the session");
+
+            assertTrue(resultSet.next());
+            assertEquals(resultSet.getString(1), "ClientInfo");
+            assertEquals(resultSet.getInt(2), MAX_LENGTH);
+            assertNull(resultSet.getString(3));
+            assertEquals(resultSet.getString(4), "Sets the client info of the session");
+
+            assertTrue(resultSet.next());
+            assertEquals(resultSet.getString(1), "ClientTags");
+            assertEquals(resultSet.getInt(2), MAX_LENGTH);
+            assertNull(resultSet.getString(3));
+            assertEquals(resultSet.getString(4), "Comma-delimited string of tags for the session");
+
+            assertTrue(resultSet.next());
+            assertEquals(resultSet.getString(1), "TraceToken");
+            assertEquals(resultSet.getInt(2), MAX_LENGTH);
+            assertNull(resultSet.getString(3));
+            assertEquals(resultSet.getString(4), "Sets the trace token of the session");
+
+            assertFalse(resultSet.next());
+        }
+    }
+
     private static void assertColumnSpec(ResultSet rs, int dataType, Long precision, Long numPrecRadix, String typeName)
             throws SQLException
     {
@@ -157,15 +201,15 @@ public class TestPrestoDatabaseMetaData
     private Set<String> captureQueries(Callable<?> action)
             throws Exception
     {
-        Set<QueryId> queryIdsBefore = server.getQueryManager().getAllQueryInfo().stream()
-                .map(QueryInfo::getQueryId)
+        Set<QueryId> queryIdsBefore = server.getQueryManager().getQueries().stream()
+                .map(BasicQueryInfo::getQueryId)
                 .collect(toImmutableSet());
 
         action.call();
 
-        return server.getQueryManager().getAllQueryInfo().stream()
+        return server.getQueryManager().getQueries().stream()
                 .filter(queryInfo -> !queryIdsBefore.contains(queryInfo.getQueryId()))
-                .map(QueryInfo::getQuery)
+                .map(BasicQueryInfo::getQuery)
                 .collect(toImmutableSet());
     }
 

@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.split;
 
-import com.facebook.presto.connector.ConnectorId;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.metadata.Split;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.connector.ConnectorPartitionHandle;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -31,6 +32,7 @@ import java.util.Collections;
 import java.util.List;
 
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.HARD_AFFINITY;
 import static com.facebook.presto.split.MockSplitSource.Action.DO_NOTHING;
 import static com.facebook.presto.split.MockSplitSource.Action.FINISH;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -43,6 +45,7 @@ public class MockSplitSource
 {
     private static final Split SPLIT = new Split(new ConnectorId("test"), new ConnectorTransactionHandle() {}, new MockConnectorSplit());
     private static final SettableFuture<List<Split>> COMPLETED_FUTURE = SettableFuture.create();
+
     static {
         COMPLETED_FUTURE.set(null);
     }
@@ -137,6 +140,12 @@ public class MockSplitSource
     }
 
     @Override
+    public void rewind(ConnectorPartitionHandle partitionHandle)
+    {
+        throw new UnsupportedOperationException("rewind is not supported in MockSplitSource");
+    }
+
+    @Override
     public void close()
     {
     }
@@ -156,13 +165,13 @@ public class MockSplitSource
             implements ConnectorSplit
     {
         @Override
-        public boolean isRemotelyAccessible()
+        public NodeSelectionStrategy getNodeSelectionStrategy()
         {
-            return false;
+            return HARD_AFFINITY;
         }
 
         @Override
-        public List<HostAddress> getAddresses()
+        public List<HostAddress> getPreferredNodes(List<HostAddress> sortedCandidates)
         {
             return ImmutableList.of();
         }

@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.SqlVarbinary;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.SqlVarbinary;
 import com.facebook.presto.type.VarbinaryOperators;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -22,15 +22,15 @@ import org.testng.annotations.Test;
 
 import java.util.Base64;
 
+import static com.facebook.presto.common.function.OperatorType.INDETERMINATE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.function.OperatorType.INDETERMINATE;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.google.common.io.BaseEncoding.base16;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -365,6 +365,29 @@ public class TestVarbinaryFunctions
     }
 
     @Test
+    public void testFnv()
+    {
+        // ground truth result is generated via https://nqv.github.io/fnv/
+        assertFunction("fnv1_32(from_hex(''))", BIGINT, 0x811c9dc5L + Integer.MIN_VALUE * 2L);
+        assertFunction("fnv1_32(from_hex('19'))", BIGINT, 0x050c5d06L);
+        assertFunction("fnv1_32(from_hex('F5'))", BIGINT, 0x050c5deaL); // Check for sign extension bug
+        assertFunction("fnv1_32(from_hex('0919'))", BIGINT, 0x087689bbL); // Check for byte ordering
+        assertFunction("fnv1_32(from_hex('F50919'))", BIGINT, 0x67a7fdecL);
+        assertFunction("fnv1_32(from_hex('232706FC6BF50919'))", BIGINT, 0x9f2263f3L + Integer.MIN_VALUE * 2L);
+        assertFunction("fnv1_64(from_hex(''))", BIGINT, 0xcbf29ce484222325L);
+        assertFunction("fnv1_64(from_hex('232706FC6BF50919'))", BIGINT, 0x4a65ff96675a9f33L);
+
+        assertFunction("fnv1a_32(from_hex(''))", BIGINT, 0x811c9dc5L + Integer.MIN_VALUE * 2L);
+        assertFunction("fnv1a_32(from_hex('19'))", BIGINT, 0x1c0c8154L);
+        assertFunction("fnv1a_32(from_hex('F5'))", BIGINT, 0x700b7290L); // Check for sign extension bug
+        assertFunction("fnv1a_32(from_hex('0919'))", BIGINT, 0x34881807L); // Check for byte ordering
+        assertFunction("fnv1a_32(from_hex('F50919'))", BIGINT, 0xeb80c366L + Integer.MIN_VALUE * 2L);
+        assertFunction("fnv1a_32(from_hex('232706FC6BF50919'))", BIGINT, 0x0951d55fL);
+        assertFunction("fnv1a_64(from_hex(''))", BIGINT, 0xcbf29ce484222325L);
+        assertFunction("fnv1a_64(from_hex('232706FC6BF50919'))", BIGINT, 0x68addc0b0febac5fL);
+    }
+
+    @Test
     public void testVarbinarySubstring()
     {
         assertFunction("SUBSTR(VARBINARY 'Quadratically', 5)", VARBINARY, varbinary("ratically"));
@@ -487,5 +510,16 @@ public class TestVarbinaryFunctions
             bytes[i] = (byte) bytesAsInts[i];
         }
         return new SqlVarbinary(bytes);
+    }
+
+    @Test
+    public void testReverse()
+    {
+        assertFunction("REVERSE(CAST(null AS VARBINARY))", VARBINARY, null);
+        assertFunction("REVERSE(CAST('' AS VARBINARY))", VARBINARY, sqlVarbinary(""));
+        assertFunction("REVERSE(CAST('hello' AS VARBINARY))", VARBINARY, sqlVarbinary("olleh"));
+        assertFunction("REVERSE(CAST('Quadratically' AS VARBINARY))", VARBINARY, sqlVarbinary("yllacitardauQ"));
+        assertFunction("REVERSE(CAST('racecar' AS VARBINARY))", VARBINARY, sqlVarbinary("racecar"));
+        assertFunction("REVERSE(REVERSE(CAST('hello' AS VARBINARY)))", VARBINARY, sqlVarbinary("hello"));
     }
 }

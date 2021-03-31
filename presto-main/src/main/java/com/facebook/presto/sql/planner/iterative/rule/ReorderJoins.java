@@ -14,32 +14,39 @@
 
 package com.facebook.presto.sql.planner.iterative.rule;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.Session;
 import com.facebook.presto.cost.CostComparator;
 import com.facebook.presto.cost.CostProvider;
-import com.facebook.presto.cost.PlanNodeCostEstimate;
+import com.facebook.presto.cost.PlanCostEstimate;
+import com.facebook.presto.expressions.LogicalRowExpressions;
 import com.facebook.presto.matching.Captures;
 import com.facebook.presto.matching.Pattern;
+import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.DeterminismEvaluator;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.analyzer.FeaturesConfig.JoinDistributionType;
 import com.facebook.presto.sql.planner.EqualityInference;
-import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.SymbolsExtractor;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
+import com.facebook.presto.sql.planner.VariablesExtractor;
 import com.facebook.presto.sql.planner.iterative.Lookup;
 import com.facebook.presto.sql.planner.iterative.Rule;
-import com.facebook.presto.sql.planner.plan.FilterNode;
 import com.facebook.presto.sql.planner.plan.JoinNode;
+import com.facebook.presto.sql.planner.plan.JoinNode.DistributionType;
 import com.facebook.presto.sql.planner.plan.JoinNode.EquiJoinClause;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.tree.ComparisonExpression;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.SymbolReference;
+import com.facebook.presto.sql.relational.FunctionResolution;
+import com.facebook.presto.sql.relational.RowExpressionDeterminismEvaluator;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Ordering;
-import io.airlift.log.Logger;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -51,37 +58,35 @@ import java.util.Optional;
 import java.util.Set;
 import java.util.stream.IntStream;
 import java.util.stream.Stream;
+import java.util.stream.StreamSupport;
 
 import static com.facebook.presto.SystemSessionProperties.getJoinDistributionType;
 import static com.facebook.presto.SystemSessionProperties.getJoinReorderingStrategy;
 import static com.facebook.presto.SystemSessionProperties.getMaxReorderedJoins;
-import static com.facebook.presto.cost.PlanNodeCostEstimate.INFINITE_COST;
-import static com.facebook.presto.cost.PlanNodeCostEstimate.UNKNOWN_COST;
-import static com.facebook.presto.sql.ExpressionUtils.and;
-import static com.facebook.presto.sql.ExpressionUtils.combineConjuncts;
-import static com.facebook.presto.sql.ExpressionUtils.extractConjuncts;
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
+import static com.facebook.presto.expressions.LogicalRowExpressions.TRUE_CONSTANT;
+import static com.facebook.presto.expressions.LogicalRowExpressions.and;
+import static com.facebook.presto.expressions.LogicalRowExpressions.extractConjuncts;
 import static com.facebook.presto.sql.analyzer.FeaturesConfig.JoinReorderingStrategy.AUTOMATIC;
-import static com.facebook.presto.sql.planner.DeterminismEvaluator.isDeterministic;
 import static com.facebook.presto.sql.planner.EqualityInference.createEqualityInference;
-import static com.facebook.presto.sql.planner.EqualityInference.nonInferrableConjuncts;
+import static com.facebook.presto.sql.planner.iterative.rule.DetermineJoinDistributionType.isBelowMaxBroadcastSize;
 import static com.facebook.presto.sql.planner.iterative.rule.ReorderJoins.JoinEnumerationResult.INFINITE_COST_RESULT;
 import static com.facebook.presto.sql.planner.iterative.rule.ReorderJoins.JoinEnumerationResult.UNKNOWN_COST_RESULT;
 import static com.facebook.presto.sql.planner.iterative.rule.ReorderJoins.MultiJoinNode.toMultiJoinNode;
+import static com.facebook.presto.sql.planner.optimizations.JoinNodeUtils.toRowExpression;
 import static com.facebook.presto.sql.planner.optimizations.QueryCardinalityUtil.isAtMostScalar;
 import static com.facebook.presto.sql.planner.plan.JoinNode.DistributionType.PARTITIONED;
 import static com.facebook.presto.sql.planner.plan.JoinNode.DistributionType.REPLICATED;
 import static com.facebook.presto.sql.planner.plan.JoinNode.Type.INNER;
 import static com.facebook.presto.sql.planner.plan.Patterns.join;
-import static com.facebook.presto.sql.tree.BooleanLiteral.TRUE_LITERAL;
-import static com.facebook.presto.sql.tree.ComparisonExpression.Operator.EQUAL;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Predicates.in;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static com.google.common.collect.Sets.powerSet;
-import static com.google.common.collect.Streams.stream;
 import static java.util.Objects.requireNonNull;
 import static java.util.stream.Collectors.toCollection;
 
@@ -92,22 +97,30 @@ public class ReorderJoins
 
     // We check that join distribution type is absent because we only want
     // to do this transformation once (reordered joins will have distribution type already set).
-    private static final Pattern<JoinNode> PATTERN = join().matching(
-            joinNode -> !joinNode.getDistributionType().isPresent()
-                    && joinNode.getType() == INNER
-                    && isDeterministic(joinNode.getFilter().orElse(TRUE_LITERAL)));
+    private final Pattern<JoinNode> joinNodePattern;
 
     private final CostComparator costComparator;
+    private final Metadata metadata;
+    private final FunctionResolution functionResolution;
+    private final DeterminismEvaluator determinismEvaluator;
 
-    public ReorderJoins(CostComparator costComparator)
+    public ReorderJoins(CostComparator costComparator, Metadata metadata)
     {
         this.costComparator = requireNonNull(costComparator, "costComparator is null");
+        this.metadata = requireNonNull(metadata, "metadata is null");
+        this.functionResolution = new FunctionResolution(metadata.getFunctionAndTypeManager());
+        this.determinismEvaluator = new RowExpressionDeterminismEvaluator(metadata.getFunctionAndTypeManager());
+
+        this.joinNodePattern = join().matching(
+                joinNode -> !joinNode.getDistributionType().isPresent()
+                        && joinNode.getType() == INNER
+                        && determinismEvaluator.isDeterministic(joinNode.getFilter().orElse(TRUE_CONSTANT)));
     }
 
     @Override
     public Pattern<JoinNode> getPattern()
     {
-        return PATTERN;
+        return joinNodePattern;
     }
 
     @Override
@@ -119,12 +132,15 @@ public class ReorderJoins
     @Override
     public Result apply(JoinNode joinNode, Captures captures, Context context)
     {
-        MultiJoinNode multiJoinNode = toMultiJoinNode(joinNode, context.getLookup(), getMaxReorderedJoins(context.getSession()));
+        MultiJoinNode multiJoinNode = toMultiJoinNode(joinNode, context.getLookup(), getMaxReorderedJoins(context.getSession()), functionResolution, determinismEvaluator);
         JoinEnumerator joinEnumerator = new JoinEnumerator(
                 costComparator,
                 multiJoinNode.getFilter(),
-                context);
-        JoinEnumerationResult result = joinEnumerator.chooseJoinOrder(multiJoinNode.getSources(), multiJoinNode.getOutputSymbols());
+                context,
+                determinismEvaluator,
+                functionResolution,
+                metadata);
+        JoinEnumerationResult result = joinEnumerator.chooseJoinOrder(multiJoinNode.getSources(), multiJoinNode.getOutputVariables());
         if (!result.getPlanNode().isPresent()) {
             return Result.empty();
         }
@@ -139,15 +155,17 @@ public class ReorderJoins
         // Using Ordering to facilitate rule determinism
         private final Ordering<JoinEnumerationResult> resultComparator;
         private final PlanNodeIdAllocator idAllocator;
-        private final Expression allFilter;
+        private final Metadata metadata;
+        private final RowExpression allFilter;
         private final EqualityInference allFilterInference;
+        private final LogicalRowExpressions logicalRowExpressions;
         private final Lookup lookup;
         private final Context context;
 
         private final Map<Set<PlanNode>, JoinEnumerationResult> memo = new HashMap<>();
 
         @VisibleForTesting
-        JoinEnumerator(CostComparator costComparator, Expression filter, Context context)
+        JoinEnumerator(CostComparator costComparator, RowExpression filter, Context context, DeterminismEvaluator determinismEvaluator, FunctionResolution functionResolution, Metadata metadata)
         {
             this.context = requireNonNull(context);
             this.session = requireNonNull(context.getSession(), "session is null");
@@ -155,11 +173,14 @@ public class ReorderJoins
             this.resultComparator = costComparator.forSession(session).onResultOf(result -> result.cost);
             this.idAllocator = requireNonNull(context.getIdAllocator(), "idAllocator is null");
             this.allFilter = requireNonNull(filter, "filter is null");
-            this.allFilterInference = createEqualityInference(filter);
             this.lookup = requireNonNull(context.getLookup(), "lookup is null");
+
+            this.metadata = requireNonNull(metadata, "metadata is null");
+            this.allFilterInference = createEqualityInference(metadata, filter);
+            this.logicalRowExpressions = new LogicalRowExpressions(determinismEvaluator, functionResolution, metadata.getFunctionAndTypeManager());
         }
 
-        private JoinEnumerationResult chooseJoinOrder(LinkedHashSet<PlanNode> sources, List<Symbol> outputSymbols)
+        private JoinEnumerationResult chooseJoinOrder(LinkedHashSet<PlanNode> sources, List<VariableReferenceExpression> outputVariables)
         {
             context.checkTimeoutNotExhausted();
 
@@ -170,7 +191,7 @@ public class ReorderJoins
                 ImmutableList.Builder<JoinEnumerationResult> resultBuilder = ImmutableList.builder();
                 Set<Set<Integer>> partitions = generatePartitions(sources.size());
                 for (Set<Integer> partition : partitions) {
-                    JoinEnumerationResult result = createJoinAccordingToPartitioning(sources, outputSymbols, partition);
+                    JoinEnumerationResult result = createJoinAccordingToPartitioning(sources, outputVariables, partition);
                     if (result.equals(UNKNOWN_COST_RESULT)) {
                         memo.put(multiJoinKey, result);
                         return result;
@@ -217,7 +238,7 @@ public class ReorderJoins
         }
 
         @VisibleForTesting
-        JoinEnumerationResult createJoinAccordingToPartitioning(LinkedHashSet<PlanNode> sources, List<Symbol> outputSymbols, Set<Integer> partitioning)
+        JoinEnumerationResult createJoinAccordingToPartitioning(LinkedHashSet<PlanNode> sources, List<VariableReferenceExpression> outputVariables, Set<Integer> partitioning)
         {
             List<PlanNode> sourceList = ImmutableList.copyOf(sources);
             LinkedHashSet<PlanNode> leftSources = partitioning.stream()
@@ -226,39 +247,39 @@ public class ReorderJoins
             LinkedHashSet<PlanNode> rightSources = sources.stream()
                     .filter(source -> !leftSources.contains(source))
                     .collect(toCollection(LinkedHashSet::new));
-            return createJoin(leftSources, rightSources, outputSymbols);
+            return createJoin(leftSources, rightSources, outputVariables);
         }
 
-        private JoinEnumerationResult createJoin(LinkedHashSet<PlanNode> leftSources, LinkedHashSet<PlanNode> rightSources, List<Symbol> outputSymbols)
+        private JoinEnumerationResult createJoin(LinkedHashSet<PlanNode> leftSources, LinkedHashSet<PlanNode> rightSources, List<VariableReferenceExpression> outputVariables)
         {
-            Set<Symbol> leftSymbols = leftSources.stream()
-                    .flatMap(node -> node.getOutputSymbols().stream())
+            Set<VariableReferenceExpression> leftVariables = leftSources.stream()
+                    .flatMap(node -> node.getOutputVariables().stream())
                     .collect(toImmutableSet());
-            Set<Symbol> rightSymbols = rightSources.stream()
-                    .flatMap(node -> node.getOutputSymbols().stream())
+            Set<VariableReferenceExpression> rightVariables = rightSources.stream()
+                    .flatMap(node -> node.getOutputVariables().stream())
                     .collect(toImmutableSet());
 
-            List<Expression> joinPredicates = getJoinPredicates(leftSymbols, rightSymbols);
+            List<RowExpression> joinPredicates = getJoinPredicates(leftVariables, rightVariables);
             List<EquiJoinClause> joinConditions = joinPredicates.stream()
                     .filter(JoinEnumerator::isJoinEqualityCondition)
-                    .map(predicate -> toEquiJoinClause((ComparisonExpression) predicate, leftSymbols))
+                    .map(predicate -> toEquiJoinClause((CallExpression) predicate, leftVariables, context.getVariableAllocator()))
                     .collect(toImmutableList());
             if (joinConditions.isEmpty()) {
                 return INFINITE_COST_RESULT;
             }
-            List<Expression> joinFilters = joinPredicates.stream()
+            List<RowExpression> joinFilters = joinPredicates.stream()
                     .filter(predicate -> !isJoinEqualityCondition(predicate))
                     .collect(toImmutableList());
 
-            Set<Symbol> requiredJoinSymbols = ImmutableSet.<Symbol>builder()
-                    .addAll(outputSymbols)
-                    .addAll(SymbolsExtractor.extractUnique(joinPredicates))
+            Set<VariableReferenceExpression> requiredJoinVariables = ImmutableSet.<VariableReferenceExpression>builder()
+                    .addAll(outputVariables)
+                    .addAll(VariablesExtractor.extractUnique(joinPredicates))
                     .build();
 
             JoinEnumerationResult leftResult = getJoinSource(
                     leftSources,
-                    requiredJoinSymbols.stream()
-                            .filter(leftSymbols::contains)
+                    requiredJoinVariables.stream()
+                            .filter(leftVariables::contains)
                             .collect(toImmutableList()));
             if (leftResult.equals(UNKNOWN_COST_RESULT)) {
                 return UNKNOWN_COST_RESULT;
@@ -271,8 +292,8 @@ public class ReorderJoins
 
             JoinEnumerationResult rightResult = getJoinSource(
                     rightSources,
-                    requiredJoinSymbols.stream()
-                            .filter(rightSymbols::contains)
+                    requiredJoinVariables.stream()
+                            .filter(rightVariables::contains)
                             .collect(toImmutableList()));
             if (rightResult.equals(UNKNOWN_COST_RESULT)) {
                 return UNKNOWN_COST_RESULT;
@@ -283,9 +304,9 @@ public class ReorderJoins
 
             PlanNode right = rightResult.planNode.orElseThrow(() -> new VerifyException("Plan node is not present"));
 
-            // sort output symbols so that the left input symbols are first
-            List<Symbol> sortedOutputSymbols = Stream.concat(left.getOutputSymbols().stream(), right.getOutputSymbols().stream())
-                    .filter(outputSymbols::contains)
+            // sort output variables so that the left input variables are first
+            List<VariableReferenceExpression> sortedOutputVariables = Stream.concat(left.getOutputVariables().stream(), right.getOutputVariables().stream())
+                    .filter(outputVariables::contains)
                     .collect(toImmutableList());
 
             return setJoinNodeProperties(new JoinNode(
@@ -294,70 +315,77 @@ public class ReorderJoins
                     left,
                     right,
                     joinConditions,
-                    sortedOutputSymbols,
+                    sortedOutputVariables,
                     joinFilters.isEmpty() ? Optional.empty() : Optional.of(and(joinFilters)),
                     Optional.empty(),
                     Optional.empty(),
-                    Optional.empty()));
+                    Optional.empty(),
+                    ImmutableMap.of()));
         }
 
-        private List<Expression> getJoinPredicates(Set<Symbol> leftSymbols, Set<Symbol> rightSymbols)
+        private List<RowExpression> getJoinPredicates(Set<VariableReferenceExpression> leftVariables, Set<VariableReferenceExpression> rightVariables)
         {
-            ImmutableList.Builder<Expression> joinPredicatesBuilder = ImmutableList.builder();
-
+            ImmutableList.Builder<RowExpression> joinPredicatesBuilder = ImmutableList.builder();
             // This takes all conjuncts that were part of allFilters that
             // could not be used for equality inference.
-            // If they use both the left and right symbols, we add them to the list of joinPredicates
-            stream(nonInferrableConjuncts(allFilter))
-                    .map(conjunct -> allFilterInference.rewriteExpression(conjunct, symbol -> leftSymbols.contains(symbol) || rightSymbols.contains(symbol)))
+            // If they use both the left and right variables, we add them to the list of joinPredicates
+            EqualityInference.Builder builder = new EqualityInference.Builder(metadata);
+            StreamSupport.stream(builder.nonInferrableConjuncts(allFilter).spliterator(), false)
+                    .map(conjunct -> allFilterInference.rewriteExpression(
+                            conjunct,
+                            variable -> leftVariables.contains(variable) || rightVariables.contains(variable)))
                     .filter(Objects::nonNull)
-                    // filter expressions that contain only left or right symbols
-                    .filter(conjunct -> allFilterInference.rewriteExpression(conjunct, leftSymbols::contains) == null)
-                    .filter(conjunct -> allFilterInference.rewriteExpression(conjunct, rightSymbols::contains) == null)
+                    // filter expressions that contain only left or right variables
+                    .filter(conjunct -> allFilterInference.rewriteExpression(conjunct, leftVariables::contains) == null)
+                    .filter(conjunct -> allFilterInference.rewriteExpression(conjunct, rightVariables::contains) == null)
                     .forEach(joinPredicatesBuilder::add);
 
-            // create equality inference on available symbols
+            // create equality inference on available variables
             // TODO: make generateEqualitiesPartitionedBy take left and right scope
-            List<Expression> joinEqualities = allFilterInference.generateEqualitiesPartitionedBy(symbol -> leftSymbols.contains(symbol) || rightSymbols.contains(symbol)).getScopeEqualities();
-            EqualityInference joinInference = createEqualityInference(joinEqualities.toArray(new Expression[0]));
-            joinPredicatesBuilder.addAll(joinInference.generateEqualitiesPartitionedBy(in(leftSymbols)).getScopeStraddlingEqualities());
+            List<RowExpression> joinEqualities = allFilterInference.generateEqualitiesPartitionedBy(
+                    variable -> leftVariables.contains(variable) || rightVariables.contains(variable)).getScopeEqualities();
+            EqualityInference joinInference = createEqualityInference(metadata, joinEqualities.toArray(new RowExpression[0]));
+            joinPredicatesBuilder.addAll(joinInference.generateEqualitiesPartitionedBy(in(leftVariables)).getScopeStraddlingEqualities());
 
             return joinPredicatesBuilder.build();
         }
 
-        private JoinEnumerationResult getJoinSource(LinkedHashSet<PlanNode> nodes, List<Symbol> outputSymbols)
+        private JoinEnumerationResult getJoinSource(LinkedHashSet<PlanNode> nodes, List<VariableReferenceExpression> outputVariables)
         {
             if (nodes.size() == 1) {
                 PlanNode planNode = getOnlyElement(nodes);
-                ImmutableList.Builder<Expression> predicates = ImmutableList.builder();
-                predicates.addAll(allFilterInference.generateEqualitiesPartitionedBy(outputSymbols::contains).getScopeEqualities());
-                stream(nonInferrableConjuncts(allFilter))
-                        .map(conjunct -> allFilterInference.rewriteExpression(conjunct, outputSymbols::contains))
+                ImmutableList.Builder<RowExpression> predicates = ImmutableList.builder();
+                predicates.addAll(allFilterInference.generateEqualitiesPartitionedBy(outputVariables::contains).getScopeEqualities());
+                EqualityInference.Builder builder = new EqualityInference.Builder(metadata);
+                StreamSupport.stream(builder.nonInferrableConjuncts(allFilter).spliterator(), false)
+                        .map(conjunct -> allFilterInference.rewriteExpression(conjunct, outputVariables::contains))
                         .filter(Objects::nonNull)
                         .forEach(predicates::add);
-                Expression filter = combineConjuncts(predicates.build());
-                if (!TRUE_LITERAL.equals(filter)) {
+                RowExpression filter = logicalRowExpressions.combineConjuncts(predicates.build());
+                if (!TRUE_CONSTANT.equals(filter)) {
                     planNode = new FilterNode(idAllocator.getNextId(), planNode, filter);
                 }
                 return createJoinEnumerationResult(planNode);
             }
-            return chooseJoinOrder(nodes, outputSymbols);
+            return chooseJoinOrder(nodes, outputVariables);
         }
 
-        private static boolean isJoinEqualityCondition(Expression expression)
+        private static boolean isJoinEqualityCondition(RowExpression expression)
         {
-            return expression instanceof ComparisonExpression
-                    && ((ComparisonExpression) expression).getOperator() == EQUAL
-                    && ((ComparisonExpression) expression).getLeft() instanceof SymbolReference
-                    && ((ComparisonExpression) expression).getRight() instanceof SymbolReference;
+            return expression instanceof CallExpression
+                    && ((CallExpression) expression).getDisplayName().equals(EQUAL.getFunctionName().getObjectName())
+                    && ((CallExpression) expression).getArguments().size() == 2
+                    && ((CallExpression) expression).getArguments().get(0) instanceof VariableReferenceExpression
+                    && ((CallExpression) expression).getArguments().get(1) instanceof VariableReferenceExpression;
         }
 
-        private static EquiJoinClause toEquiJoinClause(ComparisonExpression equality, Set<Symbol> leftSymbols)
+        private static EquiJoinClause toEquiJoinClause(CallExpression equality, Set<VariableReferenceExpression> leftVariables, PlanVariableAllocator variableAllocator)
         {
-            Symbol leftSymbol = Symbol.from(equality.getLeft());
-            Symbol rightSymbol = Symbol.from(equality.getRight());
-            EquiJoinClause equiJoinClause = new EquiJoinClause(leftSymbol, rightSymbol);
-            return leftSymbols.contains(leftSymbol) ? equiJoinClause : equiJoinClause.flip();
+            checkArgument(equality.getArguments().size() == 2, "Unexpected number of arguments in binary operator equals");
+            VariableReferenceExpression leftVariable = (VariableReferenceExpression) equality.getArguments().get(0);
+            VariableReferenceExpression rightVariable = (VariableReferenceExpression) equality.getArguments().get(1);
+            EquiJoinClause equiJoinClause = new EquiJoinClause(leftVariable, rightVariable);
+            return leftVariables.contains(leftVariable) ? equiJoinClause : equiJoinClause.flip();
         }
 
         private JoinEnumerationResult setJoinNodeProperties(JoinNode joinNode)
@@ -369,26 +397,49 @@ public class ReorderJoins
             if (isAtMostScalar(joinNode.getLeft(), lookup)) {
                 return createJoinEnumerationResult(joinNode.flipChildren().withDistributionType(REPLICATED));
             }
-
-            List<JoinEnumerationResult> possibleJoinNodes = new ArrayList<>();
-            JoinDistributionType joinDistributionType = getJoinDistributionType(session);
-            if (joinDistributionType.canPartition() && !joinNode.isCrossJoin()) {
-                possibleJoinNodes.add(createJoinEnumerationResult(joinNode.withDistributionType(PARTITIONED)));
-                possibleJoinNodes.add(createJoinEnumerationResult(joinNode.flipChildren().withDistributionType(PARTITIONED)));
-            }
-            if (joinDistributionType.canReplicate()) {
-                possibleJoinNodes.add(createJoinEnumerationResult(joinNode.withDistributionType(REPLICATED)));
-                possibleJoinNodes.add(createJoinEnumerationResult(joinNode.flipChildren().withDistributionType(REPLICATED)));
-            }
+            List<JoinEnumerationResult> possibleJoinNodes = getPossibleJoinNodes(joinNode, getJoinDistributionType(session));
+            verify(!possibleJoinNodes.isEmpty(), "possibleJoinNodes is empty");
             if (possibleJoinNodes.stream().anyMatch(UNKNOWN_COST_RESULT::equals)) {
                 return UNKNOWN_COST_RESULT;
             }
             return resultComparator.min(possibleJoinNodes);
         }
 
+        private List<JoinEnumerationResult> getPossibleJoinNodes(JoinNode joinNode, JoinDistributionType distributionType)
+        {
+            checkArgument(joinNode.getType() == INNER, "unexpected join node type: %s", joinNode.getType());
+
+            if (joinNode.isCrossJoin()) {
+                return getPossibleJoinNodes(joinNode, REPLICATED);
+            }
+
+            switch (distributionType) {
+                case PARTITIONED:
+                    return getPossibleJoinNodes(joinNode, PARTITIONED);
+                case BROADCAST:
+                    return getPossibleJoinNodes(joinNode, REPLICATED);
+                case AUTOMATIC:
+                    ImmutableList.Builder<JoinEnumerationResult> result = ImmutableList.builder();
+                    result.addAll(getPossibleJoinNodes(joinNode, PARTITIONED));
+                    if (isBelowMaxBroadcastSize(joinNode, context)) {
+                        result.addAll(getPossibleJoinNodes(joinNode, REPLICATED));
+                    }
+                    return result.build();
+                default:
+                    throw new IllegalArgumentException("unexpected join distribution type: " + distributionType);
+            }
+        }
+
+        private List<JoinEnumerationResult> getPossibleJoinNodes(JoinNode joinNode, DistributionType distributionType)
+        {
+            return ImmutableList.of(
+                    createJoinEnumerationResult(joinNode.withDistributionType(distributionType)),
+                    createJoinEnumerationResult(joinNode.flipChildren().withDistributionType(distributionType)));
+        }
+
         private JoinEnumerationResult createJoinEnumerationResult(PlanNode planNode)
         {
-            return JoinEnumerationResult.createJoinEnumerationResult(Optional.of(planNode), costProvider.getCumulativeCost(planNode));
+            return JoinEnumerationResult.createJoinEnumerationResult(Optional.of(planNode), costProvider.getCost(planNode));
         }
     }
 
@@ -400,25 +451,22 @@ public class ReorderJoins
     {
         // Use a linked hash set to ensure optimizer is deterministic
         private final LinkedHashSet<PlanNode> sources;
-        private final Expression filter;
-        private final List<Symbol> outputSymbols;
+        private final RowExpression filter;
+        private final List<VariableReferenceExpression> outputVariables;
 
-        public MultiJoinNode(LinkedHashSet<PlanNode> sources, Expression filter, List<Symbol> outputSymbols)
+        public MultiJoinNode(LinkedHashSet<PlanNode> sources, RowExpression filter, List<VariableReferenceExpression> outputVariables)
         {
-            requireNonNull(sources, "sources is null");
             checkArgument(sources.size() > 1, "sources size is <= 1");
-            requireNonNull(filter, "filter is null");
-            requireNonNull(outputSymbols, "outputSymbols is null");
 
-            this.sources = sources;
-            this.filter = filter;
-            this.outputSymbols = ImmutableList.copyOf(outputSymbols);
+            this.sources = requireNonNull(sources, "sources is null");
+            this.filter = requireNonNull(filter, "filter is null");
+            this.outputVariables = ImmutableList.copyOf(requireNonNull(outputVariables, "outputVariables is null"));
 
-            List<Symbol> inputSymbols = sources.stream().flatMap(source -> source.getOutputSymbols().stream()).collect(toImmutableList());
-            checkArgument(inputSymbols.containsAll(outputSymbols), "inputs do not contain all output symbols");
+            List<VariableReferenceExpression> inputVariables = sources.stream().flatMap(source -> source.getOutputVariables().stream()).collect(toImmutableList());
+            checkArgument(inputVariables.containsAll(outputVariables), "inputs do not contain all output variables");
         }
 
-        public Expression getFilter()
+        public RowExpression getFilter()
         {
             return filter;
         }
@@ -428,9 +476,9 @@ public class ReorderJoins
             return sources;
         }
 
-        public List<Symbol> getOutputSymbols()
+        public List<VariableReferenceExpression> getOutputVariables()
         {
-            return outputSymbols;
+            return outputVariables;
         }
 
         public static Builder builder()
@@ -441,7 +489,7 @@ public class ReorderJoins
         @Override
         public int hashCode()
         {
-            return Objects.hash(sources, ImmutableSet.copyOf(extractConjuncts(filter)), outputSymbols);
+            return Objects.hash(sources, ImmutableSet.copyOf(extractConjuncts(filter)), outputVariables);
         }
 
         @Override
@@ -454,28 +502,32 @@ public class ReorderJoins
             MultiJoinNode other = (MultiJoinNode) obj;
             return this.sources.equals(other.sources)
                     && ImmutableSet.copyOf(extractConjuncts(this.filter)).equals(ImmutableSet.copyOf(extractConjuncts(other.filter)))
-                    && this.outputSymbols.equals(other.outputSymbols);
+                    && this.outputVariables.equals(other.outputVariables);
         }
 
-        static MultiJoinNode toMultiJoinNode(JoinNode joinNode, Lookup lookup, int joinLimit)
+        static MultiJoinNode toMultiJoinNode(JoinNode joinNode, Lookup lookup, int joinLimit, FunctionResolution functionResolution, DeterminismEvaluator determinismEvaluator)
         {
             // the number of sources is the number of joins + 1
-            return new JoinNodeFlattener(joinNode, lookup, joinLimit + 1).toMultiJoinNode();
+            return new JoinNodeFlattener(joinNode, lookup, joinLimit + 1, functionResolution, determinismEvaluator).toMultiJoinNode();
         }
 
         private static class JoinNodeFlattener
         {
             private final LinkedHashSet<PlanNode> sources = new LinkedHashSet<>();
-            private final List<Expression> filters = new ArrayList<>();
-            private final List<Symbol> outputSymbols;
+            private final List<RowExpression> filters = new ArrayList<>();
+            private final List<VariableReferenceExpression> outputVariables;
+            private final FunctionResolution functionResolution;
+            private final DeterminismEvaluator determinismEvaluator;
             private final Lookup lookup;
 
-            JoinNodeFlattener(JoinNode node, Lookup lookup, int sourceLimit)
+            JoinNodeFlattener(JoinNode node, Lookup lookup, int sourceLimit, FunctionResolution functionResolution, DeterminismEvaluator determinismEvaluator)
             {
                 requireNonNull(node, "node is null");
                 checkState(node.getType() == INNER, "join type must be INNER");
-                this.outputSymbols = node.getOutputSymbols();
+                this.outputVariables = node.getOutputVariables();
                 this.lookup = requireNonNull(lookup, "lookup is null");
+                this.functionResolution = requireNonNull(functionResolution, "functionResolution is null");
+                this.determinismEvaluator = requireNonNull(determinismEvaluator, "determinismEvaluator is null");
                 flattenNode(node, sourceLimit);
             }
 
@@ -490,7 +542,7 @@ public class ReorderJoins
                 }
 
                 JoinNode joinNode = (JoinNode) resolved;
-                if (joinNode.getType() != INNER || !isDeterministic(joinNode.getFilter().orElse(TRUE_LITERAL)) || joinNode.getDistributionType().isPresent()) {
+                if (joinNode.getType() != INNER || !determinismEvaluator.isDeterministic(joinNode.getFilter().orElse(TRUE_CONSTANT)) || joinNode.getDistributionType().isPresent()) {
                     sources.add(node);
                     return;
                 }
@@ -499,22 +551,22 @@ public class ReorderJoins
                 flattenNode(joinNode.getLeft(), limit - 1);
                 flattenNode(joinNode.getRight(), limit);
                 joinNode.getCriteria().stream()
-                        .map(EquiJoinClause::toExpression)
+                        .map(criteria -> toRowExpression(criteria, functionResolution))
                         .forEach(filters::add);
                 joinNode.getFilter().ifPresent(filters::add);
             }
 
             MultiJoinNode toMultiJoinNode()
             {
-                return new MultiJoinNode(sources, and(filters), outputSymbols);
+                return new MultiJoinNode(sources, and(filters), outputVariables);
             }
         }
 
         static class Builder
         {
             private List<PlanNode> sources;
-            private Expression filter;
-            private List<Symbol> outputSymbols;
+            private RowExpression filter;
+            private List<VariableReferenceExpression> outputVariables;
 
             public Builder setSources(PlanNode... sources)
             {
@@ -522,21 +574,21 @@ public class ReorderJoins
                 return this;
             }
 
-            public Builder setFilter(Expression filter)
+            public Builder setFilter(RowExpression filter)
             {
                 this.filter = filter;
                 return this;
             }
 
-            public Builder setOutputSymbols(Symbol... outputSymbols)
+            public Builder setOutputVariables(VariableReferenceExpression... outputVariables)
             {
-                this.outputSymbols = ImmutableList.copyOf(outputSymbols);
+                this.outputVariables = ImmutableList.copyOf(outputVariables);
                 return this;
             }
 
             public MultiJoinNode build()
             {
-                return new MultiJoinNode(new LinkedHashSet<>(sources), filter, outputSymbols);
+                return new MultiJoinNode(new LinkedHashSet<>(sources), filter, outputVariables);
             }
         }
     }
@@ -544,18 +596,18 @@ public class ReorderJoins
     @VisibleForTesting
     static class JoinEnumerationResult
     {
-        public static final JoinEnumerationResult UNKNOWN_COST_RESULT = new JoinEnumerationResult(Optional.empty(), UNKNOWN_COST);
-        public static final JoinEnumerationResult INFINITE_COST_RESULT = new JoinEnumerationResult(Optional.empty(), INFINITE_COST);
+        public static final JoinEnumerationResult UNKNOWN_COST_RESULT = new JoinEnumerationResult(Optional.empty(), PlanCostEstimate.unknown());
+        public static final JoinEnumerationResult INFINITE_COST_RESULT = new JoinEnumerationResult(Optional.empty(), PlanCostEstimate.infinite());
 
         private final Optional<PlanNode> planNode;
-        private final PlanNodeCostEstimate cost;
+        private final PlanCostEstimate cost;
 
-        private JoinEnumerationResult(Optional<PlanNode> planNode, PlanNodeCostEstimate cost)
+        private JoinEnumerationResult(Optional<PlanNode> planNode, PlanCostEstimate cost)
         {
             this.planNode = requireNonNull(planNode, "planNode is null");
             this.cost = requireNonNull(cost, "cost is null");
-            checkArgument((cost.hasUnknownComponents() || cost.equals(INFINITE_COST)) && !planNode.isPresent()
-                            || (!cost.hasUnknownComponents() || !cost.equals(INFINITE_COST)) && planNode.isPresent(),
+            checkArgument((cost.hasUnknownComponents() || cost.equals(PlanCostEstimate.infinite())) && !planNode.isPresent()
+                            || (!cost.hasUnknownComponents() || !cost.equals(PlanCostEstimate.infinite())) && planNode.isPresent(),
                     "planNode should be present if and only if cost is known");
         }
 
@@ -564,17 +616,17 @@ public class ReorderJoins
             return planNode;
         }
 
-        public PlanNodeCostEstimate getCost()
+        public PlanCostEstimate getCost()
         {
             return cost;
         }
 
-        static JoinEnumerationResult createJoinEnumerationResult(Optional<PlanNode> planNode, PlanNodeCostEstimate cost)
+        static JoinEnumerationResult createJoinEnumerationResult(Optional<PlanNode> planNode, PlanCostEstimate cost)
         {
             if (cost.hasUnknownComponents()) {
                 return UNKNOWN_COST_RESULT;
             }
-            if (cost.equals(INFINITE_COST)) {
+            if (cost.equals(PlanCostEstimate.infinite())) {
                 return INFINITE_COST_RESULT;
             }
             return new JoinEnumerationResult(planNode, cost);

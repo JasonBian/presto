@@ -13,7 +13,8 @@
  */
 package com.facebook.presto.client;
 
-import com.facebook.presto.spi.type.TimeZoneKey;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.spi.security.SelectedRole;
 
 import javax.annotation.Nullable;
 
@@ -49,11 +50,11 @@ public interface StatementClient
 
     Optional<String> getSetSchema();
 
-    Optional<String> getSetPath();
-
     Map<String, String> getSetSessionProperties();
 
     Set<String> getResetSessionProperties();
+
+    Map<String, SelectedRole> getSetRoles();
 
     Map<String, String> getAddedPreparedStatements();
 
@@ -63,6 +64,10 @@ public interface StatementClient
     String getStartedTransactionId();
 
     boolean isClearTransactionId();
+
+    Map<String, String> getAddedSessionFunctions();
+
+    Set<String> getRemovedSessionFunctions();
 
     boolean advance();
 

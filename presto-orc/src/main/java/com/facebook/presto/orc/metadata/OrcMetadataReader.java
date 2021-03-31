@@ -13,6 +13,10 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.DwrfKeyProvider;
+import com.facebook.presto.orc.OrcDataSource;
+import com.facebook.presto.orc.OrcDecompressor;
 import com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind;
 import com.facebook.presto.orc.metadata.OrcType.OrcTypeKind;
 import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
@@ -44,6 +48,7 @@ import java.math.BigDecimal;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.stream.IntStream;
 
 import static com.facebook.presto.orc.metadata.CompressionKind.LZ4;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
@@ -62,6 +67,7 @@ import static com.facebook.presto.orc.metadata.statistics.ShortDecimalStatistics
 import static com.facebook.presto.orc.metadata.statistics.StringStatistics.STRING_VALUE_BYTES_OVERHEAD;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static io.airlift.slice.SliceUtf8.lengthOfCodePoint;
 import static io.airlift.slice.SliceUtf8.tryGetCodePointAt;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
@@ -121,7 +127,12 @@ public class OrcMetadataReader
     }
 
     @Override
-    public Footer readFooter(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
+    public Footer readFooter(HiveWriterVersion hiveWriterVersion,
+            InputStream inputStream,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            DwrfKeyProvider dwrfKeyProvider,
+            OrcDataSource orcDataSource,
+            Optional<OrcDecompressor> decompressor)
             throws IOException
     {
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
@@ -133,7 +144,8 @@ public class OrcMetadataReader
                 toStripeInformation(footer.getStripesList()),
                 toType(footer.getTypesList()),
                 toColumnStatistics(hiveWriterVersion, footer.getStatisticsList(), false),
-                toUserMetadata(footer.getMetadataList()));
+                toUserMetadata(footer.getMetadataList()),
+                Optional.empty());
     }
 
     private static List<StripeInformation> toStripeInformation(List<OrcProto.StripeInformation> types)
@@ -150,7 +162,8 @@ public class OrcMetadataReader
                 stripeInformation.getOffset(),
                 stripeInformation.getIndexLength(),
                 stripeInformation.getDataLength(),
-                stripeInformation.getFooterLength());
+                stripeInformation.getFooterLength(),
+                ImmutableList.of());
     }
 
     @Override
@@ -159,7 +172,7 @@ public class OrcMetadataReader
     {
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
         OrcProto.StripeFooter stripeFooter = OrcProto.StripeFooter.parseFrom(input);
-        return new StripeFooter(toStream(stripeFooter.getStreamsList()), toColumnEncoding(stripeFooter.getColumnsList()));
+        return new StripeFooter(toStream(stripeFooter.getStreamsList()), toColumnEncoding(stripeFooter.getColumnsList()), ImmutableList.of());
     }
 
     private static Stream toStream(OrcProto.Stream stream)
@@ -179,11 +192,11 @@ public class OrcMetadataReader
         return new ColumnEncoding(toColumnEncodingKind(columnEncoding.getKind()), columnEncoding.getDictionarySize());
     }
 
-    private static List<ColumnEncoding> toColumnEncoding(List<OrcProto.ColumnEncoding> columnEncodings)
+    private static Map<Integer, ColumnEncoding> toColumnEncoding(List<OrcProto.ColumnEncoding> columnEncodings)
     {
-        return columnEncodings.stream()
-                .map(OrcMetadataReader::toColumnEncoding)
-                .collect(toImmutableList());
+        return IntStream.range(0, columnEncodings.size())
+                .boxed()
+                .collect(toImmutableMap(index -> index, index -> toColumnEncoding(columnEncodings.get(index))));
     }
 
     @Override

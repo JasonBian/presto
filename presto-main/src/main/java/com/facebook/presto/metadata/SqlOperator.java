@@ -13,39 +13,53 @@
  */
 package com.facebook.presto.metadata;
 
-import com.facebook.presto.spi.function.OperatorType;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.spi.function.FunctionKind;
+import com.facebook.presto.spi.function.LongVariableConstraint;
+import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.function.SqlFunctionVisibility;
+import com.facebook.presto.spi.function.TypeVariableConstraint;
 
 import java.util.List;
 
-import static com.facebook.presto.metadata.FunctionRegistry.mangleOperatorName;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 
 public abstract class SqlOperator
         extends SqlScalarFunction
 {
+    private final OperatorType operatorType;
+
     protected SqlOperator(OperatorType operatorType, List<TypeVariableConstraint> typeVariableConstraints, List<LongVariableConstraint> longVariableConstraints, TypeSignature returnType, List<TypeSignature> argumentTypes)
     {
         // TODO This should take Signature!
         super(new Signature(
-                mangleOperatorName(operatorType),
+                operatorType.getFunctionName(),
                 FunctionKind.SCALAR,
                 typeVariableConstraints,
                 longVariableConstraints,
                 returnType,
                 argumentTypes,
                 false));
+        this.operatorType = operatorType;
     }
 
     @Override
-    public final boolean isHidden()
+    public final SqlFunctionVisibility getVisibility()
     {
-        return true;
+        return HIDDEN;
     }
 
     @Override
     public final boolean isDeterministic()
     {
         return true;
+    }
+
+    @Override
+    public final boolean isCalledOnNullInput()
+    {
+        return operatorType.isCalledOnNullInput();
     }
 
     @Override

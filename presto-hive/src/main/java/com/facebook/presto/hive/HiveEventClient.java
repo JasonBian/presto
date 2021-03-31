@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.hive;
 
-import io.airlift.event.client.AbstractEventClient;
-import io.airlift.log.Logger;
+import com.facebook.airlift.event.client.AbstractEventClient;
+import com.facebook.airlift.log.Logger;
 
 public class HiveEventClient
         extends AbstractEventClient
@@ -28,7 +28,7 @@ public class HiveEventClient
             return;
         }
         WriteCompletedEvent writeCompletedEvent = (WriteCompletedEvent) event;
-        log.info("File created: query: %s, schema: %s, table: %s, partition: '%s', format: %s, size: %s, path: %s",
+        log.debug("File created: query: %s, schema: %s, table: %s, partition: '%s', format: %s, size: %s, path: %s",
                 writeCompletedEvent.getQueryId(),
                 writeCompletedEvent.getSchemaName(),
                 writeCompletedEvent.getTableName(),

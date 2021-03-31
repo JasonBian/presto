@@ -35,6 +35,7 @@ import java.io.OutputStream;
 import java.util.List;
 import java.util.Map.Entry;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.lang.Math.toIntExact;
 import static java.util.stream.Collectors.toList;
 
@@ -271,8 +272,9 @@ public class OrcMetadataWriter
                 .addAllStreams(footer.getStreams().stream()
                         .map(OrcMetadataWriter::toStream)
                         .collect(toList()))
-                .addAllColumns(footer.getColumnEncodings().stream()
-                        .map(OrcMetadataWriter::toColumnEncoding)
+                .addAllColumns(footer.getColumnEncodings().entrySet().stream()
+                        .sorted(Entry.comparingByKey())
+                        .map(entry -> toColumnEncoding(entry.getValue()))
                         .collect(toList()))
                 .build();
 
@@ -311,6 +313,10 @@ public class OrcMetadataWriter
 
     private static OrcProto.ColumnEncoding toColumnEncoding(ColumnEncoding columnEncodings)
     {
+        checkArgument(
+                !columnEncodings.getAdditionalSequenceEncodings().isPresent(),
+                "Writing columns with non-zero sequence IDs is not supported in ORC: " + columnEncodings);
+
         return OrcProto.ColumnEncoding.newBuilder()
                 .setKind(toColumnEncoding(columnEncodings.getColumnEncodingKind()))
                 .setDictionarySize(columnEncodings.getDictionarySize())
@@ -365,6 +371,8 @@ public class OrcMetadataWriter
                 return OrcProto.CompressionKind.SNAPPY;
             case LZ4:
                 return OrcProto.CompressionKind.LZ4;
+            case ZSTD:
+                return OrcProto.CompressionKind.ZSTD;
         }
         throw new IllegalArgumentException("Unsupported compression kind: " + compressionKind);
     }

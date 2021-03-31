@@ -14,16 +14,17 @@
 package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.annotation.UsedByGeneratedCode;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.SingleMapBlock;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.BoundVariables;
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.SqlOperator;
-import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.SingleMapBlock;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.sql.InterpretedFunctionInvoker;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Primitives;
@@ -32,25 +33,30 @@ import io.airlift.slice.Slice;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 
-import static com.facebook.presto.metadata.Signature.typeVariable;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
+import static com.facebook.presto.common.block.MethodHandleUtil.compose;
+import static com.facebook.presto.common.block.MethodHandleUtil.nativeValueGetter;
+import static com.facebook.presto.common.function.OperatorType.SUBSCRIPT;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.TypeUtils.readNativeValue;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.metadata.CastType.CAST;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.function.OperatorType.SUBSCRIPT;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.facebook.presto.spi.type.TypeUtils.readNativeValue;
-import static com.facebook.presto.sql.relational.Signatures.castSignature;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.spi.function.Signature.typeVariable;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.util.Reflection.methodHandle;
 import static java.lang.String.format;
 
 public class MapSubscriptOperator
         extends SqlOperator
 {
-    private static final MethodHandle METHOD_HANDLE_BOOLEAN = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, InterpretedFunctionInvoker.class, Type.class, Type.class, ConnectorSession.class, Block.class, boolean.class);
-    private static final MethodHandle METHOD_HANDLE_LONG = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, InterpretedFunctionInvoker.class, Type.class, Type.class, ConnectorSession.class, Block.class, long.class);
-    private static final MethodHandle METHOD_HANDLE_DOUBLE = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, InterpretedFunctionInvoker.class, Type.class, Type.class, ConnectorSession.class, Block.class, double.class);
-    private static final MethodHandle METHOD_HANDLE_SLICE = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, InterpretedFunctionInvoker.class, Type.class, Type.class, ConnectorSession.class, Block.class, Slice.class);
-    private static final MethodHandle METHOD_HANDLE_OBJECT = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, InterpretedFunctionInvoker.class, Type.class, Type.class, ConnectorSession.class, Block.class, Object.class);
+    private static final MethodHandle METHOD_HANDLE_BOOLEAN = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, MissingKeyExceptionFactory.class, MethodHandle.class, MethodHandle.class, MethodHandle.class, Type.class, SqlFunctionProperties.class, Block.class, boolean.class);
+    private static final MethodHandle METHOD_HANDLE_LONG = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, MissingKeyExceptionFactory.class, MethodHandle.class, MethodHandle.class, MethodHandle.class, Type.class, SqlFunctionProperties.class, Block.class, long.class);
+    private static final MethodHandle METHOD_HANDLE_DOUBLE = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, MissingKeyExceptionFactory.class, MethodHandle.class, MethodHandle.class, MethodHandle.class, Type.class, SqlFunctionProperties.class, Block.class, double.class);
+    private static final MethodHandle METHOD_HANDLE_SLICE = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, MissingKeyExceptionFactory.class, MethodHandle.class, MethodHandle.class, MethodHandle.class, Type.class, SqlFunctionProperties.class, Block.class, Slice.class);
+    private static final MethodHandle METHOD_HANDLE_OBJECT = methodHandle(MapSubscriptOperator.class, "subscript", boolean.class, MissingKeyExceptionFactory.class, MethodHandle.class, MethodHandle.class, MethodHandle.class, Type.class, SqlFunctionProperties.class, Block.class, Object.class);
 
     private final boolean legacyMissingKey;
 
@@ -65,10 +71,15 @@ public class MapSubscriptOperator
     }
 
     @Override
-    public ScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public BuiltInScalarFunctionImplementation specialize(BoundVariables boundVariables, int arity, FunctionAndTypeManager functionAndTypeManager)
     {
         Type keyType = boundVariables.getTypeVariable("K");
         Type valueType = boundVariables.getTypeVariable("V");
+
+        MethodHandle keyNativeHashCode = functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionAndTypeManager.resolveOperator(OperatorType.HASH_CODE, fromTypes(keyType))).getMethodHandle();
+        MethodHandle keyBlockHashCode = compose(keyNativeHashCode, nativeValueGetter(keyType));
+        MethodHandle keyNativeEquals = functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionAndTypeManager.resolveOperator(OperatorType.EQUAL, fromTypes(keyType, keyType))).getMethodHandle();
+        MethodHandle keyBlockNativeEquals = compose(keyNativeEquals, nativeValueGetter(keyType));
 
         MethodHandle methodHandle;
         if (keyType.getJavaType() == boolean.class) {
@@ -87,98 +98,152 @@ public class MapSubscriptOperator
             methodHandle = METHOD_HANDLE_OBJECT;
         }
         methodHandle = MethodHandles.insertArguments(methodHandle, 0, legacyMissingKey);
-        InterpretedFunctionInvoker functionInvoker = new InterpretedFunctionInvoker(functionRegistry);
-        methodHandle = methodHandle.bindTo(functionInvoker).bindTo(keyType).bindTo(valueType);
+        MissingKeyExceptionFactory missingKeyExceptionFactory = new MissingKeyExceptionFactory(functionAndTypeManager, keyType);
+        methodHandle = methodHandle.bindTo(missingKeyExceptionFactory).bindTo(keyNativeHashCode).bindTo(keyBlockNativeEquals).bindTo(keyBlockHashCode).bindTo(valueType);
         methodHandle = methodHandle.asType(methodHandle.type().changeReturnType(Primitives.wrap(valueType.getJavaType())));
 
-        return new ScalarFunctionImplementation(
+        return new BuiltInScalarFunctionImplementation(
                 true,
                 ImmutableList.of(
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL),
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
-                methodHandle,
-                isDeterministic());
+                methodHandle);
     }
 
     @UsedByGeneratedCode
-    public static Object subscript(boolean legacyMissingKey, InterpretedFunctionInvoker functionInvoker, Type keyType, Type valueType, ConnectorSession session, Block map, boolean key)
+    public static Object subscript(boolean legacyMissingKey, MissingKeyExceptionFactory missingKeyExceptionFactory, MethodHandle keyNativeHashCode, MethodHandle keyBlockNativeEquals, MethodHandle keyBlockHashCode, Type valueType, SqlFunctionProperties properties, Block map, boolean key)
     {
         SingleMapBlock mapBlock = (SingleMapBlock) map;
-        int valuePosition = mapBlock.seekKeyExact(key);
-        if (valuePosition == -1) {
-            if (legacyMissingKey) {
-                return null;
-            }
-            throw throwMissingKeyException(keyType, functionInvoker, key, session);
-        }
-        return readNativeValue(valueType, mapBlock, valuePosition);
-    }
-
-    @UsedByGeneratedCode
-    public static Object subscript(boolean legacyMissingKey, InterpretedFunctionInvoker functionInvoker, Type keyType, Type valueType, ConnectorSession session, Block map, long key)
-    {
-        SingleMapBlock mapBlock = (SingleMapBlock) map;
-        int valuePosition = mapBlock.seekKeyExact(key);
-        if (valuePosition == -1) {
-            if (legacyMissingKey) {
-                return null;
-            }
-            throw throwMissingKeyException(keyType, functionInvoker, key, session);
-        }
-        return readNativeValue(valueType, mapBlock, valuePosition);
-    }
-
-    @UsedByGeneratedCode
-    public static Object subscript(boolean legacyMissingKey, InterpretedFunctionInvoker functionInvoker, Type keyType, Type valueType, ConnectorSession session, Block map, double key)
-    {
-        SingleMapBlock mapBlock = (SingleMapBlock) map;
-        int valuePosition = mapBlock.seekKeyExact(key);
-        if (valuePosition == -1) {
-            if (legacyMissingKey) {
-                return null;
-            }
-            throw throwMissingKeyException(keyType, functionInvoker, key, session);
-        }
-        return readNativeValue(valueType, mapBlock, valuePosition);
-    }
-
-    @UsedByGeneratedCode
-    public static Object subscript(boolean legacyMissingKey, InterpretedFunctionInvoker functionInvoker, Type keyType, Type valueType, ConnectorSession session, Block map, Slice key)
-    {
-        SingleMapBlock mapBlock = (SingleMapBlock) map;
-        int valuePosition = mapBlock.seekKeyExact(key);
-        if (valuePosition == -1) {
-            if (legacyMissingKey) {
-                return null;
-            }
-            throw throwMissingKeyException(keyType, functionInvoker, key, session);
-        }
-        return readNativeValue(valueType, mapBlock, valuePosition);
-    }
-
-    @UsedByGeneratedCode
-    public static Object subscript(boolean legacyMissingKey, InterpretedFunctionInvoker functionInvoker, Type keyType, Type valueType, ConnectorSession session, Block map, Object key)
-    {
-        SingleMapBlock mapBlock = (SingleMapBlock) map;
-        int valuePosition = mapBlock.seekKeyExact((Block) key);
-        if (valuePosition == -1) {
-            if (legacyMissingKey) {
-                return null;
-            }
-            throw throwMissingKeyException(keyType, functionInvoker, key, session);
-        }
-        return readNativeValue(valueType, mapBlock, valuePosition);
-    }
-
-    private static RuntimeException throwMissingKeyException(Type type, InterpretedFunctionInvoker functionInvoker, Object value, ConnectorSession session)
-    {
-        String stringValue;
+        int valuePosition;
         try {
-            stringValue = ((Slice) functionInvoker.invoke(castSignature(VarcharType.VARCHAR, type), session, value)).toStringUtf8();
+            valuePosition = mapBlock.seekKeyExact(key, keyNativeHashCode, keyBlockNativeEquals, keyBlockHashCode);
         }
-        catch (RuntimeException e) {
-            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "Key not present in map");
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
         }
-        throw new PrestoException(INVALID_FUNCTION_ARGUMENT, format("Key not present in map: %s", stringValue));
+
+        if (valuePosition == -1) {
+            if (legacyMissingKey) {
+                return null;
+            }
+            throw missingKeyExceptionFactory.create(properties, key);
+        }
+        return readNativeValue(valueType, mapBlock, valuePosition);
+    }
+
+    @UsedByGeneratedCode
+    public static Object subscript(boolean legacyMissingKey, MissingKeyExceptionFactory missingKeyExceptionFactory, MethodHandle keyNativeHashCode, MethodHandle keyBlockNativeEquals, MethodHandle keyBlockHashCode, Type valueType, SqlFunctionProperties properties, Block map, long key)
+    {
+        SingleMapBlock mapBlock = (SingleMapBlock) map;
+        int valuePosition;
+        try {
+            valuePosition = mapBlock.seekKeyExact(key, keyNativeHashCode, keyBlockNativeEquals, keyBlockHashCode);
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
+        }
+
+        if (valuePosition == -1) {
+            if (legacyMissingKey) {
+                return null;
+            }
+            throw missingKeyExceptionFactory.create(properties, key);
+        }
+        return readNativeValue(valueType, mapBlock, valuePosition);
+    }
+
+    @UsedByGeneratedCode
+    public static Object subscript(boolean legacyMissingKey, MissingKeyExceptionFactory missingKeyExceptionFactory, MethodHandle keyNativeHashCode, MethodHandle keyBlockNativeEquals, MethodHandle keyBlockHashCode, Type valueType, SqlFunctionProperties properties, Block map, double key)
+    {
+        SingleMapBlock mapBlock = (SingleMapBlock) map;
+        int valuePosition;
+        try {
+            valuePosition = mapBlock.seekKeyExact(key, keyNativeHashCode, keyBlockNativeEquals, keyBlockHashCode);
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
+        }
+
+        if (valuePosition == -1) {
+            if (legacyMissingKey) {
+                return null;
+            }
+            throw missingKeyExceptionFactory.create(properties, key);
+        }
+        return readNativeValue(valueType, mapBlock, valuePosition);
+    }
+
+    @UsedByGeneratedCode
+    public static Object subscript(boolean legacyMissingKey, MissingKeyExceptionFactory missingKeyExceptionFactory, MethodHandle keyNativeHashCode, MethodHandle keyBlockNativeEquals, MethodHandle keyBlockHashCode, Type valueType, SqlFunctionProperties properties, Block map, Slice key)
+    {
+        SingleMapBlock mapBlock = (SingleMapBlock) map;
+        int valuePosition;
+        try {
+            valuePosition = mapBlock.seekKeyExact(key, keyNativeHashCode, keyBlockNativeEquals, keyBlockHashCode);
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
+        }
+
+        if (valuePosition == -1) {
+            if (legacyMissingKey) {
+                return null;
+            }
+            throw missingKeyExceptionFactory.create(properties, key);
+        }
+        return readNativeValue(valueType, mapBlock, valuePosition);
+    }
+
+    @UsedByGeneratedCode
+    public static Object subscript(boolean legacyMissingKey, MissingKeyExceptionFactory missingKeyExceptionFactory, MethodHandle keyNativeHashCode, MethodHandle keyBlockNativeEquals, MethodHandle keyBlockHashCode, Type valueType, SqlFunctionProperties properties, Block map, Object key)
+    {
+        SingleMapBlock mapBlock = (SingleMapBlock) map;
+        int valuePosition;
+        try {
+            valuePosition = mapBlock.seekKeyExact((Block) key, keyNativeHashCode, keyBlockNativeEquals, keyBlockHashCode);
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
+        }
+
+        if (valuePosition == -1) {
+            if (legacyMissingKey) {
+                return null;
+            }
+            throw missingKeyExceptionFactory.create(properties, key);
+        }
+        return readNativeValue(valueType, mapBlock, valuePosition);
+    }
+
+    private static class MissingKeyExceptionFactory
+    {
+        private final InterpretedFunctionInvoker functionInvoker;
+        private final FunctionHandle castFunction;
+
+        public MissingKeyExceptionFactory(FunctionAndTypeManager functionAndTypeManager, Type keyType)
+        {
+            functionInvoker = new InterpretedFunctionInvoker(functionAndTypeManager);
+
+            FunctionHandle castFunction = null;
+            try {
+                castFunction = functionAndTypeManager.lookupCast(CAST, keyType.getTypeSignature(), VARCHAR.getTypeSignature());
+            }
+            catch (PrestoException ignored) {
+            }
+            this.castFunction = castFunction;
+        }
+
+        public PrestoException create(SqlFunctionProperties properties, Object value)
+        {
+            if (castFunction != null) {
+                try {
+                    Slice varcharValue = (Slice) functionInvoker.invoke(castFunction, properties, value);
+                    return new PrestoException(INVALID_FUNCTION_ARGUMENT, format("Key not present in map: %s", varcharValue.toStringUtf8()));
+                }
+                catch (RuntimeException ignored) {
+                }
+            }
+            return new PrestoException(INVALID_FUNCTION_ARGUMENT, "Key not present in map");
+        }
     }
 }

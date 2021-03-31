@@ -13,6 +13,13 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.hive.authentication.NoHdfsAuthentication;
+import com.facebook.presto.hive.metastore.Storage;
+import com.facebook.presto.hive.metastore.StorageFormat;
+import com.facebook.presto.hive.metastore.file.FileHiveMetastore;
+import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.hive.metastore.Warehouse;
 import org.apache.hadoop.hive.metastore.api.MetaException;
 import org.apache.hadoop.hive.serde2.thrift.ThriftDeserializer;
@@ -23,22 +30,36 @@ import org.joda.time.DateTimeZone;
 import org.joda.time.format.DateTimeFormat;
 import org.testng.annotations.Test;
 
+import java.io.File;
 import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 
+import static com.facebook.airlift.testing.Assertions.assertInstanceOf;
 import static com.facebook.presto.hive.HiveUtil.getDeserializer;
 import static com.facebook.presto.hive.HiveUtil.parseHiveTimestamp;
-import static com.facebook.presto.hive.HiveUtil.toPartitionValues;
-import static io.airlift.testing.Assertions.assertInstanceOf;
+import static com.facebook.presto.hive.HiveUtil.shouldUseRecordReaderFromInputFormat;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.toPartitionValues;
 import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_CLASS;
 import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_FORMAT;
 import static org.apache.hadoop.hive.serde.serdeConstants.SERIALIZATION_LIB;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertTrue;
 
 public class TestHiveUtil
 {
+    public static FileHiveMetastore createTestingFileHiveMetastore(File catalogDirectory)
+    {
+        HiveClientConfig hiveClientConfig = new HiveClientConfig();
+        MetastoreClientConfig metastoreClientConfig = new MetastoreClientConfig();
+        HdfsConfiguration hdfsConfiguration = new HiveHdfsConfiguration(new HdfsConfigurationInitializer(hiveClientConfig, metastoreClientConfig), ImmutableSet.of());
+        HdfsEnvironment hdfsEnvironment = new HdfsEnvironment(hdfsConfiguration, metastoreClientConfig, new NoHdfsAuthentication());
+        return new FileHiveMetastore(hdfsEnvironment, catalogDirectory.toURI().toString(), "test");
+    }
+
     @Test
     public void testParseHiveTimestamp()
     {
@@ -58,7 +79,7 @@ public class TestHiveUtil
         schema.setProperty(SERIALIZATION_CLASS, IntString.class.getName());
         schema.setProperty(SERIALIZATION_FORMAT, TBinaryProtocol.class.getName());
 
-        assertInstanceOf(getDeserializer(schema), ThriftDeserializer.class);
+        assertInstanceOf(getDeserializer(new Configuration(false), schema), ThriftDeserializer.class);
     }
 
     @Test
@@ -71,6 +92,16 @@ public class TestHiveUtil
         assertToPartitionValues("a=1");
         assertToPartitionValues("pk=!@%23$%25%5E&%2A()%2F%3D");
         assertToPartitionValues("pk=__HIVE_DEFAULT_PARTITION__");
+    }
+
+    @Test
+    public void testShouldUseRecordReaderFromInputFormat()
+    {
+        StorageFormat hudiStorageFormat = StorageFormat.create("parquet.hive.serde.ParquetHiveSerDe", "org.apache.hudi.hadoop.HoodieParquetInputFormat", "");
+        assertFalse(shouldUseRecordReaderFromInputFormat(new Configuration(), new Storage(hudiStorageFormat, "test", Optional.empty(), true, ImmutableMap.of(), ImmutableMap.of())));
+
+        StorageFormat hudiRealtimeStorageFormat = StorageFormat.create("parquet.hive.serde.ParquetHiveSerDe", "org.apache.hudi.hadoop.realtime.HoodieParquetRealtimeInputFormat", "");
+        assertTrue(shouldUseRecordReaderFromInputFormat(new Configuration(), new Storage(hudiRealtimeStorageFormat, "test", Optional.empty(), true, ImmutableMap.of(), ImmutableMap.of())));
     }
 
     private static void assertToPartitionValues(String partitionName)

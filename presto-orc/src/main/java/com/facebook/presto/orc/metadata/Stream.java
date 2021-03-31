@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import java.util.Optional;
+
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
@@ -32,19 +34,30 @@ public class Stream
         IN_DICTIONARY,
         ROW_GROUP_DICTIONARY,
         ROW_GROUP_DICTIONARY_LENGTH,
+        IN_MAP,
     }
 
     private final int column;
     private final StreamKind streamKind;
     private final int length;
     private final boolean useVInts;
+    private final int sequence;
+
+    private final Optional<Long> offset;
 
     public Stream(int column, StreamKind streamKind, int length, boolean useVInts)
+    {
+        this(column, streamKind, length, useVInts, ColumnEncoding.DEFAULT_SEQUENCE_ID, Optional.empty());
+    }
+
+    public Stream(int column, StreamKind streamKind, int length, boolean useVInts, int sequence, Optional<Long> offset)
     {
         this.column = column;
         this.streamKind = requireNonNull(streamKind, "streamKind is null");
         this.length = length;
         this.useVInts = useVInts;
+        this.sequence = sequence;
+        this.offset = requireNonNull(offset, "offset is null");
     }
 
     public int getColumn()
@@ -67,6 +80,16 @@ public class Stream
         return useVInts;
     }
 
+    public int getSequence()
+    {
+        return sequence;
+    }
+
+    public Optional<Long> getOffset()
+    {
+        return offset;
+    }
+
     @Override
     public String toString()
     {
@@ -75,6 +98,19 @@ public class Stream
                 .add("streamKind", streamKind)
                 .add("length", length)
                 .add("useVInts", useVInts)
+                .add("sequence", sequence)
+                .add("offset", offset)
                 .toString();
+    }
+
+    public Stream withOffset(long offset)
+    {
+        return new Stream(
+                this.column,
+                this.streamKind,
+                this.length,
+                this.useVInts,
+                this.sequence,
+                Optional.of(offset));
     }
 }

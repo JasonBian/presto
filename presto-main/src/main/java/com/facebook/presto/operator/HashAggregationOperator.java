@@ -13,20 +13,20 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.aggregation.Accumulator;
 import com.facebook.presto.operator.aggregation.AccumulatorFactory;
 import com.facebook.presto.operator.aggregation.builder.HashAggregationBuilder;
 import com.facebook.presto.operator.aggregation.builder.InMemoryHashAggregationBuilder;
 import com.facebook.presto.operator.aggregation.builder.SpillableHashAggregationBuilder;
 import com.facebook.presto.operator.scalar.CombineHashFunction;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.plan.AggregationNode.Step;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spiller.SpillerFactory;
 import com.facebook.presto.sql.gen.JoinCompiler;
-import com.facebook.presto.sql.planner.plan.AggregationNode.Step;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
@@ -40,6 +40,7 @@ import static com.facebook.presto.operator.aggregation.builder.InMemoryHashAggre
 import static com.facebook.presto.sql.planner.optimizations.HashGenerationOptimizer.INITIAL_HASH_VALUE;
 import static com.facebook.presto.type.TypeUtils.NULL_HASH_CODE;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.base.Verify.verify;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.util.Objects.requireNonNull;
 
@@ -63,12 +64,13 @@ public class HashAggregationOperator
         private final Optional<Integer> groupIdChannel;
 
         private final int expectedGroups;
-        private final DataSize maxPartialMemory;
+        private final Optional<DataSize> maxPartialMemory;
         private final boolean spillEnabled;
         private final DataSize memoryLimitForMerge;
         private final DataSize memoryLimitForMergeWithMemory;
         private final SpillerFactory spillerFactory;
         private final JoinCompiler joinCompiler;
+        private final boolean useSystemMemory;
 
         private boolean closed;
 
@@ -84,8 +86,9 @@ public class HashAggregationOperator
                 Optional<Integer> hashChannel,
                 Optional<Integer> groupIdChannel,
                 int expectedGroups,
-                DataSize maxPartialMemory,
-                JoinCompiler joinCompiler)
+                Optional<DataSize> maxPartialMemory,
+                JoinCompiler joinCompiler,
+                boolean useSystemMemory)
         {
             this(operatorId,
                     planNodeId,
@@ -105,7 +108,8 @@ public class HashAggregationOperator
                     (types, spillContext, memoryContext) -> {
                         throw new UnsupportedOperationException();
                     },
-                    joinCompiler);
+                    joinCompiler,
+                    useSystemMemory);
         }
 
         public HashAggregationOperatorFactory(
@@ -120,11 +124,12 @@ public class HashAggregationOperator
                 Optional<Integer> hashChannel,
                 Optional<Integer> groupIdChannel,
                 int expectedGroups,
-                DataSize maxPartialMemory,
+                Optional<DataSize> maxPartialMemory,
                 boolean spillEnabled,
                 DataSize unspillMemoryLimit,
                 SpillerFactory spillerFactory,
-                JoinCompiler joinCompiler)
+                JoinCompiler joinCompiler,
+                boolean useSystemMemory)
         {
             this(operatorId,
                     planNodeId,
@@ -142,7 +147,8 @@ public class HashAggregationOperator
                     unspillMemoryLimit,
                     DataSize.succinctBytes((long) (unspillMemoryLimit.toBytes() * MERGE_WITH_MEMORY_RATIO)),
                     spillerFactory,
-                    joinCompiler);
+                    joinCompiler,
+                    useSystemMemory);
         }
 
         @VisibleForTesting
@@ -158,12 +164,13 @@ public class HashAggregationOperator
                 Optional<Integer> hashChannel,
                 Optional<Integer> groupIdChannel,
                 int expectedGroups,
-                DataSize maxPartialMemory,
+                Optional<DataSize> maxPartialMemory,
                 boolean spillEnabled,
                 DataSize memoryLimitForMerge,
                 DataSize memoryLimitForMergeWithMemory,
                 SpillerFactory spillerFactory,
-                JoinCompiler joinCompiler)
+                JoinCompiler joinCompiler,
+                boolean useSystemMemory)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
@@ -182,6 +189,7 @@ public class HashAggregationOperator
             this.memoryLimitForMergeWithMemory = requireNonNull(memoryLimitForMergeWithMemory, "memoryLimitForMergeWithMemory is null");
             this.spillerFactory = requireNonNull(spillerFactory, "spillerFactory is null");
             this.joinCompiler = requireNonNull(joinCompiler, "joinCompiler is null");
+            this.useSystemMemory = useSystemMemory;
         }
 
         @Override
@@ -206,7 +214,8 @@ public class HashAggregationOperator
                     memoryLimitForMerge,
                     memoryLimitForMergeWithMemory,
                     spillerFactory,
-                    joinCompiler);
+                    joinCompiler,
+                    useSystemMemory);
             return hashAggregationOperator;
         }
 
@@ -236,7 +245,8 @@ public class HashAggregationOperator
                     memoryLimitForMerge,
                     memoryLimitForMergeWithMemory,
                     spillerFactory,
-                    joinCompiler);
+                    joinCompiler,
+                    useSystemMemory);
         }
     }
 
@@ -250,12 +260,13 @@ public class HashAggregationOperator
     private final Optional<Integer> hashChannel;
     private final Optional<Integer> groupIdChannel;
     private final int expectedGroups;
-    private final DataSize maxPartialMemory;
+    private final Optional<DataSize> maxPartialMemory;
     private final boolean spillEnabled;
     private final DataSize memoryLimitForMerge;
     private final DataSize memoryLimitForMergeWithMemory;
     private final SpillerFactory spillerFactory;
     private final JoinCompiler joinCompiler;
+    private final boolean useSystemMemory;
 
     private final List<Type> types;
     private final HashCollisionsCounter hashCollisionsCounter;
@@ -280,12 +291,13 @@ public class HashAggregationOperator
             Optional<Integer> hashChannel,
             Optional<Integer> groupIdChannel,
             int expectedGroups,
-            DataSize maxPartialMemory,
+            Optional<DataSize> maxPartialMemory,
             boolean spillEnabled,
             DataSize memoryLimitForMerge,
             DataSize memoryLimitForMergeWithMemory,
             SpillerFactory spillerFactory,
-            JoinCompiler joinCompiler)
+            JoinCompiler joinCompiler,
+            boolean useSystemMemory)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         requireNonNull(step, "step is null");
@@ -310,6 +322,7 @@ public class HashAggregationOperator
         this.joinCompiler = requireNonNull(joinCompiler, "joinCompiler is null");
         this.hashCollisionsCounter = new HashCollisionsCounter(operatorContext);
         operatorContext.setInfoSupplier(hashCollisionsCounter);
+        this.useSystemMemory = useSystemMemory;
     }
 
     @Override
@@ -353,8 +366,7 @@ public class HashAggregationOperator
         inputProcessed = true;
 
         if (aggregationBuilder == null) {
-            // TODO: We ignore spillEnabled here if any aggregate has ORDER BY clause or DISTINCT because they are not yet implemented for spilling.
-            if (step.isOutputPartial() || !spillEnabled || hasOrderBy() || hasDistinct()) {
+            if (step.isOutputPartial() || !spillEnabled) {
                 aggregationBuilder = new InMemoryHashAggregationBuilder(
                         accumulatorFactories,
                         step,
@@ -365,9 +377,11 @@ public class HashAggregationOperator
                         operatorContext,
                         maxPartialMemory,
                         joinCompiler,
-                        true);
+                        true,
+                        useSystemMemory);
             }
             else {
+                verify(!useSystemMemory, "using system memory in spillable aggregations is not supported");
                 aggregationBuilder = new SpillableHashAggregationBuilder(
                         accumulatorFactories,
                         step,
@@ -394,16 +408,6 @@ public class HashAggregationOperator
             unfinishedWork = null;
         }
         aggregationBuilder.updateMemory();
-    }
-
-    private boolean hasOrderBy()
-    {
-        return accumulatorFactories.stream().anyMatch(AccumulatorFactory::hasOrderBy);
-    }
-
-    private boolean hasDistinct()
-    {
-        return accumulatorFactories.stream().anyMatch(AccumulatorFactory::hasDistinct);
     }
 
     @Override
@@ -503,7 +507,8 @@ public class HashAggregationOperator
     private Page getGlobalAggregationOutput()
     {
         List<Accumulator> accumulators = accumulatorFactories.stream()
-                .map(AccumulatorFactory::createAccumulator)
+                // No input will be added to the accumulators, it is ok not to specify the memory callback
+                .map(accumulatorFactory -> accumulatorFactory.createAccumulator(UpdateMemory.NOOP))
                 .collect(Collectors.toList());
 
         // global aggregation output page will only be constructed once,

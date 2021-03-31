@@ -13,23 +13,23 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.airlift.stats.QuantileDigest;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.operator.aggregation.state.DigestAndPercentileArrayState;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.AggregationFunction;
 import com.facebook.presto.spi.function.AggregationState;
 import com.facebook.presto.spi.function.CombineFunction;
 import com.facebook.presto.spi.function.InputFunction;
 import com.facebook.presto.spi.function.OutputFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
-import io.airlift.stats.QuantileDigest;
 
 import java.util.List;
 
+import static com.facebook.presto.common.type.RealType.REAL;
 import static com.facebook.presto.operator.aggregation.FloatingPointBitsConverterUtil.floatToSortableInt;
 import static com.facebook.presto.operator.aggregation.FloatingPointBitsConverterUtil.sortableIntToFloat;
-import static com.facebook.presto.spi.type.RealType.REAL;
 import static java.lang.Float.floatToRawIntBits;
 import static java.lang.Float.intBitsToFloat;
 
@@ -39,15 +39,43 @@ public class ApproximateRealPercentileArrayAggregations
     private ApproximateRealPercentileArrayAggregations() {}
 
     @InputFunction
-    public static void input(@AggregationState DigestAndPercentileArrayState state, @SqlType(StandardTypes.REAL) long value, @SqlType("array(double)") Block percentilesArrayBlock)
+    public static void input(
+            @AggregationState DigestAndPercentileArrayState state,
+            @SqlType(StandardTypes.REAL) long value,
+            @SqlType("array(double)") Block percentilesArrayBlock)
     {
         ApproximateLongPercentileArrayAggregations.input(state, floatToSortableInt(intBitsToFloat((int) value)), percentilesArrayBlock);
     }
 
     @InputFunction
-    public static void weightedInput(@AggregationState DigestAndPercentileArrayState state, @SqlType(StandardTypes.REAL) long value, @SqlType(StandardTypes.BIGINT) long weight, @SqlType("array(double)") Block percentilesArrayBlock)
+    public static void input(
+            @AggregationState DigestAndPercentileArrayState state,
+            @SqlType(StandardTypes.REAL) long value,
+            @SqlType("array(double)") Block percentilesArrayBlock,
+            @SqlType(StandardTypes.DOUBLE) double accuracy)
+    {
+        ApproximateLongPercentileArrayAggregations.input(state, floatToSortableInt(intBitsToFloat((int) value)), percentilesArrayBlock, accuracy);
+    }
+
+    @InputFunction
+    public static void weightedInput(
+            @AggregationState DigestAndPercentileArrayState state,
+            @SqlType(StandardTypes.REAL) long value,
+            @SqlType(StandardTypes.BIGINT) long weight,
+            @SqlType("array(double)") Block percentilesArrayBlock)
     {
         ApproximateLongPercentileArrayAggregations.weightedInput(state, floatToSortableInt(intBitsToFloat((int) value)), weight, percentilesArrayBlock);
+    }
+
+    @InputFunction
+    public static void weightedInput(
+            @AggregationState DigestAndPercentileArrayState state,
+            @SqlType(StandardTypes.REAL) long value,
+            @SqlType(StandardTypes.BIGINT) long weight,
+            @SqlType("array(double)") Block percentilesArrayBlock,
+            @SqlType(StandardTypes.DOUBLE) double accuracy)
+    {
+        ApproximateLongPercentileArrayAggregations.weightedInput(state, floatToSortableInt(intBitsToFloat((int) value)), weight, percentilesArrayBlock, accuracy);
     }
 
     @CombineFunction

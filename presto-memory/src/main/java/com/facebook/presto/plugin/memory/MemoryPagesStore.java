@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.plugin.memory;
 
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
 import com.google.common.collect.ImmutableList;
 
 import javax.annotation.concurrent.GuardedBy;
@@ -62,6 +62,8 @@ public class MemoryPagesStore
         if (!contains(tableId)) {
             throw new PrestoException(MISSING_DATA, "Failed to find table on a worker.");
         }
+
+        page.compact();
 
         long newSize = currentBytes + page.getRetainedSizeInBytes();
         if (maxBytes < newSize) {
@@ -144,7 +146,7 @@ public class MemoryPagesStore
 
     private static final class TableData
     {
-        private List<Page> pages = new ArrayList<>();
+        private final List<Page> pages = new ArrayList<>();
         private long rows;
 
         public void add(Page page)

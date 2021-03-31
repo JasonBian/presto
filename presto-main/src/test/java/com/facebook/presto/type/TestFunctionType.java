@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static org.testng.Assert.assertEquals;
 
 public class TestFunctionType
@@ -25,9 +26,9 @@ public class TestFunctionType
     @Test
     public void testDisplayName()
     {
-        TypeManager typeManager = new TypeRegistry();
+        FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
 
-        Type function = typeManager.getType(TypeSignature.parseTypeSignature("function<row(field double),bigint>"));
+        Type function = functionAndTypeManager.getType(TypeSignature.parseTypeSignature("function<row(field double),bigint>"));
         assertEquals(function.getDisplayName(), "function<row(field double),bigint>");
     }
 }

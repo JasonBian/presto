@@ -15,17 +15,16 @@ package com.facebook.presto.spiller;
 
 import com.facebook.presto.RowPagesBuilder;
 import com.facebook.presto.SequencePageBuilder;
-import com.facebook.presto.block.BlockEncodingManager;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.BlockEncodingManager;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.context.AggregatedMemoryContext;
 import com.facebook.presto.operator.PartitionFunction;
 import com.facebook.presto.operator.SpillContext;
 import com.facebook.presto.operator.TestingOperatorContext;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.BlockEncodingSerde;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spiller.PartitioningSpiller.PartitioningSpillResult;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Closer;
@@ -40,14 +39,14 @@ import java.util.List;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.IntPredicate;
 
+import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.operator.PageAssertions.assertPageEquals;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
-import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static java.lang.Math.toIntExact;
 import static java.nio.file.Files.createTempDirectory;
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
@@ -62,7 +61,7 @@ public class TestGenericPartitioningSpiller
     private static final int FOURTH_PARTITION_START = 20;
 
     private static final List<Type> TYPES = ImmutableList.of(BIGINT, VARCHAR, DOUBLE, BIGINT);
-    private final BlockEncodingSerde blockEncodingSerde = new BlockEncodingManager(new TypeRegistry());
+    private final BlockEncodingSerde blockEncodingSerde = new BlockEncodingManager();
 
     private Path tempDirectory;
     private SingleStreamSpillerFactory singleStreamSpillerFactory;
@@ -78,7 +77,7 @@ public class TestGenericPartitioningSpiller
         featuresConfig.setSpillerSpillPaths(tempDirectory.toString());
         featuresConfig.setSpillerThreads(8);
         featuresConfig.setSpillMaxUsedSpaceThreshold(1.0);
-        singleStreamSpillerFactory = new FileSingleStreamSpillerFactory(blockEncodingSerde, new SpillerStats(), featuresConfig);
+        singleStreamSpillerFactory = new FileSingleStreamSpillerFactory(blockEncodingSerde, new SpillerStats(), featuresConfig, new NodeSpillConfig());
         factory = new GenericPartitioningSpillerFactory(singleStreamSpillerFactory);
         scheduledExecutor = newSingleThreadScheduledExecutor();
     }
@@ -224,7 +223,7 @@ public class TestGenericPartitioningSpiller
 
     private static SpillContext mockSpillContext()
     {
-        return bytes -> {};
+        return new TestingSpillContext();
     }
 
     private static class FourFixedPartitionsPartitionFunction
@@ -246,7 +245,7 @@ public class TestGenericPartitioningSpiller
         @Override
         public int getPartition(Page page, int position)
         {
-            long value = page.getBlock(valueChannel).getLong(position, 0);
+            long value = page.getBlock(valueChannel).getLong(position);
             if (value >= FOURTH_PARTITION_START) {
                 return 3;
             }
@@ -282,7 +281,7 @@ public class TestGenericPartitioningSpiller
         @Override
         public int getPartition(Page page, int position)
         {
-            long value = page.getBlock(valueChannel).getLong(position, 0);
+            long value = page.getBlock(valueChannel).getLong(position);
             return toIntExact(Math.abs(value) % partitionCount);
         }
     }

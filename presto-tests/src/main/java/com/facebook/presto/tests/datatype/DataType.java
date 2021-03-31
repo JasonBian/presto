@@ -13,16 +13,16 @@
  */
 package com.facebook.presto.tests.datatype;
 
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.DoubleType;
-import com.facebook.presto.spi.type.IntegerType;
-import com.facebook.presto.spi.type.RealType;
-import com.facebook.presto.spi.type.SmallintType;
-import com.facebook.presto.spi.type.TinyintType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarbinaryType;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarbinaryType;
+import com.facebook.presto.common.type.VarcharType;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -30,23 +30,22 @@ import java.time.format.DateTimeFormatter;
 import java.util.Optional;
 import java.util.function.Function;
 
-import static com.facebook.presto.spi.type.CharType.createCharType;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.common.type.CharType.createCharType;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.google.common.base.Strings.padEnd;
 import static com.google.common.io.BaseEncoding.base16;
 import static java.lang.String.format;
 import static java.math.RoundingMode.UNNECESSARY;
-import static java.util.Optional.empty;
 import static java.util.function.Function.identity;
 
 public class DataType<T>
 {
-    private String insertType;
-    private Type prestoResultType;
-    private Function<T, String> toLiteral;
-    private Function<T, ?> toPrestoQueryResult;
+    private final String insertType;
+    private final Type prestoResultType;
+    private final Function<T, String> toLiteral;
+    private final Function<T, ?> toPrestoQueryResult;
 
     public static DataType<Boolean> booleanDataType()
     {
@@ -95,7 +94,7 @@ public class DataType<T>
 
     public static DataType<String> varcharDataType()
     {
-        return varcharDataType(empty(), "");
+        return varcharDataType(Optional.empty(), "");
     }
 
     private static DataType<String> varcharDataType(Optional<Integer> length, String properties)

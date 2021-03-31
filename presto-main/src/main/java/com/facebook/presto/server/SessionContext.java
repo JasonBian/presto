@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.server;
 
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
 import com.facebook.presto.spi.security.Identity;
 import com.facebook.presto.spi.session.ResourceEstimates;
 import com.facebook.presto.transaction.TransactionId;
@@ -34,9 +36,6 @@ public interface SessionContext
     String getSchema();
 
     @Nullable
-    String getPath();
-
-    @Nullable
     String getSource();
 
     String getRemoteUserAddress();
@@ -48,8 +47,6 @@ public interface SessionContext
     String getClientInfo();
 
     Set<String> getClientTags();
-
-    Set<String> getClientCapabilities();
 
     ResourceEstimates getResourceEstimates();
 
@@ -70,4 +67,6 @@ public interface SessionContext
     Optional<String> getTraceToken();
 
     boolean supportClientTransaction();
+
+    Map<SqlFunctionId, SqlInvokedFunction> getSessionFunctions();
 }

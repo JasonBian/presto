@@ -14,34 +14,35 @@
 package com.facebook.presto.type;
 
 import com.facebook.presto.annotation.UsedByGeneratedCode;
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.metadata.SignatureBuilder;
 import com.facebook.presto.metadata.SqlScalarFunction;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
+import com.facebook.presto.spi.function.Signature;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 
 import java.math.BigInteger;
 
-import static com.facebook.presto.metadata.FunctionKind.SCALAR;
-import static com.facebook.presto.metadata.Signature.withVariadicBound;
+import static com.facebook.presto.common.function.OperatorType.CAST;
+import static com.facebook.presto.common.type.Decimals.longTenToNth;
+import static com.facebook.presto.common.type.Decimals.overflows;
+import static com.facebook.presto.common.type.StandardTypes.DECIMAL;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.UnscaledDecimal128Arithmetic.overflows;
+import static com.facebook.presto.common.type.UnscaledDecimal128Arithmetic.rescale;
+import static com.facebook.presto.common.type.UnscaledDecimal128Arithmetic.unscaledDecimal;
+import static com.facebook.presto.common.type.UnscaledDecimal128Arithmetic.unscaledDecimalToBigInteger;
+import static com.facebook.presto.common.type.UnscaledDecimal128Arithmetic.unscaledDecimalToUnscaledLongUnsafe;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
-import static com.facebook.presto.spi.function.OperatorType.CAST;
-import static com.facebook.presto.spi.type.Decimals.longTenToNth;
-import static com.facebook.presto.spi.type.Decimals.overflows;
-import static com.facebook.presto.spi.type.StandardTypes.DECIMAL;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.facebook.presto.spi.type.UnscaledDecimal128Arithmetic.overflows;
-import static com.facebook.presto.spi.type.UnscaledDecimal128Arithmetic.rescale;
-import static com.facebook.presto.spi.type.UnscaledDecimal128Arithmetic.unscaledDecimal;
-import static com.facebook.presto.spi.type.UnscaledDecimal128Arithmetic.unscaledDecimalToBigInteger;
-import static com.facebook.presto.spi.type.UnscaledDecimal128Arithmetic.unscaledDecimalToUnscaledLongUnsafe;
+import static com.facebook.presto.spi.function.FunctionKind.SCALAR;
+import static com.facebook.presto.spi.function.Signature.withVariadicBound;
 import static java.lang.String.format;
 
 public final class DecimalToDecimalCasts
 {
-    public static final Signature SIGNATURE = Signature.builder()
+    public static final Signature SIGNATURE = SignatureBuilder.builder()
             .kind(SCALAR)
             .operatorType(CAST)
             .typeVariableConstraints(withVariadicBound("F", DECIMAL), withVariadicBound("T", DECIMAL))
@@ -50,29 +51,30 @@ public final class DecimalToDecimalCasts
             .build();
 
     // TODO: filtering mechanism could be used to return NoOp method when only precision is increased
-    public static final SqlScalarFunction DECIMAL_TO_DECIMAL_CAST = SqlScalarFunction.builder(DecimalToDecimalCasts.class)
+    public static final SqlScalarFunction DECIMAL_TO_DECIMAL_CAST = SqlScalarFunction.builder(DecimalToDecimalCasts.class, CAST)
             .signature(SIGNATURE)
             .deterministic(true)
-            .implementation(b -> b
-                    .methods("shortToShortCast")
-                    .withExtraParameters((context) -> {
-                        DecimalType argumentType = (DecimalType) context.getType("F");
-                        DecimalType resultType = (DecimalType) context.getType("T");
-                        long rescale = longTenToNth(Math.abs(resultType.getScale() - argumentType.getScale()));
-                        return ImmutableList.of(
-                                argumentType.getPrecision(), argumentType.getScale(),
-                                resultType.getPrecision(), resultType.getScale(),
-                                rescale, rescale / 2);
-                    }))
-            .implementation(b -> b
-                    .methods("shortToLongCast", "longToShortCast", "longToLongCast")
-                    .withExtraParameters((context) -> {
-                        DecimalType argumentType = (DecimalType) context.getType("F");
-                        DecimalType resultType = (DecimalType) context.getType("T");
-                        return ImmutableList.of(
-                                argumentType.getPrecision(), argumentType.getScale(),
-                                resultType.getPrecision(), resultType.getScale());
-                    }))
+            .choice(choice -> choice
+                    .implementation(methodsGroup -> methodsGroup
+                            .methods("shortToShortCast")
+                            .withExtraParameters((context) -> {
+                                DecimalType argumentType = (DecimalType) context.getType("F");
+                                DecimalType resultType = (DecimalType) context.getType("T");
+                                long rescale = longTenToNth(Math.abs(resultType.getScale() - argumentType.getScale()));
+                                return ImmutableList.of(
+                                        argumentType.getPrecision(), argumentType.getScale(),
+                                        resultType.getPrecision(), resultType.getScale(),
+                                        rescale, rescale / 2);
+                            }))
+                    .implementation(methodsGroup -> methodsGroup
+                            .methods("shortToLongCast", "longToShortCast", "longToLongCast")
+                            .withExtraParameters((context) -> {
+                                DecimalType argumentType = (DecimalType) context.getType("F");
+                                DecimalType resultType = (DecimalType) context.getType("T");
+                                return ImmutableList.of(
+                                        argumentType.getPrecision(), argumentType.getScale(),
+                                        resultType.getPrecision(), resultType.getScale());
+                            })))
             .build();
 
     private DecimalToDecimalCasts() {}

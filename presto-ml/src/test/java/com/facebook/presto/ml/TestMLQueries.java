@@ -14,8 +14,8 @@
 package com.facebook.presto.ml;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.spi.type.ParametricType;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.tests.AbstractTestQueryFramework;
 import com.facebook.presto.tpch.TpchConnectorFactory;
@@ -66,12 +66,12 @@ public class TestMLQueries
 
         MLPlugin plugin = new MLPlugin();
         for (Type type : plugin.getTypes()) {
-            localQueryRunner.getTypeManager().addType(type);
+            localQueryRunner.getFunctionAndTypeManager().addType(type);
         }
         for (ParametricType parametricType : plugin.getParametricTypes()) {
-            localQueryRunner.getTypeManager().addParametricType(parametricType);
+            localQueryRunner.getFunctionAndTypeManager().addParametricType(parametricType);
         }
-        localQueryRunner.getMetadata().addFunctions(extractFunctions(new MLPlugin().getFunctions()));
+        localQueryRunner.getMetadata().registerBuiltInFunctions(extractFunctions(new MLPlugin().getFunctions()));
 
         return localQueryRunner;
     }

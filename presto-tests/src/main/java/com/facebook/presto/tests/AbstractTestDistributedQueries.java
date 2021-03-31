@@ -13,12 +13,14 @@
  */
 package com.facebook.presto.tests;
 
+import com.facebook.airlift.testing.Assertions;
 import com.facebook.presto.Session;
 import com.facebook.presto.SystemSessionProperties;
+import com.facebook.presto.dispatcher.DispatchManager;
 import com.facebook.presto.execution.QueryInfo;
 import com.facebook.presto.execution.QueryManager;
+import com.facebook.presto.server.BasicQueryInfo;
 import com.facebook.presto.spi.security.Identity;
-import com.facebook.presto.sql.analyzer.FeaturesConfig.JoinDistributionType;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
 import com.facebook.presto.testing.TestingSession;
@@ -27,7 +29,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.UncheckedTimeoutException;
-import io.airlift.testing.Assertions;
 import io.airlift.units.Duration;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
@@ -36,8 +37,8 @@ import java.util.Optional;
 import java.util.function.Supplier;
 
 import static com.facebook.presto.SystemSessionProperties.QUERY_MAX_MEMORY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.INFORMATION_SCHEMA;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
 import static com.facebook.presto.testing.TestingAccessControlManager.TestingPrivilegeType.ADD_COLUMN;
 import static com.facebook.presto.testing.TestingAccessControlManager.TestingPrivilegeType.CREATE_TABLE;
@@ -65,6 +66,7 @@ import static java.util.concurrent.TimeUnit.MINUTES;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static java.util.stream.Collectors.toList;
 import static org.testng.Assert.assertFalse;
+import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
 
 public abstract class AbstractTestDistributedQueries
@@ -76,6 +78,11 @@ public abstract class AbstractTestDistributedQueries
     }
 
     protected boolean supportsViews()
+    {
+        return true;
+    }
+
+    protected boolean supportsNotNullColumns()
     {
         return true;
     }
@@ -332,12 +339,59 @@ public abstract class AbstractTestDistributedQueries
     }
 
     @Test
+    public void testInsertIntoNotNullColumn()
+    {
+        skipTestUnless(supportsNotNullColumns());
+
+        String catalog = getSession().getCatalog().get();
+        String createTableStatement = "CREATE TABLE " + catalog + ".tpch.test_not_null_with_insert (\n" +
+                "   column_a date,\n" +
+                "   column_b date NOT NULL\n" +
+                ")";
+        assertUpdate("CREATE TABLE test_not_null_with_insert (column_a DATE, column_b DATE NOT NULL)");
+        assertQuery(
+                "SHOW CREATE TABLE test_not_null_with_insert",
+                "VALUES '" + createTableStatement + "'");
+
+        assertQueryFails("INSERT INTO test_not_null_with_insert (column_a) VALUES (date '2012-12-31')", "(?s).*column_b.*null.*");
+        assertQueryFails("INSERT INTO test_not_null_with_insert (column_a, column_b) VALUES (date '2012-12-31', null)", "(?s).*column_b.*null.*");
+
+        assertUpdate("ALTER TABLE test_not_null_with_insert ADD COLUMN column_c BIGINT NOT NULL");
+        assertQuery(
+                "SHOW CREATE TABLE test_not_null_with_insert",
+                "VALUES 'CREATE TABLE " + catalog + ".tpch.test_not_null_with_insert (\n" +
+                        "   column_a date,\n" +
+                        "   column_b date NOT NULL,\n" +
+                        "   column_c bigint NOT NULL\n" +
+                        ")'");
+
+        assertQueryFails("INSERT INTO test_not_null_with_insert (column_b) VALUES (date '2012-12-31')", "(?s).*column_c.*null.*");
+        assertQueryFails("INSERT INTO test_not_null_with_insert (column_b, column_c) VALUES (date '2012-12-31', null)", "(?s).*column_c.*null.*");
+
+        assertUpdate("INSERT INTO test_not_null_with_insert (column_b, column_c) VALUES (date '2012-12-31', 1)", 1);
+        assertUpdate("INSERT INTO test_not_null_with_insert (column_a, column_b, column_c) VALUES (date '2013-01-01', date '2013-01-02', 2)", 1);
+        assertQuery(
+                "SELECT * FROM test_not_null_with_insert",
+                "VALUES ( NULL, CAST ('2012-12-31' AS DATE), 1 ), ( CAST ('2013-01-01' AS DATE), CAST ('2013-01-02' AS DATE), 2 );");
+
+        assertUpdate("DROP TABLE test_not_null_with_insert");
+    }
+
+    @Test
     public void testRenameTable()
     {
         assertUpdate("CREATE TABLE test_rename AS SELECT 123 x", 1);
 
         assertUpdate("ALTER TABLE test_rename RENAME TO test_rename_new");
         MaterializedResult materializedRows = computeActual("SELECT x FROM test_rename_new");
+        assertEquals(getOnlyElement(materializedRows.getMaterializedRows()).getField(0), 123);
+
+        assertUpdate("ALTER TABLE IF EXISTS test_rename_new RENAME TO test_rename");
+        materializedRows = computeActual("SELECT x FROM test_rename");
+        assertEquals(getOnlyElement(materializedRows.getMaterializedRows()).getField(0), 123);
+
+        assertUpdate("ALTER TABLE IF EXISTS test_rename RENAME TO test_rename_new");
+        materializedRows = computeActual("SELECT x FROM test_rename_new");
         assertEquals(getOnlyElement(materializedRows.getMaterializedRows()).getField(0), 123);
 
         // provide new table name in uppercase
@@ -349,6 +403,10 @@ public abstract class AbstractTestDistributedQueries
 
         assertFalse(getQueryRunner().tableExists(getSession(), "test_rename"));
         assertFalse(getQueryRunner().tableExists(getSession(), "test_rename_new"));
+
+        assertUpdate("ALTER TABLE IF EXISTS test_rename RENAME TO test_rename_new");
+        assertFalse(getQueryRunner().tableExists(getSession(), "test_rename"));
+        assertFalse(getQueryRunner().tableExists(getSession(), "test_rename_new"));
     }
 
     @Test
@@ -356,27 +414,49 @@ public abstract class AbstractTestDistributedQueries
     {
         assertUpdate("CREATE TABLE test_rename_column AS SELECT 123 x", 1);
 
-        assertUpdate("ALTER TABLE test_rename_column RENAME COLUMN x TO y");
-        MaterializedResult materializedRows = computeActual("SELECT y FROM test_rename_column");
+        assertUpdate("ALTER TABLE test_rename_column RENAME COLUMN x TO before_y");
+        MaterializedResult materializedRows = computeActual("SELECT before_y FROM test_rename_column");
         assertEquals(getOnlyElement(materializedRows.getMaterializedRows()).getField(0), 123);
+
+        assertUpdate("ALTER TABLE test_rename_column RENAME COLUMN IF EXISTS before_y TO y");
+        materializedRows = computeActual("SELECT y FROM test_rename_column");
+        assertEquals(getOnlyElement(materializedRows.getMaterializedRows()).getField(0), 123);
+
+        assertUpdate("ALTER TABLE test_rename_column RENAME COLUMN IF EXISTS columnNotExists TO y");
 
         assertUpdate("ALTER TABLE test_rename_column RENAME COLUMN y TO Z");
         materializedRows = computeActual("SELECT z FROM test_rename_column");
         assertEquals(getOnlyElement(materializedRows.getMaterializedRows()).getField(0), 123);
 
+        assertUpdate("ALTER TABLE test_rename_column RENAME COLUMN IF EXISTS z TO a");
+        materializedRows = computeActual("SELECT a FROM test_rename_column");
+        assertEquals(getOnlyElement(materializedRows.getMaterializedRows()).getField(0), 123);
+
         assertUpdate("DROP TABLE test_rename_column");
+        assertFalse(getQueryRunner().tableExists(getSession(), "test_rename_column"));
+        assertUpdate("ALTER TABLE IF EXISTS test_rename_column RENAME COLUMN columnNotExists TO y");
+        assertUpdate("ALTER TABLE IF EXISTS test_rename_column RENAME COLUMN IF EXISTS columnNotExists TO y");
         assertFalse(getQueryRunner().tableExists(getSession(), "test_rename_column"));
     }
 
     @Test
     public void testDropColumn()
     {
-        assertUpdate("CREATE TABLE test_drop_column AS SELECT 123 x, 111 a", 1);
+        assertUpdate("CREATE TABLE test_drop_column AS SELECT 123 x, 456 y, 111 a", 1);
 
         assertUpdate("ALTER TABLE test_drop_column DROP COLUMN x");
+        assertUpdate("ALTER TABLE test_drop_column DROP COLUMN IF EXISTS y");
+        assertUpdate("ALTER TABLE test_drop_column DROP COLUMN IF EXISTS notExistColumn");
         assertQueryFails("SELECT x FROM test_drop_column", ".* Column 'x' cannot be resolved");
+        assertQueryFails("SELECT y FROM test_drop_column", ".* Column 'y' cannot be resolved");
 
         assertQueryFails("ALTER TABLE test_drop_column DROP COLUMN a", ".* Cannot drop the only column in a table");
+
+        assertUpdate("DROP TABLE test_drop_column");
+        assertFalse(getQueryRunner().tableExists(getSession(), "test_drop_column"));
+        assertUpdate("ALTER TABLE IF EXISTS test_drop_column DROP COLUMN notExistColumn");
+        assertUpdate("ALTER TABLE IF EXISTS test_drop_column DROP COLUMN IF EXISTS notExistColumn");
+        assertFalse(getQueryRunner().tableExists(getSession(), "test_drop_column"));
     }
 
     @Test
@@ -385,6 +465,7 @@ public abstract class AbstractTestDistributedQueries
         assertUpdate("CREATE TABLE test_add_column AS SELECT 123 x", 1);
         assertUpdate("CREATE TABLE test_add_column_a AS SELECT 234 x, 111 a", 1);
         assertUpdate("CREATE TABLE test_add_column_ab AS SELECT 345 x, 222 a, 33.3E0 b", 1);
+        assertUpdate("CREATE TABLE test_add_column_abc AS SELECT 456 x, 333 a, 66.6E0 b, 'fourth' c", 1);
 
         assertQueryFails("ALTER TABLE test_add_column ADD COLUMN x bigint", ".* Column 'x' already exists");
         assertQueryFails("ALTER TABLE test_add_column ADD COLUMN X bigint", ".* Column 'X' already exists");
@@ -394,7 +475,7 @@ public abstract class AbstractTestDistributedQueries
         assertUpdate("INSERT INTO test_add_column SELECT * FROM test_add_column_a", 1);
         MaterializedResult materializedRows = computeActual("SELECT x, a FROM test_add_column ORDER BY x");
         assertEquals(materializedRows.getMaterializedRows().get(0).getField(0), 123);
-        assertEquals(materializedRows.getMaterializedRows().get(0).getField(1), null);
+        assertNull(materializedRows.getMaterializedRows().get(0).getField(1));
         assertEquals(materializedRows.getMaterializedRows().get(1).getField(0), 234);
         assertEquals(materializedRows.getMaterializedRows().get(1).getField(1), 111L);
 
@@ -402,21 +483,48 @@ public abstract class AbstractTestDistributedQueries
         assertUpdate("INSERT INTO test_add_column SELECT * FROM test_add_column_ab", 1);
         materializedRows = computeActual("SELECT x, a, b FROM test_add_column ORDER BY x");
         assertEquals(materializedRows.getMaterializedRows().get(0).getField(0), 123);
-        assertEquals(materializedRows.getMaterializedRows().get(0).getField(1), null);
-        assertEquals(materializedRows.getMaterializedRows().get(0).getField(2), null);
+        assertNull(materializedRows.getMaterializedRows().get(0).getField(1));
+        assertNull(materializedRows.getMaterializedRows().get(0).getField(2));
         assertEquals(materializedRows.getMaterializedRows().get(1).getField(0), 234);
         assertEquals(materializedRows.getMaterializedRows().get(1).getField(1), 111L);
-        assertEquals(materializedRows.getMaterializedRows().get(1).getField(2), null);
+        assertNull(materializedRows.getMaterializedRows().get(1).getField(2));
         assertEquals(materializedRows.getMaterializedRows().get(2).getField(0), 345);
         assertEquals(materializedRows.getMaterializedRows().get(2).getField(1), 222L);
         assertEquals(materializedRows.getMaterializedRows().get(2).getField(2), 33.3);
 
+        assertUpdate("ALTER TABLE test_add_column ADD COLUMN IF NOT EXISTS c varchar");
+        assertUpdate("ALTER TABLE test_add_column ADD COLUMN IF NOT EXISTS c varchar");
+        assertUpdate("INSERT INTO test_add_column SELECT * FROM test_add_column_abc", 1);
+        materializedRows = computeActual("SELECT x, a, b, c FROM test_add_column ORDER BY x");
+        assertEquals(materializedRows.getMaterializedRows().get(0).getField(0), 123);
+        assertNull(materializedRows.getMaterializedRows().get(0).getField(1));
+        assertNull(materializedRows.getMaterializedRows().get(0).getField(2));
+        assertNull(materializedRows.getMaterializedRows().get(0).getField(3));
+        assertEquals(materializedRows.getMaterializedRows().get(1).getField(0), 234);
+        assertEquals(materializedRows.getMaterializedRows().get(1).getField(1), 111L);
+        assertNull(materializedRows.getMaterializedRows().get(1).getField(2));
+        assertNull(materializedRows.getMaterializedRows().get(1).getField(3));
+        assertEquals(materializedRows.getMaterializedRows().get(2).getField(0), 345);
+        assertEquals(materializedRows.getMaterializedRows().get(2).getField(1), 222L);
+        assertEquals(materializedRows.getMaterializedRows().get(2).getField(2), 33.3);
+        assertNull(materializedRows.getMaterializedRows().get(2).getField(3));
+        assertEquals(materializedRows.getMaterializedRows().get(3).getField(0), 456);
+        assertEquals(materializedRows.getMaterializedRows().get(3).getField(1), 333L);
+        assertEquals(materializedRows.getMaterializedRows().get(3).getField(2), 66.6);
+        assertEquals(materializedRows.getMaterializedRows().get(3).getField(3), "fourth");
+
         assertUpdate("DROP TABLE test_add_column");
         assertUpdate("DROP TABLE test_add_column_a");
         assertUpdate("DROP TABLE test_add_column_ab");
+        assertUpdate("DROP TABLE test_add_column_abc");
         assertFalse(getQueryRunner().tableExists(getSession(), "test_add_column"));
         assertFalse(getQueryRunner().tableExists(getSession(), "test_add_column_a"));
         assertFalse(getQueryRunner().tableExists(getSession(), "test_add_column_ab"));
+        assertFalse(getQueryRunner().tableExists(getSession(), "test_add_column_abc"));
+
+        assertUpdate("ALTER TABLE IF EXISTS test_add_column ADD COLUMN x bigint");
+        assertUpdate("ALTER TABLE IF EXISTS test_add_column ADD COLUMN IF NOT EXISTS x bigint");
+        assertFalse(getQueryRunner().tableExists(getSession(), "test_add_column"));
     }
 
     @Test
@@ -463,7 +571,7 @@ public abstract class AbstractTestDistributedQueries
         assertUpdate("INSERT INTO test_insert (a) VALUES (ARRAY[1234])", 1);
         assertQuery("SELECT a[1] FROM test_insert", "VALUES (null), (1234)");
 
-        assertQueryFails("INSERT INTO test_insert (b) VALUES (ARRAY[1.23E1])", "Insert query has mismatched column types: .*");
+        assertQueryFails("INSERT INTO test_insert (b) VALUES (ARRAY[1.23E1])", "line 1:37: Mismatch at column 1.*");
 
         assertUpdate("DROP TABLE test_insert");
     }
@@ -716,12 +824,13 @@ public abstract class AbstractTestDistributedQueries
         assertContains(actual, expected);
 
         // test INFORMATION_SCHEMA.VIEWS
+        String user = getSession().getUser();
         actual = computeActual(format(
-                "SELECT table_name, view_definition FROM information_schema.views WHERE table_schema = '%s'",
+                "SELECT table_name, view_owner, view_definition FROM information_schema.views WHERE table_schema = '%s'",
                 getSession().getSchema().get()));
 
         expected = resultBuilder(getSession(), actual.getTypes())
-                .row("meta_test_view", formatSqlText(query))
+                .row("meta_test_view", user, formatSqlText(query))
                 .build();
 
         assertContains(actual, expected);
@@ -758,8 +867,9 @@ public abstract class AbstractTestDistributedQueries
         executeExclusively(() -> {
             assertUntilTimeout(
                     () -> assertEquals(
-                            queryManager.getAllQueryInfo()
-                                    .stream()
+                            queryManager.getQueries().stream()
+                                    .map(BasicQueryInfo::getQueryId)
+                                    .map(queryManager::getFullQueryInfo)
                                     .filter(info -> !info.isFinalQueryInfo())
                                     .collect(toList()),
                             ImmutableList.of()),
@@ -769,8 +879,9 @@ public abstract class AbstractTestDistributedQueries
             // The completed queries counter is updated in a final query info listener, which is called eventually.
             // Therefore, here we wait until the value of this counter gets stable.
 
-            long beforeCompletedQueriesCount = waitUntilStable(() -> queryManager.getStats().getCompletedQueries().getTotalCount(), new Duration(5, SECONDS));
-            long beforeSubmittedQueriesCount = queryManager.getStats().getSubmittedQueries().getTotalCount();
+            DispatchManager dispatchManager = ((DistributedQueryRunner) getQueryRunner()).getCoordinator().getDispatchManager();
+            long beforeCompletedQueriesCount = waitUntilStable(() -> dispatchManager.getStats().getCompletedQueries().getTotalCount(), new Duration(5, SECONDS));
+            long beforeSubmittedQueriesCount = dispatchManager.getStats().getSubmittedQueries().getTotalCount();
             assertUpdate("CREATE TABLE test_query_logging_count AS SELECT 1 foo_1, 2 foo_2_4", 1);
             assertQuery("SELECT foo_1, foo_2_4 FROM test_query_logging_count", "SELECT 1, 2");
             assertUpdate("DROP TABLE test_query_logging_count");
@@ -778,9 +889,9 @@ public abstract class AbstractTestDistributedQueries
 
             // TODO: Figure out a better way of synchronization
             assertUntilTimeout(
-                    () -> assertEquals(queryManager.getStats().getCompletedQueries().getTotalCount() - beforeCompletedQueriesCount, 4),
+                    () -> assertEquals(dispatchManager.getStats().getCompletedQueries().getTotalCount() - beforeCompletedQueriesCount, 4),
                     new Duration(1, MINUTES));
-            assertEquals(queryManager.getStats().getSubmittedQueries().getTotalCount() - beforeSubmittedQueriesCount, 4);
+            assertEquals(dispatchManager.getStats().getSubmittedQueries().getTotalCount() - beforeSubmittedQueriesCount, 4);
         });
     }
 
@@ -939,27 +1050,22 @@ public abstract class AbstractTestDistributedQueries
                 "SELECT * FROM test_nested_view_access",
                 privilege(getSession().getUser(), "test_view_access", SELECT_COLUMN));
 
+        // verify that INVOKER security runs as session user
+        assertAccessAllowed(
+                viewOwnerSession,
+                "CREATE VIEW test_invoker_view_access SECURITY INVOKER AS SELECT * FROM orders",
+                privilege("orders", CREATE_VIEW_WITH_SELECT_COLUMNS));
+        assertAccessAllowed(
+                "SELECT * FROM test_invoker_view_access",
+                privilege(viewOwnerSession.getUser(), "orders", SELECT_COLUMN));
+        assertAccessDenied(
+                "SELECT * FROM test_invoker_view_access",
+                "Cannot select from columns \\[.*\\] in table .*.orders.*",
+                privilege(getSession().getUser(), "orders", SELECT_COLUMN));
+
         assertAccessAllowed(nestedViewOwnerSession, "DROP VIEW test_nested_view_access");
         assertAccessAllowed(viewOwnerSession, "DROP VIEW test_view_access");
-    }
-
-    @Test
-    public void testJoinWithStatefulFilterFunction()
-    {
-        super.testJoinWithStatefulFilterFunction();
-
-        // Stateful function is placed in LEFT JOIN's ON clause and involves left & right symbols to prevent any kind of push down/pull down.
-        Session session = Session.builder(getSession())
-                // With broadcast join, lineitem would be source-distributed and not executed concurrently.
-                .setSystemProperty(SystemSessionProperties.JOIN_DISTRIBUTION_TYPE, JoinDistributionType.PARTITIONED.toString())
-                .build();
-        long joinOutputRowCount = 60175;
-        assertQuery(
-                session,
-                format(
-                        "SELECT count(*) FROM lineitem l LEFT OUTER JOIN orders o ON l.orderkey = o.orderkey AND stateful_sleeping_sum(%s, 100, l.linenumber, o.shippriority) > 0",
-                        10 * 1. / joinOutputRowCount),
-                format("VALUES %s", joinOutputRowCount));
+        assertAccessAllowed(viewOwnerSession, "DROP VIEW test_invoker_view_access");
     }
 
     @Test
@@ -968,19 +1074,19 @@ public abstract class AbstractTestDistributedQueries
         String sql = "CREATE TABLE test_written_stats AS SELECT * FROM nation";
         DistributedQueryRunner distributedQueryRunner = (DistributedQueryRunner) getQueryRunner();
         ResultWithQueryId<MaterializedResult> resultResultWithQueryId = distributedQueryRunner.executeWithQueryId(getSession(), sql);
-        QueryInfo queryInfo = distributedQueryRunner.getQueryInfo(resultResultWithQueryId.getQueryId());
+        QueryInfo queryInfo = distributedQueryRunner.getCoordinator().getQueryManager().getFullQueryInfo(resultResultWithQueryId.getQueryId());
 
         assertEquals(queryInfo.getQueryStats().getOutputPositions(), 1L);
-        assertEquals(queryInfo.getQueryStats().getWrittenPositions(), 25L);
-        assertTrue(queryInfo.getQueryStats().getLogicalWrittenDataSize().toBytes() > 0L);
+        assertEquals(queryInfo.getQueryStats().getWrittenOutputPositions(), 25L);
+        assertTrue(queryInfo.getQueryStats().getWrittenOutputLogicalDataSize().toBytes() > 0L);
 
         sql = "INSERT INTO test_written_stats SELECT * FROM nation LIMIT 10";
         resultResultWithQueryId = distributedQueryRunner.executeWithQueryId(getSession(), sql);
-        queryInfo = distributedQueryRunner.getQueryInfo(resultResultWithQueryId.getQueryId());
+        queryInfo = distributedQueryRunner.getCoordinator().getQueryManager().getFullQueryInfo(resultResultWithQueryId.getQueryId());
 
         assertEquals(queryInfo.getQueryStats().getOutputPositions(), 1L);
-        assertEquals(queryInfo.getQueryStats().getWrittenPositions(), 10L);
-        assertTrue(queryInfo.getQueryStats().getLogicalWrittenDataSize().toBytes() > 0L);
+        assertEquals(queryInfo.getQueryStats().getWrittenOutputPositions(), 10L);
+        assertTrue(queryInfo.getQueryStats().getWrittenOutputLogicalDataSize().toBytes() > 0L);
 
         assertUpdate("DROP TABLE test_written_stats");
     }

@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.kudu;
 
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.kudu.procedures.RangePartitionProcedures;
 import com.facebook.presto.kudu.properties.KuduTableProperties;
 import com.facebook.presto.kudu.schema.NoSchemaEmulation;
@@ -23,18 +24,16 @@ import com.facebook.presto.spi.connector.ConnectorPageSourceProvider;
 import com.facebook.presto.spi.connector.ConnectorRecordSetProvider;
 import com.facebook.presto.spi.connector.ConnectorSplitManager;
 import com.facebook.presto.spi.procedure.Procedure;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.inject.AbstractModule;
 import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.multibindings.Multibinder;
-import com.google.inject.multibindings.MultibindingsScanner;
 import com.google.inject.multibindings.ProvidesIntoSet;
 import org.apache.kudu.client.KuduClient;
 
 import javax.inject.Singleton;
 
-import static io.airlift.configuration.ConfigBinder.configBinder;
+import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
 import static java.util.Objects.requireNonNull;
 
 public class KuduModule
@@ -52,8 +51,6 @@ public class KuduModule
     @Override
     protected void configure()
     {
-        install(MultibindingsScanner.asModule());
-
         bind(TypeManager.class).toInstance(typeManager);
 
         bind(KuduConnector.class).in(Scopes.SINGLETON);
@@ -94,14 +91,14 @@ public class KuduModule
     {
         requireNonNull(config, "config is null");
 
-        KuduClient.KuduClientBuilder builder = new KuduClient.KuduClientBuilder(config.getMasterAddresses());
-        builder.defaultAdminOperationTimeoutMs(config.getDefaultAdminOperationTimeout().toMillis());
-        builder.defaultOperationTimeoutMs(config.getDefaultOperationTimeout().toMillis());
-        builder.defaultSocketReadTimeoutMs(config.getDefaultSocketReadTimeout().toMillis());
-        if (config.isDisableStatistics()) {
-            builder.disableStatistics();
+        KuduClient client;
+        if (!config.isKerberosAuthEnabled()) {
+            client = KuduUtil.createKuduClient(config);
         }
-        KuduClient client = builder.build();
+        else {
+            KuduUtil.initKerberosENV(config.getKerberosPrincipal(), config.getKerberosKeytab(), config.isKerberosAuthDebugEnabled());
+            client = KuduUtil.createKuduKerberosClient(config);
+        }
 
         SchemaEmulation strategy;
         if (config.isSchemaEmulationEnabled()) {
@@ -110,6 +107,6 @@ public class KuduModule
         else {
             strategy = new NoSchemaEmulation();
         }
-        return new KuduClientSession(connectorId, client, strategy);
+        return new KuduClientSession(connectorId, client, strategy, config.isKerberosAuthEnabled());
     }
 }

@@ -13,11 +13,13 @@
  */
 package com.facebook.presto.cost;
 
-import com.facebook.presto.spi.type.FixedWidthType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VariableWidthType;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.planner.TypeProvider;
+import com.facebook.presto.common.type.FixedWidthType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VariableWidthType;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.common.collect.ImmutableMap;
 import org.pcollections.HashTreePMap;
 import org.pcollections.PMap;
 
@@ -37,46 +39,78 @@ import static java.util.Objects.requireNonNull;
 public class PlanNodeStatsEstimate
 {
     private static final double DEFAULT_DATA_SIZE_PER_COLUMN = 50;
-    public static final PlanNodeStatsEstimate UNKNOWN_STATS = builder().build();
+    private static final PlanNodeStatsEstimate UNKNOWN = new PlanNodeStatsEstimate(NaN, NaN, ImmutableMap.of());
 
     private final double outputRowCount;
-    private final PMap<Symbol, SymbolStatsEstimate> symbolStatistics;
+    private final double totalSize;
+    private final PMap<VariableReferenceExpression, VariableStatsEstimate> variableStatistics;
 
-    private PlanNodeStatsEstimate(double outputRowCount, PMap<Symbol, SymbolStatsEstimate> symbolStatistics)
+    public static PlanNodeStatsEstimate unknown()
+    {
+        return UNKNOWN;
+    }
+
+    @JsonCreator
+    public PlanNodeStatsEstimate(
+            @JsonProperty("outputRowCount") double outputRowCount,
+            @JsonProperty("totalSize") double totalSize,
+            @JsonProperty("variableStatistics") Map<VariableReferenceExpression, VariableStatsEstimate> variableStatistics)
+    {
+        this(outputRowCount, totalSize, HashTreePMap.from(requireNonNull(variableStatistics, "variableStatistics is null")));
+    }
+
+    private PlanNodeStatsEstimate(double outputRowCount, double totalSize, PMap<VariableReferenceExpression, VariableStatsEstimate> variableStatistics)
     {
         checkArgument(isNaN(outputRowCount) || outputRowCount >= 0, "outputRowCount cannot be negative");
         this.outputRowCount = outputRowCount;
-        this.symbolStatistics = symbolStatistics;
+        this.totalSize = totalSize;
+        this.variableStatistics = variableStatistics;
     }
 
     /**
      * Returns estimated number of rows.
      * Unknown value is represented by {@link Double#NaN}
      */
+    @JsonProperty
     public double getOutputRowCount()
     {
         return outputRowCount;
+    }
+
+    @JsonProperty
+    public double getTotalSize()
+    {
+        return totalSize;
+    }
+
+    /**
+     * Only use when getting all columns and meanwhile do not want to
+     * do per-column estimation.
+     */
+    public double getOutputSizeInBytes()
+    {
+        return totalSize;
     }
 
     /**
      * Returns estimated data size.
      * Unknown value is represented by {@link Double#NaN}
      */
-    public double getOutputSizeInBytes(Collection<Symbol> outputSymbols, TypeProvider types)
+    public double getOutputSizeInBytes(Collection<VariableReferenceExpression> outputVariables)
     {
-        requireNonNull(outputSymbols, "outputSymbols is null");
+        requireNonNull(outputVariables, "outputSymbols is null");
 
-        return outputSymbols.stream()
-                .mapToDouble(symbol -> getOutputSizeForSymbol(getSymbolStatistics(symbol), types.get(symbol)))
+        return outputVariables.stream()
+                .mapToDouble(variable -> getOutputSizeForVariable(getVariableStatistics(variable), variable.getType()))
                 .sum();
     }
 
-    private double getOutputSizeForSymbol(SymbolStatsEstimate symbolStatistics, Type type)
+    private double getOutputSizeForVariable(VariableStatsEstimate variableStatistics, Type type)
     {
         checkArgument(type != null, "type is null");
 
-        double averageRowSize = symbolStatistics.getAverageRowSize();
-        double nullsFraction = firstNonNaN(symbolStatistics.getNullsFraction(), 0d);
+        double averageRowSize = variableStatistics.getAverageRowSize();
+        double nullsFraction = firstNonNaN(variableStatistics.getNullsFraction(), 0d);
         double numberOfNonNullRows = outputRowCount * (1.0 - nullsFraction);
 
         if (isNaN(averageRowSize)) {
@@ -106,21 +140,32 @@ public class PlanNodeStatsEstimate
         return buildFrom(this).setOutputRowCount(mappingFunction.apply(outputRowCount)).build();
     }
 
-    public PlanNodeStatsEstimate mapSymbolColumnStatistics(Symbol symbol, Function<SymbolStatsEstimate, SymbolStatsEstimate> mappingFunction)
+    public PlanNodeStatsEstimate mapVariableColumnStatistics(VariableReferenceExpression variable, Function<VariableStatsEstimate, VariableStatsEstimate> mappingFunction)
     {
         return buildFrom(this)
-                .addSymbolStatistics(symbol, mappingFunction.apply(getSymbolStatistics(symbol)))
+                .addVariableStatistics(variable, mappingFunction.apply(getVariableStatistics(variable)))
                 .build();
     }
 
-    public SymbolStatsEstimate getSymbolStatistics(Symbol symbol)
+    public VariableStatsEstimate getVariableStatistics(VariableReferenceExpression variable)
     {
-        return symbolStatistics.getOrDefault(symbol, SymbolStatsEstimate.UNKNOWN_STATS);
+        return variableStatistics.getOrDefault(variable, VariableStatsEstimate.unknown());
     }
 
-    public Set<Symbol> getSymbolsWithKnownStatistics()
+    @JsonProperty
+    public Map<VariableReferenceExpression, VariableStatsEstimate> getVariableStatistics()
     {
-        return symbolStatistics.keySet();
+        return variableStatistics;
+    }
+
+    public Set<VariableReferenceExpression> getVariablesWithKnownStatistics()
+    {
+        return variableStatistics.keySet();
+    }
+
+    public boolean isOutputRowCountUnknown()
+    {
+        return isNaN(outputRowCount);
     }
 
     @Override
@@ -128,7 +173,8 @@ public class PlanNodeStatsEstimate
     {
         return toStringHelper(this)
                 .add("outputRowCount", outputRowCount)
-                .add("symbolStatistics", symbolStatistics)
+                .add("totalSize", totalSize)
+                .add("variableStatistics", variableStatistics)
                 .toString();
     }
 
@@ -143,13 +189,14 @@ public class PlanNodeStatsEstimate
         }
         PlanNodeStatsEstimate that = (PlanNodeStatsEstimate) o;
         return Double.compare(outputRowCount, that.outputRowCount) == 0 &&
-                Objects.equals(symbolStatistics, that.symbolStatistics);
+                Double.compare(totalSize, that.totalSize) == 0 &&
+                Objects.equals(variableStatistics, that.variableStatistics);
     }
 
     @Override
     public int hashCode()
     {
-        return Objects.hash(outputRowCount, symbolStatistics);
+        return Objects.hash(outputRowCount, totalSize, variableStatistics);
     }
 
     public static Builder builder()
@@ -157,25 +204,31 @@ public class PlanNodeStatsEstimate
         return new Builder();
     }
 
+    // Do not propagate the totalSize by default, because otherwise people have to explicitly set it to NaN or a not NaN but possibly wrong totalSize value is carried.
+    // Given that we are only using this field for "leaf" simple join plans for now, it is safer to set it NaN by default so that if "accidentally" fetch the totalSize
+    // at other places we can tell that it is not usable via isNaN(). Ideally, when we have implemented how to handle the totalSize field for all types of operator rules,
+    // we should propagate totalSize as default to simplify the relevant operations in rules that do not change this field.
     public static Builder buildFrom(PlanNodeStatsEstimate other)
     {
-        return new Builder(other.getOutputRowCount(), other.symbolStatistics);
+        return new Builder(other.getOutputRowCount(), NaN, other.variableStatistics);
     }
 
     public static final class Builder
     {
         private double outputRowCount;
-        private PMap<Symbol, SymbolStatsEstimate> symbolStatistics;
+        private double totalSize;
+        private PMap<VariableReferenceExpression, VariableStatsEstimate> variableStatistics;
 
         public Builder()
         {
-            this(NaN, HashTreePMap.empty());
+            this(NaN, NaN, HashTreePMap.empty());
         }
 
-        private Builder(double outputRowCount, PMap<Symbol, SymbolStatsEstimate> symbolStatistics)
+        private Builder(double outputRowCount, double totalSize, PMap<VariableReferenceExpression, VariableStatsEstimate> variableStatistics)
         {
             this.outputRowCount = outputRowCount;
-            this.symbolStatistics = symbolStatistics;
+            this.totalSize = totalSize;
+            this.variableStatistics = variableStatistics;
         }
 
         public Builder setOutputRowCount(double outputRowCount)
@@ -184,27 +237,33 @@ public class PlanNodeStatsEstimate
             return this;
         }
 
-        public Builder addSymbolStatistics(Symbol symbol, SymbolStatsEstimate statistics)
+        public Builder setTotalSize(double totalSize)
         {
-            symbolStatistics = symbolStatistics.plus(symbol, statistics);
+            this.totalSize = totalSize;
             return this;
         }
 
-        public Builder addSymbolStatistics(Map<Symbol, SymbolStatsEstimate> symbolStatistics)
+        public Builder addVariableStatistics(VariableReferenceExpression variable, VariableStatsEstimate statistics)
         {
-            this.symbolStatistics = this.symbolStatistics.plusAll(symbolStatistics);
+            variableStatistics = variableStatistics.plus(variable, statistics);
             return this;
         }
 
-        public Builder removeSymbolStatistics(Symbol symbol)
+        public Builder addVariableStatistics(Map<VariableReferenceExpression, VariableStatsEstimate> variableStatistics)
         {
-            symbolStatistics = symbolStatistics.minus(symbol);
+            this.variableStatistics = this.variableStatistics.plusAll(variableStatistics);
+            return this;
+        }
+
+        public Builder removeVariableStatistics(VariableReferenceExpression variable)
+        {
+            variableStatistics = variableStatistics.minus(variable);
             return this;
         }
 
         public PlanNodeStatsEstimate build()
         {
-            return new PlanNodeStatsEstimate(outputRowCount, symbolStatistics);
+            return new PlanNodeStatsEstimate(outputRowCount, totalSize, variableStatistics);
         }
     }
 }

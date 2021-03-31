@@ -13,19 +13,19 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.function.IsNull;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import io.airlift.slice.Slice;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.Slices.utf8Slice;
 
@@ -38,7 +38,7 @@ public class TestIsNullAnnotation
         registerScalar(getClass());
     }
 
-    @ScalarFunction("test_is_null_simple")
+    @ScalarFunction(value = "test_is_null_simple", calledOnNullInput = true)
     @SqlType(StandardTypes.BIGINT)
     public static long testIsNullSimple(@SqlType(StandardTypes.BIGINT) long value, @IsNull boolean isNull)
     {
@@ -48,10 +48,10 @@ public class TestIsNullAnnotation
         return 2 * value;
     }
 
-    @ScalarFunction("test_is_null")
+    @ScalarFunction(value = "test_is_null", calledOnNullInput = true)
     @SqlType(StandardTypes.VARCHAR)
     public static Slice testIsNull(
-            ConnectorSession session,
+            SqlFunctionProperties properties,
             @SqlType(StandardTypes.INTEGER) long longValue,
             @IsNull boolean isNullLong,
             @SqlType(StandardTypes.VARCHAR) Slice varcharNotNullable,
@@ -60,7 +60,7 @@ public class TestIsNullAnnotation
             @SqlType(StandardTypes.VARCHAR) Slice varcharIsNull,
             @IsNull boolean isNullVarchar)
     {
-        checkArgument(session != null, "session is null");
+        checkArgument(properties != null, "properties is null");
 
         StringBuilder builder = new StringBuilder();
 
@@ -84,7 +84,7 @@ public class TestIsNullAnnotation
         return utf8Slice(builder.toString());
     }
 
-    @ScalarFunction("test_is_null_void")
+    @ScalarFunction(value = "test_is_null_void", calledOnNullInput = true)
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean testIsNullVoid(@SqlType("unknown") boolean value, @IsNull boolean isNull)
     {

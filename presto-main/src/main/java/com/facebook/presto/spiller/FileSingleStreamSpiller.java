@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.spiller;
 
-import com.facebook.presto.execution.buffer.PagesSerde;
-import com.facebook.presto.execution.buffer.PagesSerdeUtil;
-import com.facebook.presto.execution.buffer.SerializedPage;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.SpillContext;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.util.PrestoIterators;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.PagesSerdeUtil;
+import com.facebook.presto.spi.spiller.SpillCipher;
 import com.google.common.annotations.VisibleForTesting;
+import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.Closer;
 import com.google.common.util.concurrent.Futures;
@@ -33,6 +33,7 @@ import io.airlift.slice.SliceOutput;
 
 import javax.annotation.concurrent.NotThreadSafe;
 
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.UncheckedIOException;
@@ -40,9 +41,12 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Iterator;
 import java.util.List;
+import java.util.Optional;
 
-import static com.facebook.presto.execution.buffer.PagesSerdeUtil.writeSerializedPage;
+import static com.facebook.presto.common.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
+import static com.facebook.presto.execution.buffer.PageSplitterUtil.splitPage;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
+import static com.facebook.presto.spi.page.PagesSerdeUtil.writeSerializedPage;
 import static com.facebook.presto.spiller.FileSingleStreamSpillerFactory.SPILL_FILE_PREFIX;
 import static com.facebook.presto.spiller.FileSingleStreamSpillerFactory.SPILL_FILE_SUFFIX;
 import static com.google.common.base.Preconditions.checkState;
@@ -62,6 +66,7 @@ public class FileSingleStreamSpiller
     private final SpillerStats spillerStats;
     private final SpillContext localSpillContext;
     private final LocalMemoryContext memoryContext;
+    private final Optional<SpillCipher> spillCipher;
 
     private final ListeningExecutorService executor;
 
@@ -75,13 +80,17 @@ public class FileSingleStreamSpiller
             Path spillPath,
             SpillerStats spillerStats,
             SpillContext spillContext,
-            LocalMemoryContext memoryContext)
+            LocalMemoryContext memoryContext,
+            Optional<SpillCipher> spillCipher)
     {
         this.serde = requireNonNull(serde, "serde is null");
         this.executor = requireNonNull(executor, "executor is null");
         this.spillerStats = requireNonNull(spillerStats, "spillerStats is null");
         this.localSpillContext = spillContext.newLocalSpillContext();
         this.memoryContext = requireNonNull(memoryContext, "memoryContext is null");
+        this.spillCipher = requireNonNull(spillCipher, "spillCipher is null");
+        checkState(!spillCipher.isPresent() || !spillCipher.get().isDestroyed(), "spillCipher is already destroyed");
+        this.spillCipher.ifPresent(cipher -> closer.register(cipher::destroy));
         // HACK!
         // The writePages() method is called in a separate thread pool and it's possible that
         // these spiller thread can run concurrently with the close() method.
@@ -136,11 +145,15 @@ public class FileSingleStreamSpiller
             while (pageIterator.hasNext()) {
                 Page page = pageIterator.next();
                 spilledPagesInMemorySize += page.getSizeInBytes();
-                SerializedPage serializedPage = serde.serialize(page);
-                long pageSize = serializedPage.getSizeInBytes();
-                localSpillContext.updateBytes(pageSize);
-                spillerStats.addToTotalSpilledBytes(pageSize);
-                writeSerializedPage(output, serializedPage);
+                // page serialization requires  page.getSizeInBytes() + Integer.BYTES to fit in an integer
+                splitPage(page, DEFAULT_MAX_PAGE_SIZE_IN_BYTES).stream()
+                        .map(serde::serialize)
+                        .forEach(serializedPage -> {
+                            long pageSize = serializedPage.getSizeInBytes();
+                            localSpillContext.updateBytes(pageSize);
+                            spillerStats.addToTotalSpilledBytes(pageSize);
+                            writeSerializedPage(output, serializedPage);
+                        });
             }
         }
         catch (UncheckedIOException | IOException e) {
@@ -156,7 +169,7 @@ public class FileSingleStreamSpiller
         try {
             InputStream input = closer.register(targetFile.newInputStream());
             Iterator<Page> pages = PagesSerdeUtil.readPages(serde, new InputStreamSliceInput(input, BUFFER_SIZE));
-            return PrestoIterators.closeWhenExhausted(pages, input);
+            return closeWhenExhausted(pages, input);
         }
         catch (IOException e) {
             throw new PrestoException(GENERIC_INTERNAL_ERROR, "Failed to read spilled pages", e);
@@ -171,16 +184,37 @@ public class FileSingleStreamSpiller
         try {
             closer.close();
         }
-        catch (Exception e) {
-            throw new PrestoException(
-                    GENERIC_INTERNAL_ERROR,
-                    "Failed to close spiller",
-                    e);
+        catch (IOException e) {
+            throw new PrestoException(GENERIC_INTERNAL_ERROR, "Failed to close spiller", e);
         }
     }
 
     private void checkNoSpillInProgress()
     {
         checkState(spillInProgress.isDone(), "spill in progress");
+    }
+
+    private static <T> Iterator<T> closeWhenExhausted(Iterator<T> iterator, Closeable resource)
+    {
+        requireNonNull(iterator, "iterator is null");
+        requireNonNull(resource, "resource is null");
+
+        return new AbstractIterator<T>()
+        {
+            @Override
+            protected T computeNext()
+            {
+                if (iterator.hasNext()) {
+                    return iterator.next();
+                }
+                try {
+                    resource.close();
+                }
+                catch (IOException e) {
+                    throw new UncheckedIOException(e);
+                }
+                return endOfData();
+            }
+        };
     }
 }

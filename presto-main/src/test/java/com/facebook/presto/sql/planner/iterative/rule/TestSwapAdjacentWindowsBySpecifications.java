@@ -13,41 +13,45 @@
  */
 package com.facebook.presto.sql.planner.iterative.rule;
 
-import com.facebook.presto.metadata.FunctionKind;
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
+import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.assertions.ExpectedValueProvider;
 import com.facebook.presto.sql.planner.iterative.rule.test.BaseRuleTest;
 import com.facebook.presto.sql.planner.plan.WindowNode;
-import com.facebook.presto.sql.tree.FunctionCall;
-import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.SymbolReference;
 import com.facebook.presto.sql.tree.Window;
-import com.facebook.presto.sql.tree.WindowFrame;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
+import java.util.List;
 import java.util.Optional;
+import java.util.stream.Collectors;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.functionCall;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.specification;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.values;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.window;
-import static com.facebook.presto.sql.tree.FrameBound.Type.CURRENT_ROW;
-import static com.facebook.presto.sql.tree.FrameBound.Type.UNBOUNDED_PRECEDING;
+import static com.facebook.presto.sql.planner.plan.WindowNode.Frame.BoundType.CURRENT_ROW;
+import static com.facebook.presto.sql.planner.plan.WindowNode.Frame.BoundType.UNBOUNDED_PRECEDING;
+import static com.facebook.presto.sql.planner.plan.WindowNode.Frame.WindowType.RANGE;
+import static com.facebook.presto.sql.relational.Expressions.call;
 
 public class TestSwapAdjacentWindowsBySpecifications
         extends BaseRuleTest
 {
     private WindowNode.Frame frame;
-    private Signature signature;
+    private FunctionHandle functionHandle;
 
     public TestSwapAdjacentWindowsBySpecifications()
     {
         frame = new WindowNode.Frame(
-                WindowFrame.Type.RANGE,
+                RANGE,
                 UNBOUNDED_PRECEDING,
                 Optional.empty(),
                 CURRENT_ROW,
@@ -55,21 +59,14 @@ public class TestSwapAdjacentWindowsBySpecifications
                 Optional.empty(),
                 Optional.empty());
 
-        signature = new Signature(
-                "avg",
-                FunctionKind.WINDOW,
-                ImmutableList.of(),
-                ImmutableList.of(),
-                DOUBLE.getTypeSignature(),
-                ImmutableList.of(BIGINT.getTypeSignature()),
-                false);
+        functionHandle = createTestMetadataManager().getFunctionAndTypeManager().lookupFunction("avg", fromTypes(BIGINT));
     }
 
     @Test
     public void doesNotFireOnPlanWithoutWindowFunctions()
     {
         tester().assertThat(new GatherAndMergeWindows.SwapAdjacentWindowsBySpecifications(0))
-                .on(p -> p.values(p.symbol("a")))
+                .on(p -> p.values(p.variable("a")))
                 .doesNotFire();
     }
 
@@ -78,11 +75,11 @@ public class TestSwapAdjacentWindowsBySpecifications
     {
         tester().assertThat(new GatherAndMergeWindows.SwapAdjacentWindowsBySpecifications(0))
                 .on(p -> p.window(new WindowNode.Specification(
-                                ImmutableList.of(p.symbol("a")),
+                                ImmutableList.of(p.variable("a")),
                                 Optional.empty()),
-                        ImmutableMap.of(p.symbol("avg_1"),
-                                new WindowNode.Function(new FunctionCall(QualifiedName.of("avg"), ImmutableList.of()), signature, frame)),
-                        p.values(p.symbol("a"))))
+                        ImmutableMap.of(p.variable("avg_1"),
+                                new WindowNode.Function(call("avg", functionHandle, DOUBLE, ImmutableList.of()), frame, false)),
+                        p.values(p.variable("a"))))
                 .doesNotFire();
     }
 
@@ -101,16 +98,14 @@ public class TestSwapAdjacentWindowsBySpecifications
         tester().assertThat(new GatherAndMergeWindows.SwapAdjacentWindowsBySpecifications(0))
                 .on(p ->
                         p.window(new WindowNode.Specification(
-                                        ImmutableList.of(p.symbol("a")),
+                                        ImmutableList.of(p.variable("a")),
                                         Optional.empty()),
-                                ImmutableMap.of(p.symbol("avg_1", DOUBLE),
-                                        new WindowNode.Function(new FunctionCall(QualifiedName.of("avg"), windowA, false, ImmutableList.of(new SymbolReference("a"))), signature, frame)),
+                                ImmutableMap.of(p.variable("avg_1", DOUBLE), newWindowNodeFunction(ImmutableList.of(new Symbol("a")))),
                                 p.window(new WindowNode.Specification(
-                                                ImmutableList.of(p.symbol("a"), p.symbol("b")),
+                                                ImmutableList.of(p.variable("a"), p.variable("b")),
                                                 Optional.empty()),
-                                        ImmutableMap.of(p.symbol("avg_2", DOUBLE),
-                                                new WindowNode.Function(new FunctionCall(QualifiedName.of("avg"), windowAB, false, ImmutableList.of(new SymbolReference("b"))), signature, frame)),
-                                        p.values(p.symbol("a"), p.symbol("b")))))
+                                        ImmutableMap.of(p.variable("avg_2", DOUBLE), newWindowNodeFunction(ImmutableList.of(new Symbol("b")))),
+                                        p.values(p.variable("a"), p.variable("b")))))
                 .matches(
                         window(windowMatcherBuilder -> windowMatcherBuilder
                                         .specification(specificationAB)
@@ -129,16 +124,22 @@ public class TestSwapAdjacentWindowsBySpecifications
         tester().assertThat(new GatherAndMergeWindows.SwapAdjacentWindowsBySpecifications(0))
                 .on(p ->
                         p.window(new WindowNode.Specification(
-                                        ImmutableList.of(p.symbol("a")),
+                                        ImmutableList.of(p.variable("a")),
                                         Optional.empty()),
-                                ImmutableMap.of(p.symbol("avg_1"),
-                                        new WindowNode.Function(new FunctionCall(QualifiedName.of("avg"), windowA, false, ImmutableList.of(new SymbolReference("avg_2"))), signature, frame)),
+                                ImmutableMap.of(p.variable("avg_1"), newWindowNodeFunction(ImmutableList.of(new Symbol("avg_2")))),
                                 p.window(new WindowNode.Specification(
-                                                ImmutableList.of(p.symbol("a"), p.symbol("b")),
+                                                ImmutableList.of(p.variable("a"), p.variable("b")),
                                                 Optional.empty()),
-                                        ImmutableMap.of(p.symbol("avg_2"),
-                                                new WindowNode.Function(new FunctionCall(QualifiedName.of("avg"), windowA, false, ImmutableList.of(new SymbolReference("a"))), signature, frame)),
-                                        p.values(p.symbol("a"), p.symbol("b")))))
+                                        ImmutableMap.of(p.variable("avg_2"), newWindowNodeFunction(ImmutableList.of(new Symbol("a")))),
+                                        p.values(p.variable("a"), p.variable("b")))))
                 .doesNotFire();
+    }
+
+    private WindowNode.Function newWindowNodeFunction(List<Symbol> symbols)
+    {
+        return new WindowNode.Function(
+                call("avg", functionHandle, BIGINT, symbols.stream().map(symbol -> new VariableReferenceExpression(symbol.getName(), BIGINT)).collect(Collectors.toList())),
+                frame,
+                false);
     }
 }

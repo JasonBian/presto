@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.testing;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
@@ -32,9 +34,9 @@ import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.ViewNotFoundException;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
+import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
 import com.facebook.presto.spi.statistics.ComputedStatistics;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -54,6 +56,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 
 import static com.facebook.presto.spi.StandardErrorCode.ALREADY_EXISTS;
+import static com.facebook.presto.testing.TestingHandle.INSTANCE;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
@@ -86,15 +89,21 @@ public class TestingMetadata
     }
 
     @Override
+    public ConnectorTableHandle getTableHandleForStatisticsCollection(ConnectorSession session, SchemaTableName tableName, Map<String, Object> analyzeProperties)
+    {
+        return getTableHandle(session, tableName);
+    }
+
+    @Override
     public List<ConnectorTableLayoutResult> getTableLayouts(ConnectorSession session, ConnectorTableHandle table, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns)
     {
-        return ImmutableList.of();
+        return ImmutableList.of(new ConnectorTableLayoutResult(new ConnectorTableLayout(INSTANCE), TupleDomain.all()));
     }
 
     @Override
     public ConnectorTableLayout getTableLayout(ConnectorSession session, ConnectorTableLayoutHandle handle)
     {
-        throw new UnsupportedOperationException();
+        return new ConnectorTableLayout(INSTANCE);
     }
 
     @Override
@@ -182,8 +191,9 @@ public class TestingMetadata
     }
 
     @Override
-    public void createView(ConnectorSession session, SchemaTableName viewName, String viewData, boolean replace)
+    public void createView(ConnectorSession session, ConnectorTableMetadata viewMetadata, String viewData, boolean replace)
     {
+        SchemaTableName viewName = viewMetadata.getTable();
         if (replace) {
             views.put(viewName, viewData);
         }
@@ -228,7 +238,7 @@ public class TestingMetadata
     public ConnectorOutputTableHandle beginCreateTable(ConnectorSession session, ConnectorTableMetadata tableMetadata, Optional<ConnectorNewTableLayout> layout)
     {
         createTable(session, tableMetadata, false);
-        return TestingHandle.INSTANCE;
+        return INSTANCE;
     }
 
     @Override
@@ -240,7 +250,7 @@ public class TestingMetadata
     @Override
     public ConnectorInsertTableHandle beginInsert(ConnectorSession session, ConnectorTableHandle tableHandle)
     {
-        return TestingHandle.INSTANCE;
+        return INSTANCE;
     }
 
     @Override
@@ -272,10 +282,10 @@ public class TestingMetadata
     }
 
     @Override
-    public void grantTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, String grantee, boolean grantOption) {}
+    public void grantTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, PrestoPrincipal grantee, boolean grantOption) {}
 
     @Override
-    public void revokeTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, String grantee, boolean grantOption) {}
+    public void revokeTablePrivileges(ConnectorSession session, SchemaTableName tableName, Set<Privilege> privileges, PrestoPrincipal grantee, boolean grantOption) {}
 
     public void clear()
     {
@@ -311,6 +321,25 @@ public class TestingMetadata
         public SchemaTableName getTableName()
         {
             return tableName;
+        }
+
+        @Override
+        public boolean equals(Object o)
+        {
+            if (this == o) {
+                return true;
+            }
+            if (!(o instanceof TestingTableHandle)) {
+                return false;
+            }
+            TestingTableHandle other = (TestingTableHandle) o;
+            return Objects.equals(tableName, other.tableName);
+        }
+
+        @Override
+        public int hashCode()
+        {
+            return Objects.hash(tableName);
         }
     }
 

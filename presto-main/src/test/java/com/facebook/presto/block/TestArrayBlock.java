@@ -13,20 +13,26 @@
  */
 package com.facebook.presto.block;
 
-import com.facebook.presto.spi.block.ArrayBlockBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.ByteArrayBlock;
+import com.facebook.presto.common.block.ArrayBlockBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.ByteArrayBlock;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
 import java.util.Random;
+import java.util.stream.IntStream;
 
-import static com.facebook.presto.spi.block.ArrayBlock.fromElementBlock;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.block.BlockAssertions.createLongDictionaryBlock;
+import static com.facebook.presto.block.BlockAssertions.createRLEBlock;
+import static com.facebook.presto.block.BlockAssertions.createRandomDictionaryBlock;
+import static com.facebook.presto.block.BlockAssertions.createRandomLongsBlock;
+import static com.facebook.presto.block.BlockAssertions.createRleBlockWithRandomValue;
+import static com.facebook.presto.common.block.ArrayBlock.fromElementBlock;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
@@ -50,7 +56,7 @@ public class TestArrayBlock
         assertBlockFilteredPositions(expectedValues, blockBuilder.build(), () -> blockBuilder.newBlockBuilderLike(null), 0, 1, 3, 4, 7);
         assertBlockFilteredPositions(expectedValues, blockBuilder.build(), () -> blockBuilder.newBlockBuilderLike(null), 2, 3, 5, 6);
 
-        long[][] expectedValuesWithNull = (long[][]) alternatingNullValues(expectedValues);
+        long[][] expectedValuesWithNull = alternatingNullValues(expectedValues);
         BlockBuilder blockBuilderWithNull = createBlockBuilderWithValues(expectedValuesWithNull);
         assertBlock(blockBuilderWithNull, () -> blockBuilder.newBlockBuilderLike(null), expectedValuesWithNull);
         assertBlock(blockBuilderWithNull.build(), () -> blockBuilder.newBlockBuilderLike(null), expectedValuesWithNull);
@@ -76,7 +82,7 @@ public class TestArrayBlock
         assertBlockFilteredPositions(expectedValues, blockBuilder.build(), () -> blockBuilder.newBlockBuilderLike(null), 0, 1, 3, 4, 7);
         assertBlockFilteredPositions(expectedValues, blockBuilder.build(), () -> blockBuilder.newBlockBuilderLike(null), 2, 3, 5, 6);
 
-        Slice[][] expectedValuesWithNull = (Slice[][]) alternatingNullValues(expectedValues);
+        Slice[][] expectedValuesWithNull = alternatingNullValues(expectedValues);
         BlockBuilder blockBuilderWithNull = createBlockBuilderWithValues(expectedValuesWithNull);
         assertBlock(blockBuilderWithNull, () -> blockBuilder.newBlockBuilderLike(null), expectedValuesWithNull);
         assertBlock(blockBuilderWithNull.build(), () -> blockBuilder.newBlockBuilderLike(null), expectedValuesWithNull);
@@ -96,7 +102,7 @@ public class TestArrayBlock
         assertBlockFilteredPositions(expectedValues, blockBuilder.build(), () -> blockBuilder.newBlockBuilderLike(null), 0, 1, 3, 4, 7);
         assertBlockFilteredPositions(expectedValues, blockBuilder.build(), () -> blockBuilder.newBlockBuilderLike(null), 2, 3, 5, 6);
 
-        long[][][] expectedValuesWithNull = (long[][][]) alternatingNullValues(expectedValues);
+        long[][][] expectedValuesWithNull = alternatingNullValues(expectedValues);
         BlockBuilder blockBuilderWithNull = createBlockBuilderWithValues(expectedValuesWithNull);
         assertBlock(blockBuilderWithNull, () -> blockBuilder.newBlockBuilderLike(null), expectedValuesWithNull);
         assertBlock(blockBuilderWithNull.build(), () -> blockBuilder.newBlockBuilderLike(null), expectedValuesWithNull);
@@ -147,7 +153,7 @@ public class TestArrayBlock
     @Test
     public void testEstimatedDataSizeForStats()
     {
-        long[][][] expectedValues = (long[][][]) alternatingNullValues(createExpectedValues());
+        long[][][] expectedValues = alternatingNullValues(createExpectedValues());
         BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
         Block block = blockBuilder.build();
         assertEquals(block.getPositionCount(), expectedValues.length);
@@ -156,6 +162,38 @@ public class TestArrayBlock
             assertEquals(blockBuilder.getEstimatedDataSizeForStats(i), expectedSize);
             assertEquals(block.getEstimatedDataSizeForStats(i), expectedSize);
         }
+    }
+
+    @Test
+    public void testLogicalSizeInBytes()
+    {
+        int positionCount = 100;
+        int[] offsets = IntStream.rangeClosed(0, positionCount).toArray();
+        boolean[] nulls = new boolean[positionCount];
+
+        // Array(LongArrayBlock)
+        Block arrayOfLong = fromElementBlock(positionCount, Optional.of(nulls), offsets, createRandomLongsBlock(positionCount, 0));
+        assertEquals(arrayOfLong.getLogicalSizeInBytes(), 1400);
+
+        // Array(RLE(LongArrayBlock))
+        Block arrayOfRleOfLong = fromElementBlock(positionCount, Optional.of(nulls), offsets, createRLEBlock(1, 100));
+        assertEquals(arrayOfRleOfLong.getLogicalSizeInBytes(), 1400);
+
+        // Array(RLE(Array(LongArrayBlock)))
+        Block arrayOfRleOfArrayOfLong = fromElementBlock(positionCount, Optional.of(nulls), offsets, createRleBlockWithRandomValue(arrayOfLong, 100));
+        assertEquals(arrayOfRleOfArrayOfLong.getLogicalSizeInBytes(), 1900);
+
+        // Array(Dictionary(LongArrayBlock))
+        Block arrayOfDictionaryOfLong = fromElementBlock(positionCount, Optional.of(nulls), offsets, createLongDictionaryBlock(0, 100));
+        assertEquals(arrayOfDictionaryOfLong.getLogicalSizeInBytes(), 1400);
+
+        // Array(Array(Dictionary(LongArrayBlock)))
+        Block arrayOfArrayOfDictionaryOfLong = fromElementBlock(positionCount, Optional.of(nulls), offsets, arrayOfDictionaryOfLong);
+        assertEquals(arrayOfArrayOfDictionaryOfLong.getLogicalSizeInBytes(), 1900);
+
+        // Array(Dictionary(Array(LongArrayBlock)))
+        Block arrayOfDictionaryOfArrayOfLong = fromElementBlock(positionCount, Optional.of(nulls), offsets, createRandomDictionaryBlock(arrayOfDictionaryOfLong, 100, true));
+        assertEquals(arrayOfDictionaryOfArrayOfLong.getLogicalSizeInBytes(), 1900);
     }
 
     private static int getExpectedEstimatedDataSize(long[][] values)
@@ -180,11 +218,11 @@ public class TestArrayBlock
         int[] offsets = {0, 1, 1, 2, 4, 8, 16};
         boolean[] valueIsNull = {false, true, false, false, false, false};
 
-        testCompactBlock(fromElementBlock(0, new boolean[0], new int[1], emptyValueBlock));
-        testCompactBlock(fromElementBlock(valueIsNull.length, valueIsNull, offsets, compactValueBlock));
-        testIncompactBlock(fromElementBlock(valueIsNull.length - 1, valueIsNull, offsets, compactValueBlock));
+        testCompactBlock(fromElementBlock(0, Optional.empty(), new int[1], emptyValueBlock));
+        testCompactBlock(fromElementBlock(valueIsNull.length, Optional.of(valueIsNull), offsets, compactValueBlock));
+        testIncompactBlock(fromElementBlock(valueIsNull.length - 1, Optional.of(valueIsNull), offsets, compactValueBlock));
         // underlying value block is not compact
-        testIncompactBlock(fromElementBlock(valueIsNull.length, valueIsNull, offsets, inCompactValueBlock));
+        testIncompactBlock(fromElementBlock(valueIsNull.length, Optional.of(valueIsNull), offsets, inCompactValueBlock));
     }
 
     private static BlockBuilder createBlockBuilderWithValues(long[][][] expectedValues)

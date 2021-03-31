@@ -13,15 +13,14 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.Signature;
 import com.facebook.presto.operator.GroupByIdBlock;
+import com.facebook.presto.operator.UpdateMemory;
 import com.facebook.presto.operator.aggregation.groupByAggregations.GroupByAggregationTestUtils;
 import com.facebook.presto.operator.aggregation.histogram.HistogramGroupImplementation;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import org.openjdk.jmh.annotations.Benchmark;
 import org.openjdk.jmh.annotations.Fork;
@@ -49,12 +48,9 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
 import static com.facebook.presto.block.BlockAssertions.createStringsBlock;
-import static com.facebook.presto.metadata.FunctionKind.AGGREGATE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.operator.aggregation.histogram.Histogram.NAME;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.util.StructuralTestUtil.mapType;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 
 @OutputTimeUnit(TimeUnit.SECONDS)
 //@BenchmarkMode(Mode.AverageTime)
@@ -80,7 +76,7 @@ public class BenchmarkGroupedTypedHistogram
         private float mainFillRatio;
         @Param("0.5f") // found slight benefit over 0.75, the canonical starting point
         private float valueStoreFillRatio;
-// these must be manually set in each class now; the mechanism to change and test was removed; the enum was kept in case we want to revisit. Retesting showed linear was superior
+        // these must be manually set in each class now; the mechanism to change and test was removed; the enum was kept in case we want to revisit. Retesting showed linear was superior
         //        //        @Param({"LINEAR", "SUM_OF_COUNT", "SUM_OF_SQUARE"})
 //        @Param({"LINEAR"}) // found to be best, by about 10-15%
 //        private ProbeType mainProbeTyepe;
@@ -139,7 +135,7 @@ public class BenchmarkGroupedTypedHistogram
             int[] args = GroupByAggregationTestUtils.createArgs(function);
 
             return function.bind(Ints.asList(args), Optional.empty())
-                    .createGroupedAccumulator();
+                    .createGroupedAccumulator(UpdateMemory.NOOP);
         }
     }
 
@@ -159,14 +155,10 @@ public class BenchmarkGroupedTypedHistogram
 
     private static InternalAggregationFunction getInternalAggregationFunctionVarChar(HistogramGroupImplementation groupMode)
     {
-        MapType mapType = mapType(VARCHAR, BIGINT);
-        MetadataManager metadata = getMetadata(groupMode);
+        FunctionAndTypeManager functionAndTypeManager = getMetadata(groupMode).getFunctionAndTypeManager();
 
-        return metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME,
-                        AGGREGATE,
-                        mapType.getTypeSignature(),
-                        parseTypeSignature(StandardTypes.VARCHAR)));
+        return functionAndTypeManager.getAggregateFunctionImplementation(
+                functionAndTypeManager.lookupFunction(NAME, fromTypes(VARCHAR)));
     }
 
     private static MetadataManager getMetadata(HistogramGroupImplementation groupMode)
@@ -192,8 +184,6 @@ public class BenchmarkGroupedTypedHistogram
 
     public enum ProbeType
     {
-        LINEAR,
-        SUM_OF_COUNT,
-        SUM_OF_SQUARE,;
+        LINEAR, SUM_OF_COUNT, SUM_OF_SQUARE
     }
 }

@@ -13,64 +13,75 @@
  */
 package com.facebook.presto.operator;
 
+import com.esri.core.geometry.Operator;
+import com.esri.core.geometry.OperatorFactoryLocal;
 import com.esri.core.geometry.ogc.OGCGeometry;
 import com.facebook.presto.Session;
+import com.facebook.presto.array.AdaptiveLongBigArray;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.geospatial.Rectangle;
+import com.facebook.presto.geospatial.rtree.Flatbush;
+import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.PagesRTreeIndex.GeometryWithPosition;
 import com.facebook.presto.operator.SpatialIndexBuilderOperator.SpatialPredicate;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.gen.JoinFilterFunctionCompiler;
 import io.airlift.slice.Slice;
 import io.airlift.units.DataSize;
-import it.unimi.dsi.fastutil.longs.LongArrayList;
-import org.locationtech.jts.geom.Envelope;
-import org.locationtech.jts.index.strtree.AbstractNode;
-import org.locationtech.jts.index.strtree.ItemBoundable;
-import org.locationtech.jts.index.strtree.STRtree;
+import it.unimi.dsi.fastutil.objects.ObjectArrayList;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.function.Supplier;
 
-import static com.facebook.presto.geospatial.serde.GeometrySerde.deserialize;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.geospatial.GeometryUtils.accelerateGeometry;
+import static com.facebook.presto.geospatial.serde.EsriGeometrySerde.deserialize;
 import static com.facebook.presto.operator.PagesSpatialIndex.EMPTY_INDEX;
 import static com.facebook.presto.operator.SyntheticAddress.decodePosition;
 import static com.facebook.presto.operator.SyntheticAddress.decodeSliceIndex;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
 import static com.google.common.base.Verify.verify;
 import static io.airlift.units.DataSize.Unit.BYTE;
+import static java.lang.Math.toIntExact;
+import static java.util.Objects.requireNonNull;
 
 public class PagesSpatialIndexSupplier
         implements Supplier<PagesSpatialIndex>
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(PagesSpatialIndexSupplier.class).instanceSize();
-    private static final int ENVELOPE_INSTANCE_SIZE = ClassLayout.parseClass(Envelope.class).instanceSize();
-    private static final int STRTREE_INSTANCE_SIZE = ClassLayout.parseClass(STRtree.class).instanceSize();
-    private static final int ABSTRACT_NODE_INSTANCE_SIZE = ClassLayout.parseClass(AbstractNode.class).instanceSize();
+    private static final int MEMORY_USAGE_UPDATE_INCREMENT_BYTES = 100 * 1024 * 1024;   // 100 MB
 
     private final Session session;
-    private final LongArrayList addresses;
+    private final AdaptiveLongBigArray addresses;
     private final List<Type> types;
     private final List<Integer> outputChannels;
     private final List<List<Block>> channels;
     private final Optional<Integer> radiusChannel;
     private final SpatialPredicate spatialRelationshipTest;
     private final Optional<JoinFilterFunctionCompiler.JoinFilterFunctionFactory> filterFunctionFactory;
-    private final STRtree rtree;
+    private final Flatbush<GeometryWithPosition> rtree;
+    private final Map<Integer, Rectangle> partitions;
     private final long memorySizeInBytes;
 
     public PagesSpatialIndexSupplier(
             Session session,
-            LongArrayList addresses,
+            AdaptiveLongBigArray addresses,
+            int positionCount,
             List<Type> types,
             List<Integer> outputChannels,
             List<List<Block>> channels,
             int geometryChannel,
             Optional<Integer> radiusChannel,
+            Optional<Integer> partitionChannel,
             SpatialPredicate spatialRelationshipTest,
-            Optional<JoinFilterFunctionCompiler.JoinFilterFunctionFactory> filterFunctionFactory)
+            Optional<JoinFilterFunctionCompiler.JoinFilterFunctionFactory> filterFunctionFactory,
+            Map<Integer, Rectangle> partitions,
+            LocalMemoryContext localUserMemoryContext)
     {
+        requireNonNull(localUserMemoryContext, "localUserMemoryContext is null");
         this.session = session;
         this.addresses = addresses;
         this.types = types;
@@ -78,19 +89,31 @@ public class PagesSpatialIndexSupplier
         this.channels = channels;
         this.spatialRelationshipTest = spatialRelationshipTest;
         this.filterFunctionFactory = filterFunctionFactory;
+        this.partitions = partitions;
 
-        this.rtree = buildRTree(addresses, channels, geometryChannel, radiusChannel);
+        this.rtree = buildRTree(addresses, positionCount, channels, geometryChannel, radiusChannel, partitionChannel, localUserMemoryContext);
         this.radiusChannel = radiusChannel;
-        this.memorySizeInBytes = INSTANCE_SIZE +
-                (rtree.isEmpty() ? 0 : STRTREE_INSTANCE_SIZE + computeMemorySizeInBytes(rtree.getRoot()));
+        this.memorySizeInBytes = INSTANCE_SIZE + rtree.getEstimatedSizeInBytes();
     }
 
-    private static STRtree buildRTree(LongArrayList addresses, List<List<Block>> channels, int geometryChannel, Optional<Integer> radiusChannel)
+    private static Flatbush<GeometryWithPosition> buildRTree(
+            AdaptiveLongBigArray addresses,
+            int positionCount,
+            List<List<Block>> channels,
+            int geometryChannel,
+            Optional<Integer> radiusChannel,
+            Optional<Integer> partitionChannel,
+            LocalMemoryContext localUserMemoryContext)
     {
-        STRtree rtree = new STRtree();
+        Operator relateOperator = OperatorFactoryLocal.getInstance().getOperator(Operator.Type.Relate);
 
-        for (int position = 0; position < addresses.size(); position++) {
-            long pageAddress = addresses.getLong(position);
+        ObjectArrayList<GeometryWithPosition> geometries = new ObjectArrayList<>();
+
+        long recordedSizeInBytes = localUserMemoryContext.getBytes();
+        long addedSizeInBytes = 0;
+
+        for (int position = 0; position < positionCount; position++) {
+            long pageAddress = addresses.get(position);
             int blockIndex = decodeSliceIndex(pageAddress);
             int blockPosition = decodePosition(pageAddress);
 
@@ -112,32 +135,30 @@ public class PagesSpatialIndexSupplier
                 continue;
             }
 
-            rtree.insert(getEnvelope(ogcGeometry, radius), new GeometryWithPosition(ogcGeometry, position));
+            if (!radiusChannel.isPresent()) {
+                // If radiusChannel is supplied, this is a distance query, for which our acceleration won't help.
+                accelerateGeometry(ogcGeometry, relateOperator);
+            }
+
+            int partition = -1;
+            if (partitionChannel.isPresent()) {
+                Block partitionBlock = channels.get(partitionChannel.get()).get(blockIndex);
+                partition = toIntExact(INTEGER.getLong(partitionBlock, blockPosition));
+            }
+
+            GeometryWithPosition geometryWithPosition = new GeometryWithPosition(ogcGeometry, partition, position, radius);
+            geometries.add(geometryWithPosition);
+
+            addedSizeInBytes += geometryWithPosition.getEstimatedSizeInBytes();
+
+            if (addedSizeInBytes >= MEMORY_USAGE_UPDATE_INCREMENT_BYTES) {
+                localUserMemoryContext.setBytes(recordedSizeInBytes + addedSizeInBytes);
+                recordedSizeInBytes += addedSizeInBytes;
+                addedSizeInBytes = 0;
+            }
         }
 
-        rtree.build();
-        return rtree;
-    }
-
-    private static Envelope getEnvelope(OGCGeometry ogcGeometry, double radius)
-    {
-        com.esri.core.geometry.Envelope envelope = new com.esri.core.geometry.Envelope();
-        ogcGeometry.getEsriGeometry().queryEnvelope(envelope);
-
-        return new Envelope(envelope.getXMin() - radius, envelope.getXMax() + radius, envelope.getYMin() - radius, envelope.getYMax() + radius);
-    }
-
-    private long computeMemorySizeInBytes(AbstractNode root)
-    {
-        if (root.getLevel() == 0) {
-            return ABSTRACT_NODE_INSTANCE_SIZE + ENVELOPE_INSTANCE_SIZE + root.getChildBoundables().stream().mapToLong(child -> computeMemorySizeInBytes((ItemBoundable) child)).sum();
-        }
-        return ABSTRACT_NODE_INSTANCE_SIZE + ENVELOPE_INSTANCE_SIZE + root.getChildBoundables().stream().mapToLong(child -> computeMemorySizeInBytes((AbstractNode) child)).sum();
-    }
-
-    private long computeMemorySizeInBytes(ItemBoundable item)
-    {
-        return ENVELOPE_INSTANCE_SIZE + ((GeometryWithPosition) item.getItem()).getEstimatedMemorySizeInBytes();
+        return new Flatbush<>(geometries.toArray(new GeometryWithPosition[] {}));
     }
 
     // doesn't include memory used by channels and addresses which are shared with PagesIndex
@@ -152,6 +173,6 @@ public class PagesSpatialIndexSupplier
         if (rtree.isEmpty()) {
             return EMPTY_INDEX;
         }
-        return new PagesRTreeIndex(session, addresses, types, outputChannels, channels, rtree, radiusChannel, spatialRelationshipTest, filterFunctionFactory);
+        return new PagesRTreeIndex(session, addresses, types, outputChannels, channels, rtree, radiusChannel, spatialRelationshipTest, filterFunctionFactory, partitions);
     }
 }

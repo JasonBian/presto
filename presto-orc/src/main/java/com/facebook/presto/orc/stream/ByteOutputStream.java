@@ -13,9 +13,10 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcOutputBuffer;
 import com.facebook.presto.orc.checkpoint.ByteStreamCheckpoint;
-import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.orc.metadata.CompressionParameters;
 import com.facebook.presto.orc.metadata.Stream;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.SizeOf;
@@ -23,6 +24,7 @@ import org.openjdk.jol.info.ClassLayout;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.google.common.base.Preconditions.checkState;
@@ -48,9 +50,9 @@ public class ByteOutputStream
 
     private boolean closed;
 
-    public ByteOutputStream(CompressionKind compression, int bufferSize)
+    public ByteOutputStream(CompressionParameters compressionParameters, Optional<DwrfDataEncryptor> dwrfEncryptor)
     {
-        this(new OrcOutputBuffer(compression, bufferSize));
+        this(new OrcOutputBuffer(compressionParameters, dwrfEncryptor));
     }
 
     public ByteOutputStream(OrcOutputBuffer buffer)

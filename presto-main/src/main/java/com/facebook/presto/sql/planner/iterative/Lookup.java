@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.sql.planner.iterative;
 
-import com.facebook.presto.sql.planner.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNode;
 
 import java.util.function.Function;
 import java.util.stream.Stream;
@@ -43,7 +43,7 @@ public interface Lookup
     /**
      * Resolves nodes by materializing GroupReference nodes
      * representing symbolic references to other nodes.
-     * <p>
+     *
      * @throws IllegalArgumentException if the node is not a GroupReference
      */
     Stream<PlanNode> resolveGroup(PlanNode node);

@@ -13,13 +13,15 @@
  */
 package com.facebook.presto.sql.analyzer;
 
-import com.facebook.presto.metadata.QualifiedObjectName;
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.metadata.TableHandle;
+import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.spi.ColumnHandle;
+import com.facebook.presto.spi.SchemaTableName;
+import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.spi.security.Identity;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.tree.ExistsPredicate;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
@@ -41,6 +43,7 @@ import com.facebook.presto.sql.tree.SubqueryExpression;
 import com.facebook.presto.sql.tree.Table;
 import com.google.common.collect.ArrayListMultimap;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableListMultimap;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Multimap;
@@ -60,9 +63,13 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.presto.SystemSessionProperties.isCheckAccessControlOnUtilizedColumnsOnly;
+import static com.facebook.presto.metadata.MetadataUtil.toSchemaTableName;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
+import static com.google.common.collect.Multimaps.forMap;
 import static java.lang.String.format;
 import static java.util.Collections.emptyList;
 import static java.util.Collections.unmodifiableCollection;
@@ -81,10 +88,11 @@ public class Analysis
     private final Map<NodeRef<Table>, Query> namedQueries = new LinkedHashMap<>();
 
     private final Map<NodeRef<Node>, Scope> scopes = new LinkedHashMap<>();
-    private final Map<NodeRef<Expression>, FieldId> columnReferences = new LinkedHashMap<>();
+    private final Multimap<NodeRef<Expression>, FieldId> columnReferences = ArrayListMultimap.create();
 
     // a map of users to the columns per table that they access
     private final Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> tableColumnReferences = new LinkedHashMap<>();
+    private final Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> utilizedTableColumnReferences = new LinkedHashMap<>();
 
     private final Map<NodeRef<QuerySpecification>, List<FunctionCall>> aggregates = new LinkedHashMap<>();
     private final Map<NodeRef<OrderBy>, List<Expression>> orderByAggregates = new LinkedHashMap<>();
@@ -94,6 +102,7 @@ public class Analysis
     private final Map<NodeRef<Node>, Expression> where = new LinkedHashMap<>();
     private final Map<NodeRef<QuerySpecification>, Expression> having = new LinkedHashMap<>();
     private final Map<NodeRef<Node>, List<Expression>> orderByExpressions = new LinkedHashMap<>();
+    private final Set<NodeRef<OrderBy>> redundantOrderBy = new HashSet<>();
     private final Map<NodeRef<Node>, List<Expression>> outputExpressions = new LinkedHashMap<>();
     private final Map<NodeRef<QuerySpecification>, List<FunctionCall>> windowFunctions = new LinkedHashMap<>();
     private final Map<NodeRef<OrderBy>, List<FunctionCall>> orderByWindowFunctions = new LinkedHashMap<>();
@@ -112,7 +121,7 @@ public class Analysis
     private final Map<NodeRef<Expression>, Type> coercions = new LinkedHashMap<>();
     private final Set<NodeRef<Expression>> typeOnlyCoercions = new LinkedHashSet<>();
     private final Map<NodeRef<Relation>, List<Type>> relationCoercions = new LinkedHashMap<>();
-    private final Map<NodeRef<FunctionCall>, Signature> functionSignature = new LinkedHashMap<>();
+    private final Map<NodeRef<FunctionCall>, FunctionHandle> functionHandles = new LinkedHashMap<>();
     private final Map<NodeRef<Identifier>, LambdaArgumentDeclaration> lambdaArgumentReferences = new LinkedHashMap<>();
 
     private final Map<Field, ColumnHandle> columns = new LinkedHashMap<>();
@@ -130,6 +139,7 @@ public class Analysis
     private Optional<String> createTableComment = Optional.empty();
 
     private Optional<Insert> insert = Optional.empty();
+    private Optional<TableHandle> analyzeTarget = Optional.empty();
 
     // for describe input and describe output
     private final boolean isDescribe;
@@ -366,6 +376,11 @@ public class Analysis
         return ImmutableList.copyOf(scalarSubqueries.get(NodeRef.of(node)));
     }
 
+    public boolean isScalarSubquery(SubqueryExpression subqueryExpression)
+    {
+        return scalarSubqueries.values().contains(subqueryExpression);
+    }
+
     public List<ExistsPredicate> getExistsSubqueries(Node node)
     {
         return ImmutableList.copyOf(existsSubqueries.get(NodeRef.of(node)));
@@ -398,7 +413,12 @@ public class Analysis
 
     public void addColumnReferences(Map<NodeRef<Expression>, FieldId> columnReferences)
     {
-        this.columnReferences.putAll(columnReferences);
+        this.columnReferences.putAll(forMap(columnReferences));
+    }
+
+    public void addColumnReference(NodeRef<Expression> node, FieldId fieldId)
+    {
+        this.columnReferences.put(node, fieldId);
     }
 
     public Scope getScope(Node node)
@@ -446,19 +466,29 @@ public class Analysis
         return unmodifiableCollection(tables.values());
     }
 
+    public List<Table> getTableNodes()
+    {
+        return tables.keySet().stream().map(NodeRef::getNode).collect(toImmutableList());
+    }
+
     public void registerTable(Table table, TableHandle handle)
     {
         tables.put(NodeRef.of(table), handle);
     }
 
-    public Signature getFunctionSignature(FunctionCall function)
+    public FunctionHandle getFunctionHandle(FunctionCall function)
     {
-        return functionSignature.get(NodeRef.of(function));
+        return functionHandles.get(NodeRef.of(function));
     }
 
-    public void addFunctionSignatures(Map<NodeRef<FunctionCall>, Signature> infos)
+    public Map<NodeRef<FunctionCall>, FunctionHandle> getFunctionHandles()
     {
-        functionSignature.putAll(infos);
+        return ImmutableMap.copyOf(functionHandles);
+    }
+
+    public void addFunctionHandles(Map<NodeRef<FunctionCall>, FunctionHandle> infos)
+    {
+        functionHandles.putAll(infos);
     }
 
     public Set<NodeRef<Expression>> getColumnReferences()
@@ -466,9 +496,9 @@ public class Analysis
         return unmodifiableSet(columnReferences.keySet());
     }
 
-    public Map<NodeRef<Expression>, FieldId> getColumnReferenceFields()
+    public Multimap<NodeRef<Expression>, FieldId> getColumnReferenceFields()
     {
-        return unmodifiableMap(columnReferences);
+        return ImmutableListMultimap.copyOf(columnReferences);
     }
 
     public boolean isColumnReference(Expression expression)
@@ -520,6 +550,16 @@ public class Analysis
     public Optional<QualifiedObjectName> getCreateTableDestination()
     {
         return createTableDestination;
+    }
+
+    public Optional<TableHandle> getAnalyzeTarget()
+    {
+        return analyzeTarget;
+    }
+
+    public void setAnalyzeTarget(TableHandle analyzeTarget)
+    {
+        this.analyzeTarget = Optional.of(analyzeTarget);
     }
 
     public void setCreateTableProperties(Map<String, Expression> createTableProperties)
@@ -650,6 +690,40 @@ public class Analysis
     public Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> getTableColumnReferences()
     {
         return tableColumnReferences;
+    }
+
+    public void addUtilizedTableColumnReferences(AccessControlInfo accessControlInfo, Map<QualifiedObjectName, Set<String>> utilizedTableColumms)
+    {
+        utilizedTableColumnReferences.put(accessControlInfo, utilizedTableColumms);
+    }
+
+    public Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> getUtilizedTableColumnReferences()
+    {
+        return ImmutableMap.copyOf(utilizedTableColumnReferences);
+    }
+
+    public Map<AccessControlInfo, Map<QualifiedObjectName, Set<String>>> getTableColumnReferencesForAccessControl(Session session)
+    {
+        return isCheckAccessControlOnUtilizedColumnsOnly(session) ? utilizedTableColumnReferences : tableColumnReferences;
+    }
+
+    public void markRedundantOrderBy(OrderBy orderBy)
+    {
+        redundantOrderBy.add(NodeRef.of(orderBy));
+    }
+
+    public boolean isOrderByRedundant(OrderBy orderBy)
+    {
+        return redundantOrderBy.contains(NodeRef.of(orderBy));
+    }
+
+    public Map<String, Map<SchemaTableName, String>> getOriginalColumnMapping(Node node)
+    {
+        return getOutputDescriptor(node).getVisibleFields().stream()
+                .filter(field -> field.getOriginTable().isPresent() && field.getOriginColumnName().isPresent())
+                .collect(toImmutableMap(
+                        field -> field.getName().get(),
+                        field -> ImmutableMap.of(toSchemaTableName(field.getOriginTable().get()), field.getOriginColumnName().get())));
     }
 
     @Immutable

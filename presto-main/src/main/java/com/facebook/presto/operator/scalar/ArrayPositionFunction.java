@@ -13,22 +13,23 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.OperatorDependency;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 
 import java.lang.invoke.MethodHandle;
 
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.function.OperatorType.EQUAL;
 import static com.facebook.presto.util.Failures.internalError;
+import static com.google.common.base.Verify.verify;
 
 @Description("Returns the position of the first occurrence of the given value in array (or 0 if not found)")
 @ScalarFunction("array_position")
@@ -40,7 +41,7 @@ public final class ArrayPositionFunction
     @SqlType(StandardTypes.BIGINT)
     public static long arrayPosition(
             @TypeParameter("T") Type type,
-            @OperatorDependency(operator = EQUAL, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
+            @OperatorDependency(operator = EQUAL, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
             @SqlType("array(T)") Block array,
             @SqlType("T") boolean element)
     {
@@ -50,7 +51,7 @@ public final class ArrayPositionFunction
                 boolean arrayValue = type.getBoolean(array, i);
                 try {
                     Boolean result = (Boolean) equalMethodHandle.invokeExact(arrayValue, element);
-                    checkNotIndeterminate(result);
+                    verify(result != null, "Array element should not be null");
                     if (result) {
                         return i + 1; // result is 1-based (instead of 0)
                     }
@@ -67,7 +68,7 @@ public final class ArrayPositionFunction
     @SqlType(StandardTypes.BIGINT)
     public static long arrayPosition(
             @TypeParameter("T") Type type,
-            @OperatorDependency(operator = EQUAL, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
+            @OperatorDependency(operator = EQUAL, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
             @SqlType("array(T)") Block array,
             @SqlType("T") long element)
     {
@@ -77,7 +78,7 @@ public final class ArrayPositionFunction
                 long arrayValue = type.getLong(array, i);
                 try {
                     Boolean result = (Boolean) equalMethodHandle.invokeExact(arrayValue, element);
-                    checkNotIndeterminate(result);
+                    verify(result != null, "Array element should not be null");
                     if (result) {
                         return i + 1; // result is 1-based (instead of 0)
                     }
@@ -94,7 +95,7 @@ public final class ArrayPositionFunction
     @SqlType(StandardTypes.BIGINT)
     public static long arrayPosition(
             @TypeParameter("T") Type type,
-            @OperatorDependency(operator = EQUAL, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
+            @OperatorDependency(operator = EQUAL, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
             @SqlType("array(T)") Block array,
             @SqlType("T") double element)
     {
@@ -104,7 +105,7 @@ public final class ArrayPositionFunction
                 double arrayValue = type.getDouble(array, i);
                 try {
                     Boolean result = (Boolean) equalMethodHandle.invokeExact(arrayValue, element);
-                    checkNotIndeterminate(result);
+                    verify(result != null, "Array element should not be null");
                     if (result) {
                         return i + 1; // result is 1-based (instead of 0)
                     }
@@ -121,7 +122,7 @@ public final class ArrayPositionFunction
     @SqlType(StandardTypes.BIGINT)
     public static long arrayPosition(
             @TypeParameter("T") Type type,
-            @OperatorDependency(operator = EQUAL, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
+            @OperatorDependency(operator = EQUAL, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
             @SqlType("array(T)") Block array,
             @SqlType("T") Slice element)
     {
@@ -131,7 +132,7 @@ public final class ArrayPositionFunction
                 Slice arrayValue = type.getSlice(array, i);
                 try {
                     Boolean result = (Boolean) equalMethodHandle.invokeExact(arrayValue, element);
-                    checkNotIndeterminate(result);
+                    verify(result != null, "Array element should not be nul");
                     if (result) {
                         return i + 1; // result is 1-based (instead of 0)
                     }
@@ -148,7 +149,7 @@ public final class ArrayPositionFunction
     @SqlType(StandardTypes.BIGINT)
     public static long arrayPosition(
             @TypeParameter("T") Type type,
-            @OperatorDependency(operator = EQUAL, returnType = StandardTypes.BOOLEAN, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
+            @OperatorDependency(operator = EQUAL, argumentTypes = {"T", "T"}) MethodHandle equalMethodHandle,
             @SqlType("array(T)") Block array,
             @SqlType("T") Block element)
     {
@@ -158,7 +159,9 @@ public final class ArrayPositionFunction
                 Object arrayValue = type.getObject(array, i);
                 try {
                     Boolean result = (Boolean) equalMethodHandle.invoke(arrayValue, element);
-                    checkNotIndeterminate(result);
+                    if (result == null) {
+                        throw new PrestoException(NOT_SUPPORTED, "array_position does not support elements of complex types that contain null");
+                    }
                     if (result) {
                         return i + 1; // result is 1-based (instead of 0)
                     }
@@ -169,12 +172,5 @@ public final class ArrayPositionFunction
             }
         }
         return 0;
-    }
-
-    private static void checkNotIndeterminate(Boolean equalsResult)
-    {
-        if (equalsResult == null) {
-            throw new PrestoException(NOT_SUPPORTED, "array_position does not support arrays with elements that are null or contain null");
-        }
     }
 }

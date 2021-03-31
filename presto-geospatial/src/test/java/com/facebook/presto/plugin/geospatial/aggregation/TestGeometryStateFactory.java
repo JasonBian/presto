@@ -14,9 +14,9 @@
 package com.facebook.presto.plugin.geospatial.aggregation;
 
 import com.esri.core.geometry.ogc.OGCGeometry;
-import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
+import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 import static org.testng.Assert.assertNull;
@@ -24,13 +24,8 @@ import static org.testng.Assert.assertTrue;
 
 public class TestGeometryStateFactory
 {
-    private GeometryStateFactory factory;
+    private GeometryStateFactory factory = new GeometryStateFactory();
 
-    @BeforeMethod
-    public void init()
-    {
-        factory = new GeometryStateFactory();
-    }
     @Test
     public void testCreateSingleStateEmpty()
     {
@@ -43,9 +38,9 @@ public class TestGeometryStateFactory
     public void testCreateSingleStatePresent()
     {
         GeometryState state = factory.createSingleState();
-        state.setGeometry(OGCGeometry.fromText("POINT (1 2)"));
+        state.setGeometry(OGCGeometry.fromText("POINT (1 2)"), 0);
         assertEquals(OGCGeometry.fromText("POINT (1 2)"), state.getGeometry());
-        assertTrue(state.getEstimatedSize() > 0, String.format("Estimated memory size was %d", state.getEstimatedSize()));
+        assertTrue(state.getEstimatedSize() > 0, format("Estimated memory size was %d", state.getEstimatedSize()));
     }
 
     @Test
@@ -53,7 +48,7 @@ public class TestGeometryStateFactory
     {
         GeometryState state = factory.createGroupedState();
         assertNull(state.getGeometry());
-        assertTrue(state.getEstimatedSize() > 0, String.format("Estimated memory size was %d", state.getEstimatedSize()));
+        assertTrue(state.getEstimatedSize() > 0, format("Estimated memory size was %d", state.getEstimatedSize()));
     }
 
     @Test
@@ -66,15 +61,32 @@ public class TestGeometryStateFactory
 
         groupedState.setGroupId(1);
         assertNull(state.getGeometry());
-        groupedState.setGeometry(OGCGeometry.fromText("POINT (1 2)"));
+        groupedState.setGeometry(OGCGeometry.fromText("POINT (1 2)"), 0);
         assertEquals(state.getGeometry(), OGCGeometry.fromText("POINT (1 2)"));
 
         groupedState.setGroupId(2);
         assertNull(state.getGeometry());
-        groupedState.setGeometry(OGCGeometry.fromText("POINT (3 4)"));
+        groupedState.setGeometry(OGCGeometry.fromText("POINT (3 4)"), 0);
         assertEquals(state.getGeometry(), OGCGeometry.fromText("POINT (3 4)"));
 
         groupedState.setGroupId(1);
         assertNotNull(state.getGeometry());
+    }
+
+    @Test
+    public void testMemoryAccounting()
+    {
+        GeometryState state = factory.createGroupedState();
+        long oldSize = state.getEstimatedSize();
+        OGCGeometry geometry = OGCGeometry.fromText("POLYGON ((2 2, 1 1, 3 1, 2 2))");
+
+        long previousGeometryMemorySize = 0;
+        state.setGeometry(geometry, previousGeometryMemorySize);
+        assertTrue(oldSize < state.getEstimatedSize(), format("Expected old size %s to be less than new estimate %s", oldSize, state.getEstimatedSize()));
+
+        oldSize = state.getEstimatedSize();
+        previousGeometryMemorySize = state.getGeometry().estimateMemorySize();
+        state.setGeometry(state.getGeometry().union(geometry), previousGeometryMemorySize);
+        assertTrue(oldSize <= state.getEstimatedSize(), format("Expected old size %s to be less than or equal to new estimate %s", oldSize, state.getEstimatedSize()));
     }
 }

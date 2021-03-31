@@ -9,19 +9,23 @@ from different data sources.
     :maxdepth: 1
 
     connector/accumulo
+    connector/bigquery
     connector/blackhole
     connector/cassandra
+    connector/druid
+    connector/elasticsearch
     connector/hive
     connector/hive-security
     connector/jmx
     connector/kafka
     connector/kafka-tutorial
     connector/kudu
-    connector/avro-schema-evolution
     connector/localfile
     connector/memory
     connector/mongodb
     connector/mysql
+    connector/oracle
+    connector/pinot
     connector/postgresql
     connector/redis
     connector/redshift

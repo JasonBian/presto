@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.operator.exchange;
 
+import com.facebook.presto.common.Page;
 import com.facebook.presto.operator.DriverContext;
 import com.facebook.presto.operator.Operator;
 import com.facebook.presto.operator.OperatorContext;
 import com.facebook.presto.operator.OperatorFactory;
 import com.facebook.presto.operator.exchange.LocalExchange.LocalExchangeFactory;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import static com.google.common.base.Preconditions.checkState;
@@ -74,6 +74,7 @@ public class LocalExchangeSourceOperator
 
     private final OperatorContext operatorContext;
     private final LocalExchangeSource source;
+    private ListenableFuture<?> isBlocked = NOT_BLOCKED;
 
     public LocalExchangeSourceOperator(OperatorContext operatorContext, LocalExchangeSource source)
     {
@@ -103,7 +104,13 @@ public class LocalExchangeSourceOperator
     @Override
     public ListenableFuture<?> isBlocked()
     {
-        return source.waitForReading();
+        if (isBlocked.isDone()) {
+            isBlocked = source.waitForReading();
+            if (isBlocked.isDone()) {
+                isBlocked = NOT_BLOCKED;
+            }
+        }
+        return isBlocked;
     }
 
     @Override
@@ -123,7 +130,7 @@ public class LocalExchangeSourceOperator
     {
         Page page = source.removePage();
         if (page != null) {
-            operatorContext.recordGeneratedInput(page.getSizeInBytes(), page.getPositionCount());
+            operatorContext.recordProcessedInput(page.getSizeInBytes(), page.getPositionCount());
         }
         return page;
     }

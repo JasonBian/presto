@@ -14,13 +14,14 @@
 package com.facebook.presto.hive.parquet.write;
 
 import org.apache.hadoop.conf.Configuration;
-import org.apache.hadoop.hive.ql.io.parquet.write.DataWritableWriteSupport;
 import org.apache.hadoop.hive.serde2.io.ParquetHiveRecord;
-import parquet.hadoop.api.WriteSupport;
-import parquet.io.api.RecordConsumer;
-import parquet.schema.MessageType;
+import org.apache.parquet.hadoop.api.WriteSupport;
+import org.apache.parquet.io.api.RecordConsumer;
+import org.apache.parquet.schema.MessageType;
 
 import java.util.HashMap;
+
+import static org.apache.parquet.schema.MessageTypeParser.parseMessageType;
 
 /**
  * This class is copied from org.apache.hadoop.hive.ql.io.parquet.write.DataWritableWriteSupport
@@ -41,7 +42,7 @@ class TestDataWritableWriteSupport
     @Override
     public WriteContext init(final Configuration configuration)
     {
-        schema = DataWritableWriteSupport.getSchema(configuration);
+        schema = parseMessageType(configuration.get("parquet.hive.schema"));
         return new WriteContext(schema, new HashMap<>());
     }
 

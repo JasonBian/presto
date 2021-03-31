@@ -14,13 +14,13 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.security.AccessControl;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
 import com.facebook.presto.spi.session.PropertyMetadata;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.sql.analyzer.SemanticException;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.QualifiedName;
@@ -59,14 +59,14 @@ public class SetSessionTask
         // validate the property name
         PropertyMetadata<?> propertyMetadata;
         if (parts.size() == 1) {
-            accessControl.checkCanSetSystemSessionProperty(session.getIdentity(), parts.get(0));
+            accessControl.checkCanSetSystemSessionProperty(session.getIdentity(), session.getAccessControlContext(), parts.get(0));
             propertyMetadata = metadata.getSessionPropertyManager().getSystemSessionPropertyMetadata(parts.get(0))
                     .orElseThrow(() -> new SemanticException(INVALID_SESSION_PROPERTY, statement, "Session property %s does not exist", statement.getName()));
         }
         else {
             ConnectorId connectorId = metadata.getCatalogHandle(stateMachine.getSession(), parts.get(0))
                     .orElseThrow(() -> new SemanticException(MISSING_CATALOG, statement, "Catalog %s does not exist", parts.get(0)));
-            accessControl.checkCanSetCatalogSessionProperty(session.getRequiredTransactionId(), session.getIdentity(), parts.get(0), parts.get(1));
+            accessControl.checkCanSetCatalogSessionProperty(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), parts.get(0), parts.get(1));
             propertyMetadata = metadata.getSessionPropertyManager().getConnectorSessionPropertyMetadata(connectorId, parts.get(1))
                     .orElseThrow(() -> new SemanticException(INVALID_SESSION_PROPERTY, statement, "Session property %s does not exist", statement.getName()));
         }
@@ -85,6 +85,8 @@ public class SetSessionTask
         String value = serializeSessionProperty(type, objectValue);
 
         // verify the SQL value can be decoded by the property
+        propertyMetadata.decode(objectValue);
+
         stateMachine.addSetSessionProperties(propertyName.toString(), value);
 
         return immediateFuture(null);

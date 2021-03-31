@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.aggregation.Accumulator;
 import com.facebook.presto.operator.aggregation.AccumulatorFactory;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
+import com.facebook.presto.spi.plan.AggregationNode;
 
 import static com.google.common.base.Preconditions.checkArgument;
 
@@ -28,11 +28,11 @@ class Aggregator
     private final AggregationNode.Step step;
     private final int intermediateChannel;
 
-    Aggregator(AccumulatorFactory accumulatorFactory, AggregationNode.Step step)
+    Aggregator(AccumulatorFactory accumulatorFactory, AggregationNode.Step step, UpdateMemory updateMemory)
     {
         if (step.isInputRaw()) {
             intermediateChannel = -1;
-            aggregation = accumulatorFactory.createAccumulator();
+            aggregation = accumulatorFactory.createAccumulator(updateMemory);
         }
         else {
             checkArgument(accumulatorFactory.getInputChannels().size() == 1, "expected 1 input channel for intermediate aggregation");

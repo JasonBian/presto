@@ -13,114 +13,114 @@
  */
 package com.facebook.presto.sql.planner;
 
-import com.facebook.presto.sql.tree.Cast;
-import com.facebook.presto.sql.tree.DefaultExpressionTraversalVisitor;
-import com.facebook.presto.sql.tree.DereferenceExpression;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.FunctionCall;
-import com.facebook.presto.sql.tree.IfExpression;
-import com.facebook.presto.sql.tree.InPredicate;
-import com.facebook.presto.sql.tree.NullIfExpression;
-import com.facebook.presto.sql.tree.SearchedCaseExpression;
-import com.facebook.presto.sql.tree.SimpleCaseExpression;
-import com.facebook.presto.sql.tree.SubscriptExpression;
-import com.facebook.presto.sql.tree.TryExpression;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.expressions.DefaultRowExpressionTraversalVisitor;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.function.FunctionMetadata;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.SpecialFormExpression;
+import com.facebook.presto.sql.relational.FunctionResolution;
 
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicBoolean;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
 public final class NullabilityAnalyzer
 {
-    private NullabilityAnalyzer() {}
+    private final FunctionAndTypeManager functionAndTypeManager;
+    private final FunctionResolution functionResolution;
 
-    /**
-     * TODO: this currently produces a very conservative estimate.
-     * We need to narrow down the conditions under which certain constructs
-     * can return null (e.g., if(a, b, c) might return null for non-null a
-     * only if b or c can be null.
-     */
-    public static boolean mayReturnNullOnNonNullInput(Expression expression)
+    public NullabilityAnalyzer(FunctionAndTypeManager functionAndTypeManager)
+    {
+        this.functionAndTypeManager = requireNonNull(functionAndTypeManager, "functionManager is null");
+        this.functionResolution = new FunctionResolution(functionAndTypeManager);
+    }
+
+    public boolean mayReturnNullOnNonNullInput(RowExpression expression)
     {
         requireNonNull(expression, "expression is null");
 
         AtomicBoolean result = new AtomicBoolean(false);
-        new Visitor().process(expression, result);
+        expression.accept(new RowExpressionVisitor(functionAndTypeManager, functionResolution), result);
         return result.get();
     }
 
-    private static class Visitor
-            extends DefaultExpressionTraversalVisitor<Void, AtomicBoolean>
+    private static class RowExpressionVisitor
+            extends DefaultRowExpressionTraversalVisitor<AtomicBoolean>
     {
-        @Override
-        protected Void visitCast(Cast node, AtomicBoolean result)
+        private final FunctionAndTypeManager functionAndTypeManager;
+        private final FunctionResolution functionResolution;
+
+        public RowExpressionVisitor(FunctionAndTypeManager functionAndTypeManager, FunctionResolution functionResolution)
         {
-            // try_cast and cast(JSON 'null' AS ...) can return null
-            result.set(true);
-            return null;
+            this.functionAndTypeManager = functionAndTypeManager;
+            this.functionResolution = functionResolution;
         }
 
         @Override
-        protected Void visitNullIfExpression(NullIfExpression node, AtomicBoolean result)
+        public Void visitCall(CallExpression call, AtomicBoolean result)
         {
-            result.set(true);
+            FunctionMetadata function = functionAndTypeManager.getFunctionMetadata(call.getFunctionHandle());
+            Optional<OperatorType> operator = function.getOperatorType();
+            if (operator.isPresent()) {
+                switch (operator.get()) {
+                    case SATURATED_FLOOR_CAST:
+                    case CAST: {
+                        if (!isCastTypeOnlyCoercion(call)) {
+                            result.set(true);
+                        }
+                        break;
+                    }
+                    case SUBSCRIPT:
+                        result.set(true);
+                        break;
+                    default:
+                        // no-op
+                }
+            }
+            else if (functionResolution.isTryCastFunction(call.getFunctionHandle())) {
+                if (!isCastTypeOnlyCoercion(call)) {
+                    result.set(true);
+                }
+            }
+            else if (!functionReturnsNullForNotNullInput(function)) {
+                // TODO: use function annotation instead of assume all function can return NULL
+                result.set(true);
+            }
+            call.getArguments().forEach(argument -> argument.accept(this, result));
             return null;
         }
 
-        @Override
-        protected Void visitDereferenceExpression(DereferenceExpression node, AtomicBoolean result)
+        private boolean isCastTypeOnlyCoercion(CallExpression castCallExpression)
         {
-            result.set(true);
-            return null;
+            checkArgument(castCallExpression.getArguments().size() == 1);
+            Type sourceType = castCallExpression.getArguments().get(0).getType();
+            Type targetType = castCallExpression.getType();
+            return functionAndTypeManager.isTypeOnlyCoercion(sourceType, targetType);
+        }
+
+        private boolean functionReturnsNullForNotNullInput(FunctionMetadata function)
+        {
+            return (function.getName().getObjectName().equalsIgnoreCase("like"));
         }
 
         @Override
-        protected Void visitInPredicate(InPredicate node, AtomicBoolean result)
+        public Void visitSpecialForm(SpecialFormExpression specialForm, AtomicBoolean result)
         {
-            result.set(true);
-            return null;
-        }
-
-        @Override
-        protected Void visitSearchedCaseExpression(SearchedCaseExpression node, AtomicBoolean result)
-        {
-            result.set(true);
-            return null;
-        }
-
-        @Override
-        protected Void visitSimpleCaseExpression(SimpleCaseExpression node, AtomicBoolean result)
-        {
-            result.set(true);
-            return null;
-        }
-
-        @Override
-        protected Void visitSubscriptExpression(SubscriptExpression node, AtomicBoolean result)
-        {
-            result.set(true);
-            return null;
-        }
-
-        @Override
-        protected Void visitTryExpression(TryExpression node, AtomicBoolean result)
-        {
-            result.set(true);
-            return null;
-        }
-
-        @Override
-        protected Void visitIfExpression(IfExpression node, AtomicBoolean result)
-        {
-            result.set(true);
-            return null;
-        }
-
-        @Override
-        protected Void visitFunctionCall(FunctionCall node, AtomicBoolean result)
-        {
-            // TODO: this should look at whether the return type of the function is annotated with @SqlNullable
-            result.set(true);
+            switch (specialForm.getForm()) {
+                case IN:
+                case IF:
+                case SWITCH:
+                case WHEN:
+                case NULL_IF:
+                case DEREFERENCE:
+                    result.set(true);
+            }
+            specialForm.getArguments().forEach(argument -> argument.accept(this, result));
             return null;
         }
     }

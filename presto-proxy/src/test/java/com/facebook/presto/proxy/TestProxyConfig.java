@@ -14,15 +14,17 @@
 package com.facebook.presto.proxy;
 
 import com.google.common.collect.ImmutableMap;
+import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
 import java.io.File;
 import java.net.URI;
 import java.util.Map;
 
-import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
-import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
-import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class TestProxyConfig
 {
@@ -32,11 +34,7 @@ public class TestProxyConfig
         assertRecordedDefaults(recordDefaults(ProxyConfig.class)
                 .setUri(null)
                 .setSharedSecretFile(null)
-                .setJwtKeyFile(null)
-                .setJwtKeyFilePassword(null)
-                .setJwtKeyId(null)
-                .setJwtIssuer(null)
-                .setJwtAudience(null));
+                .setAsyncTimeout(new Duration(2, MINUTES)));
     }
 
     @Test
@@ -45,21 +43,13 @@ public class TestProxyConfig
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("proxy.uri", "http://example.net/")
                 .put("proxy.shared-secret-file", "test.secret")
-                .put("proxy.jwt.key-file", "test.key")
-                .put("proxy.jwt.key-file-password", "password")
-                .put("proxy.jwt.key-id", "testkeyid")
-                .put("proxy.jwt.issuer", "testissuer")
-                .put("proxy.jwt.audience", "testaudience")
+                .put("proxy.async-timeout", "10m")
                 .build();
 
         ProxyConfig expected = new ProxyConfig()
                 .setUri(URI.create("http://example.net/"))
                 .setSharedSecretFile(new File("test.secret"))
-                .setJwtKeyFile(new File("test.key"))
-                .setJwtKeyFilePassword("password")
-                .setJwtKeyId("testkeyid")
-                .setJwtIssuer("testissuer")
-                .setJwtAudience("testaudience");
+                .setAsyncTimeout(new Duration(10, MINUTES));
 
         assertFullMapping(properties, expected);
     }

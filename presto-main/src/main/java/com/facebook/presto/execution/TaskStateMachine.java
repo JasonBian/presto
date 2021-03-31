@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.google.common.util.concurrent.ListenableFuture;
-import io.airlift.log.Logger;
 import org.joda.time.DateTime;
 
 import javax.annotation.concurrent.ThreadSafe;
@@ -49,7 +49,7 @@ public class TaskStateMachine
             @Override
             public void stateChanged(TaskState newState)
             {
-                log.debug("Task %s is %s", TaskStateMachine.this.taskId, newState);
+                log.debug("Task %s is %s", taskId, newState);
             }
         });
     }
@@ -116,6 +116,11 @@ public class TaskStateMachine
         taskState.setIf(doneState, currentState -> !currentState.isDone());
     }
 
+    /**
+     * Listener is always notified asynchronously using a dedicated notification thread pool so, care should
+     * be taken to avoid leaking {@code this} when adding a listener in a constructor. Additionally, it is
+     * possible notifications are observed out of order due to the asynchronous execution.
+     */
     public void addStateChangeListener(StateChangeListener<TaskState> stateChangeListener)
     {
         taskState.addStateChangeListener(stateChangeListener);

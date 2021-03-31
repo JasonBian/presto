@@ -13,15 +13,13 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.Type;
 import io.airlift.slice.Slices;
 
 import java.util.concurrent.ThreadLocalRandom;
 
-import static com.facebook.presto.metadata.FunctionKind.AGGREGATE;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.type.IpAddressType.IPADDRESS;
 
 public class TestApproximateCountDistinctIpAddress
@@ -30,8 +28,8 @@ public class TestApproximateCountDistinctIpAddress
     @Override
     public InternalAggregationFunction getAggregationFunction()
     {
-        return metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("approx_distinct", AGGREGATE, BIGINT.getTypeSignature(), IPADDRESS.getTypeSignature(), DOUBLE.getTypeSignature()));
+        return FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(
+                FUNCTION_AND_TYPE_MANAGER.lookupFunction("approx_distinct", fromTypes(IPADDRESS, DOUBLE)));
     }
 
     @Override

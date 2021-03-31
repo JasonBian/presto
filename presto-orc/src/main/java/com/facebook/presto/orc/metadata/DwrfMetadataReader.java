@@ -13,6 +13,13 @@
  */
 package com.facebook.presto.orc.metadata;
 
+import com.facebook.presto.orc.DwrfDataEncryptor;
+import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.DwrfKeyProvider;
+import com.facebook.presto.orc.EncryptionLibrary;
+import com.facebook.presto.orc.OrcCorruptionException;
+import com.facebook.presto.orc.OrcDataSource;
+import com.facebook.presto.orc.OrcDecompressor;
 import com.facebook.presto.orc.metadata.ColumnEncoding.ColumnEncodingKind;
 import com.facebook.presto.orc.metadata.OrcType.OrcTypeKind;
 import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
@@ -25,19 +32,29 @@ import com.facebook.presto.orc.metadata.statistics.HiveBloomFilter;
 import com.facebook.presto.orc.metadata.statistics.IntegerStatistics;
 import com.facebook.presto.orc.metadata.statistics.StringStatistics;
 import com.facebook.presto.orc.proto.DwrfProto;
+import com.facebook.presto.orc.protobuf.ByteString;
 import com.facebook.presto.orc.protobuf.CodedInputStream;
+import com.facebook.presto.orc.stream.OrcInputStream;
+import com.facebook.presto.orc.stream.SharedBuffer;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterables;
+import io.airlift.slice.BasicSliceInput;
 import io.airlift.slice.Slice;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.SortedMap;
 
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
+import static com.facebook.presto.orc.NoopOrcLocalMemoryContext.NOOP_ORC_LOCAL_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.metadata.CompressionKind.LZ4;
 import static com.facebook.presto.orc.metadata.CompressionKind.NONE;
 import static com.facebook.presto.orc.metadata.CompressionKind.SNAPPY;
@@ -54,9 +71,10 @@ import static com.facebook.presto.orc.metadata.statistics.BooleanStatistics.BOOL
 import static com.facebook.presto.orc.metadata.statistics.DoubleStatistics.DOUBLE_VALUE_BYTES;
 import static com.facebook.presto.orc.metadata.statistics.IntegerStatistics.INTEGER_VALUE_BYTES;
 import static com.facebook.presto.orc.metadata.statistics.StringStatistics.STRING_VALUE_BYTES_OVERHEAD;
-import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.Math.toIntExact;
+import static java.util.Objects.requireNonNull;
 
 public class DwrfMetadataReader
         implements MetadataReader
@@ -86,38 +104,181 @@ public class DwrfMetadataReader
     }
 
     @Override
-    public Footer readFooter(HiveWriterVersion hiveWriterVersion, InputStream inputStream)
+    public Footer readFooter(HiveWriterVersion hiveWriterVersion,
+            InputStream inputStream,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            DwrfKeyProvider dwrfKeyProvider,
+            OrcDataSource orcDataSource,
+            Optional<OrcDecompressor> decompressor)
             throws IOException
     {
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
         DwrfProto.Footer footer = DwrfProto.Footer.parseFrom(input);
+        List<ColumnStatistics> fileStats = toColumnStatistics(hiveWriterVersion, footer.getStatisticsList(), false);
+        List<StripeInformation> fileStripes = toStripeInformation(footer.getStripesList());
+        List<OrcType> types = toType(footer.getTypesList());
+        Optional<DwrfEncryption> encryption = footer.hasEncryption() ? Optional.of(toEncryption(footer.getEncryption())) : Optional.empty();
 
-        // todo enable file stats when DWRF team verifies that the stats are correct
-        // List<ColumnStatistics> fileStats = toColumnStatistics(hiveWriterVersion, footer.getStatisticsList(), false);
-        List<ColumnStatistics> fileStats = ImmutableList.of();
+        if (encryption.isPresent()) {
+            Map<Integer, Slice> keys = dwrfKeyProvider.getIntermediateKeys(types);
+            EncryptionLibrary encryptionLibrary = dwrfEncryptionProvider.getEncryptionLibrary(encryption.get().getKeyProvider());
+            fileStats = decryptAndCombineFileStatistics(hiveWriterVersion, encryption.get(), encryptionLibrary, fileStats, fileStripes, keys, orcDataSource, decompressor);
+        }
 
         return new Footer(
                 footer.getNumberOfRows(),
                 footer.getRowIndexStride(),
-                toStripeInformation(footer.getStripesList()),
-                toType(footer.getTypesList()),
+                fileStripes,
+                types,
                 fileStats,
-                toUserMetadata(footer.getMetadataList()));
+                toUserMetadata(footer.getMetadataList()),
+                encryption);
     }
 
-    private static List<StripeInformation> toStripeInformation(List<DwrfProto.StripeInformation> types)
+    private List<ColumnStatistics> decryptAndCombineFileStatistics(HiveWriterVersion hiveWriterVersion,
+            DwrfEncryption dwrfEncryption,
+            EncryptionLibrary encryptionLibrary,
+            List<ColumnStatistics> fileStats,
+            List<StripeInformation> fileStripes,
+            Map<Integer, Slice> nodeToIntermediateKeys,
+            OrcDataSource orcDataSource,
+            Optional<OrcDecompressor> decompressor)
     {
-        return ImmutableList.copyOf(Iterables.transform(types, DwrfMetadataReader::toStripeInformation));
+        requireNonNull(dwrfEncryption, "dwrfEncryption is null");
+        requireNonNull(encryptionLibrary, "encryptionLibrary is null");
+
+        if (nodeToIntermediateKeys.isEmpty() || fileStats.isEmpty()) {
+            return fileStats;
+        }
+
+        ColumnStatistics[] decryptedFileStats = fileStats.toArray(new ColumnStatistics[0]);
+        List<EncryptionGroup> encryptionGroups = dwrfEncryption.getEncryptionGroups();
+        List<byte[]> stripeKeys = null;
+        if (!fileStripes.isEmpty() && !fileStripes.get(0).getKeyMetadata().isEmpty()) {
+            stripeKeys = fileStripes.get(0).getKeyMetadata();
+            checkState(stripeKeys.size() == encryptionGroups.size(),
+                    "Number of keys in the first stripe must be the same as the number of encryption groups");
+        }
+
+        // if there is a node that has child nodes then its whole subtree will be encrypted and only the parent
+        // node is added to the encryption group
+        for (int groupIdx = 0; groupIdx < encryptionGroups.size(); groupIdx++) {
+            EncryptionGroup encryptionGroup = encryptionGroups.get(groupIdx);
+            DwrfDataEncryptor decryptor = null;
+            List<Integer> nodes = encryptionGroup.getNodes();
+            for (int i = 0; i < nodes.size(); i++) {
+                Integer nodeId = nodes.get(i);
+
+                // do decryption only for those nodes that are requested (part of the projection)
+                if (!nodeToIntermediateKeys.containsKey(nodeId)) {
+                    continue;
+                }
+
+                if (decryptor == null) {
+                    // DEK for the FileStats can be stored either in the footer or/and in the first stripe.
+                    // The key in the footer takes priority over the key in the first stripe.
+                    byte[] encryptedDataKeyWithMeta = null;
+                    if (encryptionGroup.getKeyMetadata().isPresent()) {
+                        encryptedDataKeyWithMeta = encryptionGroup.getKeyMetadata().get().byteArray();
+                    }
+                    else if (stripeKeys != null) {
+                        encryptedDataKeyWithMeta = stripeKeys.get(groupIdx);
+                    }
+                    checkState(encryptedDataKeyWithMeta != null, "DEK for %s encryption group is null", groupIdx);
+
+                    // decrypt the DEK which is encrypted using the IEK passed into a record reader
+                    byte[] intermediateKey = nodeToIntermediateKeys.get(nodeId).byteArray();
+                    byte[] dataKey = encryptionLibrary.decryptKey(intermediateKey, encryptedDataKeyWithMeta, 0, encryptedDataKeyWithMeta.length);
+                    decryptor = new DwrfDataEncryptor(dataKey, encryptionLibrary);
+                }
+
+                // decrypt the FileStats
+                Slice encryptedFileStats = encryptionGroup.getStatistics().get(i);
+                try (OrcInputStream inputStream = new OrcInputStream(
+                        orcDataSource.getId(),
+                        // Memory is not accounted as the buffer is expected to be tiny and will be immediately discarded
+                        new SharedBuffer(NOOP_ORC_LOCAL_MEMORY_CONTEXT),
+                        new BasicSliceInput(encryptedFileStats),
+                        decompressor,
+                        Optional.of(decryptor),
+                        NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
+                        encryptedFileStats.length())) {
+                    CodedInputStream input = CodedInputStream.newInstance(inputStream);
+                    DwrfProto.FileStatistics nodeStats = DwrfProto.FileStatistics.parseFrom(input);
+
+                    // FileStatistics contains ColumnStatistics for the node and all its child nodes (subtree)
+                    for (int statsIdx = 0; statsIdx < nodeStats.getStatisticsCount(); statsIdx++) {
+                        decryptedFileStats[nodeId + statsIdx] =
+                                toColumnStatistics(hiveWriterVersion, nodeStats.getStatistics(statsIdx), false);
+                    }
+                }
+                catch (IOException e) {
+                    throw new OrcCorruptionException(e, orcDataSource.getId(), "Failed to read or decrypt FileStatistics for node %s", nodeId);
+                }
+            }
+        }
+
+        return ImmutableList.copyOf(decryptedFileStats);
     }
 
-    private static StripeInformation toStripeInformation(DwrfProto.StripeInformation stripeInformation)
+    private static DwrfEncryption toEncryption(DwrfProto.Encryption encryption)
     {
+        KeyProvider keyProvider = toKeyProvider(encryption.getKeyProvider());
+        List<EncryptionGroup> encryptionGroups = toEncryptionGroups(encryption.getEncryptionGroupsList());
+        return new DwrfEncryption(keyProvider, encryptionGroups);
+    }
+
+    private static List<EncryptionGroup> toEncryptionGroups(List<DwrfProto.EncryptionGroup> encryptionGroups)
+    {
+        ImmutableList.Builder<EncryptionGroup> encryptionGroupBuilder = ImmutableList.builder();
+        for (DwrfProto.EncryptionGroup dwrfEncryptionGroup : encryptionGroups) {
+            encryptionGroupBuilder.add(new EncryptionGroup(
+                    dwrfEncryptionGroup.getNodesList(),
+                    dwrfEncryptionGroup.hasKeyMetadata() ? Optional.of(byteStringToSlice(dwrfEncryptionGroup.getKeyMetadata())) : Optional.empty(),
+                    dwrfEncryptionGroup.getStatisticsList().stream()
+                            .map(OrcMetadataReader::byteStringToSlice)
+                            .collect(toImmutableList())));
+        }
+        return encryptionGroupBuilder.build();
+    }
+
+    private static KeyProvider toKeyProvider(DwrfProto.Encryption.KeyProvider keyProvider)
+    {
+        switch (keyProvider) {
+            case CRYPTO_SERVICE:
+                return KeyProvider.CRYPTO_SERVICE;
+            default:
+                return KeyProvider.UNKNOWN;
+        }
+    }
+
+    private static List<StripeInformation> toStripeInformation(List<DwrfProto.StripeInformation> stripeInformationList)
+    {
+        ImmutableList.Builder<StripeInformation> stripeInfoBuilder = ImmutableList.builder();
+        List<byte[]> previousKeyMetadata = ImmutableList.of();
+        for (DwrfProto.StripeInformation dwrfStripeInfo : stripeInformationList) {
+            StripeInformation prestoStripeInfo = toStripeInformation(dwrfStripeInfo, previousKeyMetadata);
+            stripeInfoBuilder.add(prestoStripeInfo);
+            previousKeyMetadata = prestoStripeInfo.getKeyMetadata();
+        }
+        return stripeInfoBuilder.build();
+    }
+
+    private static StripeInformation toStripeInformation(DwrfProto.StripeInformation stripeInformation, List<byte[]> previousKeyMetadata)
+    {
+        List<byte[]> keyMetadata = stripeInformation.getKeyMetadataList().stream()
+                .map(ByteString::toByteArray)
+                .collect(toImmutableList());
+        if (keyMetadata.isEmpty()) {
+            keyMetadata = previousKeyMetadata;
+        }
         return new StripeInformation(
                 toIntExact(stripeInformation.getNumberOfRows()),
                 stripeInformation.getOffset(),
                 stripeInformation.getIndexLength(),
                 stripeInformation.getDataLength(),
-                stripeInformation.getFooterLength());
+                stripeInformation.getFooterLength(),
+                keyMetadata);
     }
 
     @Override
@@ -126,12 +287,23 @@ public class DwrfMetadataReader
     {
         CodedInputStream input = CodedInputStream.newInstance(inputStream);
         DwrfProto.StripeFooter stripeFooter = DwrfProto.StripeFooter.parseFrom(input);
-        return new StripeFooter(toStream(stripeFooter.getStreamsList()), toColumnEncoding(types, stripeFooter.getColumnsList()));
+        return new StripeFooter(
+                toStream(stripeFooter.getStreamsList()),
+                toColumnEncoding(types, stripeFooter.getColumnsList()),
+                stripeFooter.getEncryptedGroupsList().stream()
+                        .map(OrcMetadataReader::byteStringToSlice)
+                        .collect(toImmutableList()));
     }
 
     private static Stream toStream(DwrfProto.Stream stream)
     {
-        return new Stream(stream.getColumn(), toStreamKind(stream.getKind()), toIntExact(stream.getLength()), stream.getUseVInts());
+        return new Stream(
+                stream.getColumn(),
+                toStreamKind(stream.getKind()),
+                toIntExact(stream.getLength()),
+                stream.getUseVInts(),
+                stream.getSequence(),
+                stream.hasOffset() ? Optional.of(stream.getOffset()) : Optional.empty());
     }
 
     private static List<Stream> toStream(List<DwrfProto.Stream> streams)
@@ -139,21 +311,66 @@ public class DwrfMetadataReader
         return ImmutableList.copyOf(Iterables.transform(streams, DwrfMetadataReader::toStream));
     }
 
-    private static ColumnEncoding toColumnEncoding(OrcTypeKind type, DwrfProto.ColumnEncoding columnEncoding)
+    private static DwrfSequenceEncoding toSequenceEncoding(OrcType type, DwrfProto.ColumnEncoding columnEncoding)
     {
-        return new ColumnEncoding(toColumnEncodingKind(type, columnEncoding.getKind()), columnEncoding.getDictionarySize());
+        return new DwrfSequenceEncoding(
+                columnEncoding.getKey(),
+                new ColumnEncoding(
+                        toColumnEncodingKind(type.getOrcTypeKind(), columnEncoding.getKind()),
+                        columnEncoding.getDictionarySize()));
     }
 
-    private static List<ColumnEncoding> toColumnEncoding(List<OrcType> types, List<DwrfProto.ColumnEncoding> columnEncodings)
+    private static ColumnEncoding toColumnEncoding(OrcType type, List<DwrfProto.ColumnEncoding> columnEncodings)
     {
-        checkArgument(types.size() == columnEncodings.size());
-
-        ImmutableList.Builder<ColumnEncoding> encodings = ImmutableList.builder();
-        for (int i = 0; i < types.size(); i++) {
-            OrcType type = types.get(i);
-            encodings.add(toColumnEncoding(type.getOrcTypeKind(), columnEncodings.get(i)));
+        DwrfProto.ColumnEncoding sequence0 = null;
+        ImmutableSortedMap.Builder<Integer, DwrfSequenceEncoding> builder = ImmutableSortedMap.naturalOrder();
+        for (DwrfProto.ColumnEncoding columnEncoding : columnEncodings) {
+            if (columnEncoding.getSequence() == 0) {
+                sequence0 = columnEncoding;
+            }
+            else {
+                builder.put(columnEncoding.getSequence(), toSequenceEncoding(type, columnEncoding));
+            }
         }
-        return encodings.build();
+
+        SortedMap<Integer, DwrfSequenceEncoding> nonZeroSequences = builder.build();
+        Optional<SortedMap<Integer, DwrfSequenceEncoding>> nonZeroEncodingsOptional =
+                nonZeroSequences.isEmpty() ? Optional.empty() : Optional.of(nonZeroSequences);
+        if (sequence0 != null) {
+            return new ColumnEncoding(toColumnEncodingKind(type.getOrcTypeKind(), sequence0.getKind()), sequence0.getDictionarySize(), nonZeroEncodingsOptional);
+        }
+        else {
+            // This is the case when value node of FLAT_MAP doesn't have encoding for sequence 0
+            return new ColumnEncoding(ColumnEncodingKind.DWRF_DIRECT, 0, nonZeroEncodingsOptional);
+        }
+    }
+
+    private static Map<Integer, ColumnEncoding> toColumnEncoding(List<OrcType> types, List<DwrfProto.ColumnEncoding> columnEncodings)
+    {
+        Map<Integer, List<DwrfProto.ColumnEncoding>> groupedColumnEncodings = new HashMap<>(columnEncodings.size());
+        ImmutableMap.Builder<Integer, ColumnEncoding> resultBuilder = ImmutableMap.builder();
+
+        for (int i = 0; i < columnEncodings.size(); i++) {
+            DwrfProto.ColumnEncoding columnEncoding = columnEncodings.get(i);
+            int column = columnEncoding.getColumn();
+
+            // DWRF prior to version 6.0.8 doesn't set the value of column, infer it from the index
+            if (!columnEncoding.hasColumn()) {
+                column = i;
+            }
+
+            groupedColumnEncodings.computeIfAbsent(column, key -> new ArrayList<>()).add(columnEncoding);
+        }
+
+        for (Map.Entry<Integer, List<DwrfProto.ColumnEncoding>> entry : groupedColumnEncodings.entrySet()) {
+            OrcType type = types.get(entry.getKey());
+
+            resultBuilder.put(
+                    entry.getKey(),
+                    toColumnEncoding(type, entry.getValue()));
+        }
+
+        return resultBuilder.build();
     }
 
     @Override
@@ -372,6 +589,8 @@ public class DwrfMetadataReader
                 return StreamKind.ROW_GROUP_DICTIONARY;
             case STRIDE_DICTIONARY_LENGTH:
                 return StreamKind.ROW_GROUP_DICTIONARY_LENGTH;
+            case IN_MAP:
+                return StreamKind.IN_MAP;
             default:
                 throw new IllegalArgumentException(kind + " stream type not implemented yet");
         }
@@ -389,6 +608,8 @@ public class DwrfMetadataReader
                 }
             case DICTIONARY:
                 return ColumnEncodingKind.DICTIONARY;
+            case MAP_FLAT:
+                return ColumnEncodingKind.DWRF_MAP_FLAT;
             default:
                 throw new IllegalArgumentException(kind + " stream encoding not implemented yet");
         }
@@ -410,5 +631,16 @@ public class DwrfMetadataReader
             default:
                 throw new IllegalArgumentException(compression + " compression not implemented yet");
         }
+    }
+
+    public static StripeEncryptionGroup toStripeEncryptionGroup(InputStream inputStream, List<OrcType> types)
+            throws IOException
+    {
+        CodedInputStream codedInputStream = CodedInputStream.newInstance(inputStream);
+        DwrfProto.StripeEncryptionGroup stripeEncryptionGroup = DwrfProto.StripeEncryptionGroup.parseFrom(codedInputStream);
+        List<Stream> encryptedStreams = toStream(stripeEncryptionGroup.getStreamsList());
+        return new StripeEncryptionGroup(
+                encryptedStreams,
+                toColumnEncoding(types, stripeEncryptionGroup.getEncodingList()));
     }
 }

@@ -16,6 +16,9 @@ package com.facebook.presto.sql.parser;
 import com.facebook.presto.sql.tree.AddColumn;
 import com.facebook.presto.sql.tree.AliasedRelation;
 import com.facebook.presto.sql.tree.AllColumns;
+import com.facebook.presto.sql.tree.AlterFunction;
+import com.facebook.presto.sql.tree.AlterRoutineCharacteristics;
+import com.facebook.presto.sql.tree.Analyze;
 import com.facebook.presto.sql.tree.ArithmeticBinaryExpression;
 import com.facebook.presto.sql.tree.ArrayConstructor;
 import com.facebook.presto.sql.tree.AtTimeZone;
@@ -30,6 +33,9 @@ import com.facebook.presto.sql.tree.CoalesceExpression;
 import com.facebook.presto.sql.tree.ColumnDefinition;
 import com.facebook.presto.sql.tree.Commit;
 import com.facebook.presto.sql.tree.ComparisonExpression;
+import com.facebook.presto.sql.tree.CreateFunction;
+import com.facebook.presto.sql.tree.CreateMaterializedView;
+import com.facebook.presto.sql.tree.CreateRole;
 import com.facebook.presto.sql.tree.CreateSchema;
 import com.facebook.presto.sql.tree.CreateTable;
 import com.facebook.presto.sql.tree.CreateTableAsSelect;
@@ -44,6 +50,9 @@ import com.facebook.presto.sql.tree.DescribeInput;
 import com.facebook.presto.sql.tree.DescribeOutput;
 import com.facebook.presto.sql.tree.DoubleLiteral;
 import com.facebook.presto.sql.tree.DropColumn;
+import com.facebook.presto.sql.tree.DropFunction;
+import com.facebook.presto.sql.tree.DropMaterializedView;
+import com.facebook.presto.sql.tree.DropRole;
 import com.facebook.presto.sql.tree.DropSchema;
 import com.facebook.presto.sql.tree.DropTable;
 import com.facebook.presto.sql.tree.DropView;
@@ -56,6 +65,8 @@ import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
 import com.facebook.presto.sql.tree.GenericLiteral;
 import com.facebook.presto.sql.tree.Grant;
+import com.facebook.presto.sql.tree.GrantRoles;
+import com.facebook.presto.sql.tree.GrantorSpecification;
 import com.facebook.presto.sql.tree.GroupBy;
 import com.facebook.presto.sql.tree.GroupingOperation;
 import com.facebook.presto.sql.tree.GroupingSets;
@@ -82,9 +93,8 @@ import com.facebook.presto.sql.tree.NullIfExpression;
 import com.facebook.presto.sql.tree.NullLiteral;
 import com.facebook.presto.sql.tree.OrderBy;
 import com.facebook.presto.sql.tree.Parameter;
-import com.facebook.presto.sql.tree.PathElement;
-import com.facebook.presto.sql.tree.PathSpecification;
 import com.facebook.presto.sql.tree.Prepare;
+import com.facebook.presto.sql.tree.PrincipalSpecification;
 import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.QuantifiedComparisonExpression;
@@ -94,17 +104,24 @@ import com.facebook.presto.sql.tree.RenameColumn;
 import com.facebook.presto.sql.tree.RenameSchema;
 import com.facebook.presto.sql.tree.RenameTable;
 import com.facebook.presto.sql.tree.ResetSession;
+import com.facebook.presto.sql.tree.Return;
 import com.facebook.presto.sql.tree.Revoke;
+import com.facebook.presto.sql.tree.RevokeRoles;
 import com.facebook.presto.sql.tree.Rollback;
 import com.facebook.presto.sql.tree.Rollup;
+import com.facebook.presto.sql.tree.RoutineCharacteristics;
 import com.facebook.presto.sql.tree.Row;
 import com.facebook.presto.sql.tree.Select;
 import com.facebook.presto.sql.tree.SelectItem;
-import com.facebook.presto.sql.tree.SetPath;
+import com.facebook.presto.sql.tree.SetRole;
 import com.facebook.presto.sql.tree.SetSession;
 import com.facebook.presto.sql.tree.ShowCatalogs;
 import com.facebook.presto.sql.tree.ShowColumns;
+import com.facebook.presto.sql.tree.ShowCreateFunction;
+import com.facebook.presto.sql.tree.ShowFunctions;
 import com.facebook.presto.sql.tree.ShowGrants;
+import com.facebook.presto.sql.tree.ShowRoleGrants;
+import com.facebook.presto.sql.tree.ShowRoles;
 import com.facebook.presto.sql.tree.ShowSchemas;
 import com.facebook.presto.sql.tree.ShowSession;
 import com.facebook.presto.sql.tree.ShowStats;
@@ -112,6 +129,7 @@ import com.facebook.presto.sql.tree.ShowTables;
 import com.facebook.presto.sql.tree.SimpleGroupBy;
 import com.facebook.presto.sql.tree.SingleColumn;
 import com.facebook.presto.sql.tree.SortItem;
+import com.facebook.presto.sql.tree.SqlParameterDeclaration;
 import com.facebook.presto.sql.tree.StartTransaction;
 import com.facebook.presto.sql.tree.Statement;
 import com.facebook.presto.sql.tree.StringLiteral;
@@ -124,10 +142,13 @@ import com.facebook.presto.sql.tree.TimestampLiteral;
 import com.facebook.presto.sql.tree.TransactionAccessMode;
 import com.facebook.presto.sql.tree.Union;
 import com.facebook.presto.sql.tree.Unnest;
+import com.facebook.presto.sql.tree.Use;
 import com.facebook.presto.sql.tree.Values;
+import com.facebook.presto.sql.tree.Window;
 import com.facebook.presto.sql.tree.With;
 import com.facebook.presto.sql.tree.WithQuery;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import org.testng.annotations.Test;
 
@@ -148,10 +169,16 @@ import static com.facebook.presto.sql.SqlFormatter.formatSql;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.AT_SIGN;
 import static com.facebook.presto.sql.parser.IdentifierSymbol.COLON;
 import static com.facebook.presto.sql.testing.TreeAssertions.assertFormattedSql;
+import static com.facebook.presto.sql.tree.ArithmeticBinaryExpression.Operator.DIVIDE;
 import static com.facebook.presto.sql.tree.ArithmeticUnaryExpression.negative;
 import static com.facebook.presto.sql.tree.ArithmeticUnaryExpression.positive;
 import static com.facebook.presto.sql.tree.ComparisonExpression.Operator.GREATER_THAN;
 import static com.facebook.presto.sql.tree.ComparisonExpression.Operator.LESS_THAN;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.Determinism.DETERMINISTIC;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.Determinism.NOT_DETERMINISTIC;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.Language.SQL;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.NullCallClause.CALLED_ON_NULL_INPUT;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.NullCallClause.RETURNS_NULL_ON_NULL_INPUT;
 import static com.facebook.presto.sql.tree.SortItem.NullOrdering.UNDEFINED;
 import static com.facebook.presto.sql.tree.SortItem.Ordering.ASCENDING;
 import static com.facebook.presto.sql.tree.SortItem.Ordering.DESCENDING;
@@ -281,6 +308,14 @@ public class TestSqlParser
         catch (RuntimeException e) {
             // Expected
         }
+    }
+
+    @Test
+    public void testRowSubscript()
+    {
+        assertExpression("ROW (1, 'a', true)[1]", new SubscriptExpression(
+                new Row(ImmutableList.of(new LongLiteral("1"), new StringLiteral("a"), new BooleanLiteral("true"))),
+                new LongLiteral("1")));
     }
 
     @Test
@@ -454,9 +489,9 @@ public class TestSqlParser
                 new Query(
                         Optional.empty(),
                         new Intersect(ImmutableList.of(
-                                new Intersect(ImmutableList.of(createSelect123(), createSelect123()), true),
+                                new Intersect(ImmutableList.of(createSelect123(), createSelect123()), Optional.of(true)),
                                 createSelect123()
-                        ), false),
+                        ), Optional.of(false)),
                         Optional.empty(),
                         Optional.empty()));
     }
@@ -468,9 +503,9 @@ public class TestSqlParser
                 new Query(
                         Optional.empty(),
                         new Union(ImmutableList.of(
-                                new Union(ImmutableList.of(createSelect123(), createSelect123()), true),
+                                new Union(ImmutableList.of(createSelect123(), createSelect123()), Optional.of(true)),
                                 createSelect123()
-                        ), false),
+                        ), Optional.of(false)),
                         Optional.empty(),
                         Optional.empty()));
     }
@@ -559,8 +594,8 @@ public class TestSqlParser
                         new LongLiteral("2")),
                 new LongLiteral("3")));
 
-        assertExpression("1 / 2 / 3", new ArithmeticBinaryExpression(ArithmeticBinaryExpression.Operator.DIVIDE,
-                new ArithmeticBinaryExpression(ArithmeticBinaryExpression.Operator.DIVIDE,
+        assertExpression("1 / 2 / 3", new ArithmeticBinaryExpression(DIVIDE,
+                new ArithmeticBinaryExpression(DIVIDE,
                         new LongLiteral("1"),
                         new LongLiteral("2")),
                 new LongLiteral("3")));
@@ -692,6 +727,24 @@ public class TestSqlParser
         assertStatement("SHOW COLUMNS FROM a.b", new ShowColumns(QualifiedName.of("a", "b")));
         assertStatement("SHOW COLUMNS FROM \"awesome table\"", new ShowColumns(QualifiedName.of("awesome table")));
         assertStatement("SHOW COLUMNS FROM \"awesome schema\".\"awesome table\"", new ShowColumns(QualifiedName.of("awesome schema", "awesome table")));
+    }
+
+    @Test
+    public void testShowFunctions()
+    {
+        assertStatement("SHOW FUNCTIONS", new ShowFunctions(Optional.empty(), Optional.empty()));
+        assertStatement("SHOW FUNCTIONS LIKE '%'", new ShowFunctions(Optional.of("%"), Optional.empty()));
+        assertStatement("SHOW FUNCTIONS LIKE '%$_%' ESCAPE '$'", new ShowFunctions(Optional.of("%$_%"), Optional.of("$")));
+    }
+
+    @Test
+    public void testShowCreateFunction()
+    {
+        assertStatement("SHOW CREATE FUNCTION x.y.z", new ShowCreateFunction(QualifiedName.of("x", "y", "z"), Optional.empty()));
+        assertStatement("SHOW CREATE FUNCTION x.y.z()", new ShowCreateFunction(QualifiedName.of("x", "y", "z"), Optional.of(ImmutableList.of())));
+        assertStatement(
+                "SHOW CREATE FUNCTION x.y.z(int, double)",
+                new ShowCreateFunction(QualifiedName.of("x", "y", "z"), Optional.of(ImmutableList.of("int", "double"))));
     }
 
     @Test
@@ -1050,15 +1103,15 @@ public class TestSqlParser
         assertStatement("CREATE TABLE foo (a VARCHAR, b BIGINT COMMENT 'hello world', c IPADDRESS)",
                 new CreateTable(QualifiedName.of("foo"),
                         ImmutableList.of(
-                                new ColumnDefinition(identifier("a"), "VARCHAR", emptyList(), Optional.empty()),
-                                new ColumnDefinition(identifier("b"), "BIGINT", emptyList(), Optional.of("hello world")),
-                                new ColumnDefinition(identifier("c"), "IPADDRESS", emptyList(), Optional.empty())),
+                                new ColumnDefinition(identifier("a"), "VARCHAR", true, emptyList(), Optional.empty()),
+                                new ColumnDefinition(identifier("b"), "BIGINT", true, emptyList(), Optional.of("hello world")),
+                                new ColumnDefinition(identifier("c"), "IPADDRESS", true, emptyList(), Optional.empty())),
                         false,
                         ImmutableList.of(),
                         Optional.empty()));
         assertStatement("CREATE TABLE IF NOT EXISTS bar (c TIMESTAMP)",
                 new CreateTable(QualifiedName.of("bar"),
-                        ImmutableList.of(new ColumnDefinition(identifier("c"), "TIMESTAMP", emptyList(), Optional.empty())),
+                        ImmutableList.of(new ColumnDefinition(identifier("c"), "TIMESTAMP", true, emptyList(), Optional.empty())),
                         true,
                         ImmutableList.of(),
                         Optional.empty()));
@@ -1066,7 +1119,7 @@ public class TestSqlParser
         // with properties
         assertStatement("CREATE TABLE IF NOT EXISTS bar (c TIMESTAMP WITH (nullable = true, compression = 'LZ4'))",
                 new CreateTable(QualifiedName.of("bar"),
-                        ImmutableList.of(new ColumnDefinition(identifier("c"), "TIMESTAMP", ImmutableList.of(
+                        ImmutableList.of(new ColumnDefinition(identifier("c"), "TIMESTAMP", true, ImmutableList.of(
                                 new Property(new Identifier("nullable"), BooleanLiteral.TRUE_LITERAL),
                                 new Property(new Identifier("compression"), new StringLiteral("LZ4"))
                         ), Optional.empty())),
@@ -1086,7 +1139,7 @@ public class TestSqlParser
         assertStatement("CREATE TABLE IF NOT EXISTS bar (c TIMESTAMP, LIKE like_table)",
                 new CreateTable(QualifiedName.of("bar"),
                         ImmutableList.of(
-                                new ColumnDefinition(identifier("c"), "TIMESTAMP", emptyList(), Optional.empty()),
+                                new ColumnDefinition(identifier("c"), "TIMESTAMP", true, emptyList(), Optional.empty()),
                                 new LikeClause(QualifiedName.of("like_table"),
                                         Optional.empty())),
                         true,
@@ -1095,10 +1148,10 @@ public class TestSqlParser
         assertStatement("CREATE TABLE IF NOT EXISTS bar (c TIMESTAMP, LIKE like_table, d DATE)",
                 new CreateTable(QualifiedName.of("bar"),
                         ImmutableList.of(
-                                new ColumnDefinition(identifier("c"), "TIMESTAMP", emptyList(), Optional.empty()),
+                                new ColumnDefinition(identifier("c"), "TIMESTAMP", true, emptyList(), Optional.empty()),
                                 new LikeClause(QualifiedName.of("like_table"),
                                         Optional.empty()),
-                                new ColumnDefinition(identifier("d"), "DATE", emptyList(), Optional.empty())),
+                                new ColumnDefinition(identifier("d"), "DATE", true, emptyList(), Optional.empty())),
                         true,
                         ImmutableList.of(),
                         Optional.empty()));
@@ -1113,7 +1166,7 @@ public class TestSqlParser
         assertStatement("CREATE TABLE IF NOT EXISTS bar (c TIMESTAMP, LIKE like_table EXCLUDING PROPERTIES)",
                 new CreateTable(QualifiedName.of("bar"),
                         ImmutableList.of(
-                                new ColumnDefinition(identifier("c"), "TIMESTAMP", emptyList(), Optional.empty()),
+                                new ColumnDefinition(identifier("c"), "TIMESTAMP", true, emptyList(), Optional.empty()),
                                 new LikeClause(QualifiedName.of("like_table"),
                                         Optional.of(LikeClause.PropertiesOption.EXCLUDING))),
                         true,
@@ -1122,12 +1175,33 @@ public class TestSqlParser
         assertStatement("CREATE TABLE IF NOT EXISTS bar (c TIMESTAMP, LIKE like_table EXCLUDING PROPERTIES) COMMENT 'test'",
                 new CreateTable(QualifiedName.of("bar"),
                         ImmutableList.of(
-                                new ColumnDefinition(identifier("c"), "TIMESTAMP", emptyList(), Optional.empty()),
+                                new ColumnDefinition(identifier("c"), "TIMESTAMP", true, emptyList(), Optional.empty()),
                                 new LikeClause(QualifiedName.of("like_table"),
                                         Optional.of(LikeClause.PropertiesOption.EXCLUDING))),
                         true,
                         ImmutableList.of(),
                         Optional.of("test")));
+    }
+
+    @Test
+    public void testCreateTableWithNotNull()
+    {
+        assertStatement(
+                "CREATE TABLE foo (" +
+                        "a VARCHAR NOT NULL COMMENT 'column a', " +
+                        "b BIGINT COMMENT 'hello world', " +
+                        "c IPADDRESS, " +
+                        "d DATE NOT NULL)",
+                new CreateTable(
+                        QualifiedName.of("foo"),
+                        ImmutableList.of(
+                                new ColumnDefinition(identifier("a"), "VARCHAR", false, emptyList(), Optional.of("column a")),
+                                new ColumnDefinition(identifier("b"), "BIGINT", true, emptyList(), Optional.of("hello world")),
+                                new ColumnDefinition(identifier("c"), "IPADDRESS", true, emptyList(), Optional.empty()),
+                                new ColumnDefinition(identifier("d"), "DATE", false, emptyList(), Optional.empty())),
+                        false,
+                        ImmutableList.of(),
+                        Optional.empty()));
     }
 
     @Test
@@ -1292,6 +1366,34 @@ public class TestSqlParser
     }
 
     @Test
+    public void testDropMaterializedView()
+    {
+        assertStatement("DROP MATERIALIZED VIEW a", new DropMaterializedView(Optional.empty(), QualifiedName.of("a"), false));
+        assertStatement("DROP MATERIALIZED VIEW a.b", new DropMaterializedView(Optional.empty(), QualifiedName.of("a", "b"), false));
+        assertStatement("DROP MATERIALIZED VIEW a.b.c", new DropMaterializedView(Optional.empty(), QualifiedName.of("a", "b", "c"), false));
+
+        assertStatement("DROP MATERIALIZED VIEW IF EXISTS a", new DropMaterializedView(Optional.empty(), QualifiedName.of("a"), true));
+        assertStatement("DROP MATERIALIZED VIEW IF EXISTS a.b", new DropMaterializedView(Optional.empty(), QualifiedName.of("a", "b"), true));
+        assertStatement("DROP MATERIALIZED VIEW IF EXISTS a.b.c", new DropMaterializedView(Optional.empty(), QualifiedName.of("a", "b", "c"), true));
+    }
+
+    @Test
+    public void testDropFunction()
+    {
+        assertStatement("DROP FUNCTION a", new DropFunction(QualifiedName.of("a"), Optional.empty(), false, false));
+        assertStatement("DROP FUNCTION a.b", new DropFunction(QualifiedName.of("a", "b"), Optional.empty(), false, false));
+        assertStatement("DROP FUNCTION a.b.c", new DropFunction(QualifiedName.of("a", "b", "c"), Optional.empty(), false, false));
+
+        assertStatement("DROP FUNCTION a()", new DropFunction(QualifiedName.of("a"), Optional.of(ImmutableList.of()), false, false));
+        assertStatement("DROP FUNCTION a.b()", new DropFunction(QualifiedName.of("a", "b"), Optional.of(ImmutableList.of()), false, false));
+        assertStatement("DROP FUNCTION a.b.c()", new DropFunction(QualifiedName.of("a", "b", "c"), Optional.of(ImmutableList.of()), false, false));
+
+        assertStatement("DROP FUNCTION IF EXISTS a.b.c(int)", new DropFunction(QualifiedName.of("a", "b", "c"), Optional.of(ImmutableList.of("int")), false, true));
+        assertStatement("DROP FUNCTION IF EXISTS a.b.c(bigint, double)", new DropFunction(QualifiedName.of("a", "b", "c"), Optional.of(ImmutableList.of("bigint", "double")), false, true));
+        assertStatement("DROP FUNCTION IF EXISTS a.b.c(ARRAY(string), MAP(int,double))", new DropFunction(QualifiedName.of("a", "b", "c"), Optional.of(ImmutableList.of("ARRAY(string)", "MAP(int,double)")), false, true));
+    }
+
+    @Test
     public void testInsertInto()
     {
         QualifiedName table = QualifiedName.of("a");
@@ -1319,27 +1421,67 @@ public class TestSqlParser
     @Test
     public void testRenameTable()
     {
-        assertStatement("ALTER TABLE a RENAME TO b", new RenameTable(QualifiedName.of("a"), QualifiedName.of("b")));
+        assertStatement("ALTER TABLE a RENAME TO b", new RenameTable(QualifiedName.of("a"), QualifiedName.of("b"), false));
+        assertStatement("ALTER TABLE IF EXISTS a RENAME TO b", new RenameTable(QualifiedName.of("a"), QualifiedName.of("b"), true));
     }
 
     @Test
     public void testRenameColumn()
     {
-        assertStatement("ALTER TABLE foo.t RENAME COLUMN a TO b", new RenameColumn(QualifiedName.of("foo", "t"), identifier("a"), identifier("b")));
+        assertStatement("ALTER TABLE foo.t RENAME COLUMN a TO b", new RenameColumn(QualifiedName.of("foo", "t"), identifier("a"), identifier("b"), false, false));
+        assertStatement("ALTER TABLE IF EXISTS foo.t RENAME COLUMN a TO b", new RenameColumn(QualifiedName.of("foo", "t"), identifier("a"), identifier("b"), true, false));
+        assertStatement("ALTER TABLE foo.t RENAME COLUMN IF EXISTS a TO b", new RenameColumn(QualifiedName.of("foo", "t"), identifier("a"), identifier("b"), false, true));
+        assertStatement("ALTER TABLE IF EXISTS foo.t RENAME COLUMN IF EXISTS a TO b", new RenameColumn(QualifiedName.of("foo", "t"), identifier("a"), identifier("b"), true, true));
+    }
+
+    @Test
+    public void testAnalyze()
+    {
+        QualifiedName table = QualifiedName.of("foo");
+        assertStatement("ANALYZE foo", new Analyze(table, ImmutableList.of()));
+
+        assertStatement("ANALYZE foo WITH ( \"string\" = 'bar', \"long\" = 42, computed = concat('ban', 'ana'), a = ARRAY[ 'v1', 'v2' ] )",
+                new Analyze(table, ImmutableList.of(
+                        new Property(new Identifier("string"), new StringLiteral("bar")),
+                        new Property(new Identifier("long"), new LongLiteral("42")),
+                        new Property(
+                                new Identifier("computed"),
+                                new FunctionCall(QualifiedName.of("concat"), ImmutableList.of(new StringLiteral("ban"), new StringLiteral("ana")))),
+                        new Property(new Identifier("a"), new ArrayConstructor(ImmutableList.of(new StringLiteral("v1"), new StringLiteral("v2")))))));
+
+        assertStatement("EXPLAIN ANALYZE foo", new Explain(new Analyze(table, ImmutableList.of()), false, false, ImmutableList.of()));
+        assertStatement("EXPLAIN ANALYZE ANALYZE foo", new Explain(new Analyze(table, ImmutableList.of()), true, false, ImmutableList.of()));
     }
 
     @Test
     public void testAddColumn()
     {
         assertStatement("ALTER TABLE foo.t ADD COLUMN c bigint", new AddColumn(QualifiedName.of("foo", "t"),
-                new ColumnDefinition(identifier("c"), "bigint", emptyList(), Optional.empty())));
+                new ColumnDefinition(identifier("c"), "bigint", true, emptyList(), Optional.empty()), false, false));
+        assertStatement("ALTER TABLE foo.t ADD COLUMN d double NOT NULL", new AddColumn(QualifiedName.of("foo", "t"),
+                new ColumnDefinition(identifier("d"), "double", false, emptyList(), Optional.empty()), false, false));
+
+        assertStatement("ALTER TABLE IF EXISTS foo.t ADD COLUMN d double NOT NULL",
+                new AddColumn(QualifiedName.of("foo", "t"),
+                        new ColumnDefinition(identifier("d"), "double", false, emptyList(), Optional.empty()), true, false));
+
+        assertStatement("ALTER TABLE foo.t ADD COLUMN IF NOT EXISTS d double NOT NULL",
+                new AddColumn(QualifiedName.of("foo", "t"),
+                        new ColumnDefinition(identifier("d"), "double", false, emptyList(), Optional.empty()), false, true));
+
+        assertStatement("ALTER TABLE IF EXISTS foo.t ADD COLUMN IF NOT EXISTS d double NOT NULL",
+                new AddColumn(QualifiedName.of("foo", "t"),
+                        new ColumnDefinition(identifier("d"), "double", false, emptyList(), Optional.empty()), true, true));
     }
 
     @Test
     public void testDropColumn()
     {
-        assertStatement("ALTER TABLE foo.t DROP COLUMN c", new DropColumn(QualifiedName.of("foo", "t"), identifier("c")));
-        assertStatement("ALTER TABLE \"t x\" DROP COLUMN \"c d\"", new DropColumn(QualifiedName.of("t x"), quotedIdentifier("c d")));
+        assertStatement("ALTER TABLE foo.t DROP COLUMN c", new DropColumn(QualifiedName.of("foo", "t"), identifier("c"), false, false));
+        assertStatement("ALTER TABLE \"t x\" DROP COLUMN \"c d\"", new DropColumn(QualifiedName.of("t x"), quotedIdentifier("c d"), false, false));
+        assertStatement("ALTER TABLE IF EXISTS foo.t DROP COLUMN c", new DropColumn(QualifiedName.of("foo", "t"), identifier("c"), true, false));
+        assertStatement("ALTER TABLE foo.t DROP COLUMN IF EXISTS c", new DropColumn(QualifiedName.of("foo", "t"), identifier("c"), false, true));
+        assertStatement("ALTER TABLE IF EXISTS foo.t DROP COLUMN IF EXISTS c", new DropColumn(QualifiedName.of("foo", "t"), identifier("c"), true, true));
     }
 
     @Test
@@ -1347,38 +1489,213 @@ public class TestSqlParser
     {
         Query query = simpleQuery(selectList(new AllColumns()), table(QualifiedName.of("t")));
 
-        assertStatement("CREATE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false));
-        assertStatement("CREATE OR REPLACE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, true));
+        assertStatement("CREATE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.empty()));
+        assertStatement("CREATE OR REPLACE VIEW a AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, true, Optional.empty()));
 
-        assertStatement("CREATE VIEW bar.foo AS SELECT * FROM t", new CreateView(QualifiedName.of("bar", "foo"), query, false));
-        assertStatement("CREATE VIEW \"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome view"), query, false));
-        assertStatement("CREATE VIEW \"awesome schema\".\"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome schema", "awesome view"), query, false));
+        assertStatement("CREATE VIEW a SECURITY DEFINER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(CreateView.Security.DEFINER)));
+        assertStatement("CREATE VIEW a SECURITY INVOKER AS SELECT * FROM t", new CreateView(QualifiedName.of("a"), query, false, Optional.of(CreateView.Security.INVOKER)));
+
+        assertStatement("CREATE VIEW bar.foo AS SELECT * FROM t", new CreateView(QualifiedName.of("bar", "foo"), query, false, Optional.empty()));
+        assertStatement("CREATE VIEW \"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome view"), query, false, Optional.empty()));
+        assertStatement("CREATE VIEW \"awesome schema\".\"awesome view\" AS SELECT * FROM t", new CreateView(QualifiedName.of("awesome schema", "awesome view"), query, false, Optional.empty()));
+    }
+
+    @Test
+    public void testCreateMaterializedView()
+    {
+        Query query = simpleQuery(selectList(new AllColumns()), table(QualifiedName.of("t")));
+        assertStatement(
+                "CREATE MATERIALIZED VIEW mv" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, false, ImmutableList.of(), Optional.empty()));
+
+        assertStatement(
+                "CREATE MATERIALIZED VIEW mv COMMENT 'A simple materialized view'" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, false, ImmutableList.of(), Optional.of("A simple materialized view")));
+
+        assertStatement(
+                "CREATE MATERIALIZED VIEW IF NOT EXISTS mv COMMENT 'A simple materialized view'" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, true, ImmutableList.of(), Optional.of("A simple materialized view")));
+
+        List<Property> properties = ImmutableList.of(
+                new Property(new Identifier("partitioned_by"), new ArrayConstructor(ImmutableList.of(new StringLiteral("ds")))));
+        assertStatement(
+                "CREATE MATERIALIZED VIEW IF NOT EXISTS mv COMMENT 'A simple materialized view'" +
+                        " WITH (partitioned_by = ARRAY ['ds'])" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, true, properties, Optional.of("A simple materialized view")));
+
+        List<Property> properties1 = ImmutableList.of(
+                new Property(new Identifier("partitioned_by"), new ArrayConstructor(ImmutableList.of(new StringLiteral("ds")))),
+                new Property(new Identifier("retention_days"), new LongLiteral("90")));
+        assertStatement(
+                "CREATE MATERIALIZED VIEW IF NOT EXISTS mv COMMENT 'A simple materialized view'" +
+                        " WITH (partitioned_by = ARRAY ['ds'], retention_days = 90)" +
+                        " AS SELECT * FROM t",
+                new CreateMaterializedView(Optional.empty(), QualifiedName.of("mv"), query, true, properties1, Optional.of("A simple materialized view")));
+    }
+
+    @Test
+    public void testCreateFunction()
+    {
+        assertStatement(
+                "CREATE FUNCTION tan (x double)\n" +
+                        "RETURNS double\n" +
+                        "COMMENT 'tangent trigonometric function'\n" +
+                        "LANGUAGE SQL\n" +
+                        "DETERMINISTIC\n" +
+                        "RETURNS NULL ON NULL INPUT\n" +
+                        "RETURN sin(x) / cos(x)",
+                new CreateFunction(
+                        QualifiedName.of("tan"),
+                        false,
+                        false,
+                        ImmutableList.of(new SqlParameterDeclaration(identifier("x"), "double")),
+                        "double",
+                        Optional.of("tangent trigonometric function"),
+                        new RoutineCharacteristics(SQL, DETERMINISTIC, RETURNS_NULL_ON_NULL_INPUT),
+                        new Return(new ArithmeticBinaryExpression(
+                                DIVIDE,
+                                new FunctionCall(QualifiedName.of("sin"), ImmutableList.of(identifier("x"))),
+                                new FunctionCall(QualifiedName.of("cos"), ImmutableList.of(identifier("x")))))));
+
+        CreateFunction createFunctionRand = new CreateFunction(
+                QualifiedName.of("dev", "testing", "rand"),
+                true,
+                false,
+                ImmutableList.of(),
+                "double",
+                Optional.empty(),
+                new RoutineCharacteristics(SQL, NOT_DETERMINISTIC, CALLED_ON_NULL_INPUT),
+                new Return(new FunctionCall(QualifiedName.of("rand"), ImmutableList.of())));
+        assertStatement(
+                "CREATE OR REPLACE FUNCTION dev.testing.rand ()\n" +
+                        "RETURNS double\n" +
+                        "LANGUAGE SQL\n" +
+                        "NOT DETERMINISTIC\n" +
+                        "CALLED ON NULL INPUT\n" +
+                        "RETURN rand()",
+                createFunctionRand);
+        assertStatement(
+                "CREATE OR REPLACE FUNCTION dev.testing.rand ()\n" +
+                        "RETURNS double\n" +
+                        "RETURN rand()",
+                createFunctionRand);
+
+        CreateFunction createTemporaryFunctionFoo = new CreateFunction(
+                QualifiedName.of("foo"),
+                false,
+                true,
+                ImmutableList.of(),
+                "boolean",
+                Optional.empty(),
+                new RoutineCharacteristics(SQL, NOT_DETERMINISTIC, CALLED_ON_NULL_INPUT),
+                new Return(new BooleanLiteral("true")));
+        assertStatement(
+                "CREATE TEMPORARY FUNCTION foo() \n" +
+                        "RETURNS boolean \n" +
+                        "RETURN true",
+                createTemporaryFunctionFoo);
+
+        assertInvalidStatement(
+                "CREATE FUNCTION dev.testing.rand () RETURNS double LANGUAGE SQL LANGUAGE SQL RETURN rand()",
+                "Duplicate language clause: SQL");
+        assertInvalidStatement(
+                "CREATE FUNCTION dev.testing.rand () RETURNS double DETERMINISTIC DETERMINISTIC RETURN rand()",
+                "Duplicate determinism characteristics: DETERMINISTIC");
+        assertInvalidStatement(
+                "CREATE FUNCTION dev.testing.rand () RETURNS double CALLED ON NULL INPUT CALLED ON NULL INPUT RETURN rand()",
+                "Duplicate null-call clause: CALLEDONNULLINPUT");
+    }
+
+    @Test
+    public void testAlterFunction()
+    {
+        QualifiedName functionName = QualifiedName.of("testing", "default", "tan");
+        assertStatement(
+                "ALTER FUNCTION testing.default.tan\n" +
+                        "CALLED ON NULL INPUT",
+                new AlterFunction(functionName, Optional.empty(), new AlterRoutineCharacteristics(Optional.of(CALLED_ON_NULL_INPUT))));
+        assertStatement(
+                "ALTER FUNCTION testing.default.tan(double)\n" +
+                        "RETURNS NULL ON NULL INPUT",
+                new AlterFunction(functionName, Optional.of(ImmutableList.of("double")), new AlterRoutineCharacteristics(Optional.of(RETURNS_NULL_ON_NULL_INPUT))));
+
+        assertInvalidStatement(
+                "ALTER FUNCTION testing.default.tan",
+                "No alter routine characteristics specified");
+        assertInvalidStatement(
+                "ALTER FUNCTION testing.default.tan\n" +
+                        "RETURNS NULL ON NULL INPUT\n" +
+                        "RETURNS NULL ON NULL INPUT",
+                "Duplicate null-call clause: RETURNSNULLONNULLINPUT");
     }
 
     @Test
     public void testGrant()
     {
         assertStatement("GRANT INSERT, DELETE ON t TO u",
-                new Grant(Optional.of(ImmutableList.of("INSERT", "DELETE")), false, QualifiedName.of("t"), identifier("u"), false));
-        assertStatement("GRANT SELECT ON t TO PUBLIC WITH GRANT OPTION",
-                new Grant(Optional.of(ImmutableList.of("SELECT")), false, QualifiedName.of("t"), identifier("PUBLIC"), true));
-        assertStatement("GRANT ALL PRIVILEGES ON t TO u",
-                new Grant(Optional.empty(), false, QualifiedName.of("t"), identifier("u"), false));
-        assertStatement("GRANT taco ON t TO PUBLIC WITH GRANT OPTION",
-                new Grant(Optional.of(ImmutableList.of("taco")), false, QualifiedName.of("t"), identifier("PUBLIC"), true));
+                new Grant(
+                        Optional.of(ImmutableList.of("INSERT", "DELETE")),
+                        false,
+                        QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("u")),
+                        false));
+        assertStatement("GRANT SELECT ON t TO ROLE PUBLIC WITH GRANT OPTION",
+                new Grant(
+                        Optional.of(ImmutableList.of("SELECT")),
+                        false, QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("PUBLIC")),
+                        true));
+        assertStatement("GRANT ALL PRIVILEGES ON t TO USER u",
+                new Grant(
+                        Optional.empty(),
+                        false,
+                        QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("u")),
+                        false));
+        assertStatement("GRANT taco ON \"t\" TO ROLE \"public\" WITH GRANT OPTION",
+                new Grant(
+                        Optional.of(ImmutableList.of("taco")),
+                        false,
+                        QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("public")),
+                        true));
     }
 
     @Test
     public void testRevoke()
     {
         assertStatement("REVOKE INSERT, DELETE ON t FROM u",
-                new Revoke(false, Optional.of(ImmutableList.of("INSERT", "DELETE")), false, QualifiedName.of("t"), identifier("u")));
-        assertStatement("REVOKE GRANT OPTION FOR SELECT ON t FROM PUBLIC",
-                new Revoke(true, Optional.of(ImmutableList.of("SELECT")), false, QualifiedName.of("t"), identifier("PUBLIC")));
-        assertStatement("REVOKE ALL PRIVILEGES ON TABLE t FROM u",
-                new Revoke(false, Optional.empty(), true, QualifiedName.of("t"), identifier("u")));
-        assertStatement("REVOKE taco ON TABLE t FROM u",
-                new Revoke(false, Optional.of(ImmutableList.of("taco")), true, QualifiedName.of("t"), identifier("u")));
+                new Revoke(
+                        false,
+                        Optional.of(ImmutableList.of("INSERT", "DELETE")),
+                        false,
+                        QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("u"))));
+        assertStatement("REVOKE GRANT OPTION FOR SELECT ON t FROM ROLE PUBLIC",
+                new Revoke(
+                        true,
+                        Optional.of(ImmutableList.of("SELECT")),
+                        false,
+                        QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("PUBLIC"))));
+        assertStatement("REVOKE ALL PRIVILEGES ON TABLE t FROM USER u",
+                new Revoke(
+                        false,
+                        Optional.empty(),
+                        true,
+                        QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("u"))));
+        assertStatement("REVOKE taco ON TABLE \"t\" FROM \"u\"",
+                new Revoke(
+                        false,
+                        Optional.of(ImmutableList.of("taco")),
+                        true,
+                        QualifiedName.of("t"),
+                        new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("u"))));
     }
 
     @Test
@@ -1393,39 +1710,31 @@ public class TestSqlParser
     }
 
     @Test
-    public void testSetPath()
+    public void testShowRoles()
+            throws Exception
     {
-        assertStatement("SET PATH iLikeToEat.apples, andBananas",
-                new SetPath(new PathSpecification(Optional.empty(), ImmutableList.of(
-                        new PathElement(Optional.of(new Identifier("iLikeToEat")), new Identifier("apples")),
-                        new PathElement(Optional.empty(), new Identifier("andBananas"))))));
+        assertStatement("SHOW ROLES",
+                new ShowRoles(Optional.empty(), false));
+        assertStatement("SHOW ROLES FROM foo",
+                new ShowRoles(Optional.of(new Identifier("foo")), false));
+        assertStatement("SHOW ROLES IN foo",
+                new ShowRoles(Optional.of(new Identifier("foo")), false));
 
-        assertStatement("SET PATH \"schemas,with\".\"grammar.in\", \"their!names\"",
-                new SetPath(new PathSpecification(Optional.empty(), ImmutableList.of(
-                        new PathElement(Optional.of(new Identifier("schemas,with")), new Identifier("grammar.in")),
-                        new PathElement(Optional.empty(), new Identifier("their!names"))))));
+        assertStatement("SHOW CURRENT ROLES",
+                new ShowRoles(Optional.empty(), true));
+        assertStatement("SHOW CURRENT ROLES FROM foo",
+                new ShowRoles(Optional.of(new Identifier("foo")), true));
+        assertStatement("SHOW CURRENT ROLES IN foo",
+                new ShowRoles(Optional.of(new Identifier("foo")), true));
+    }
 
-        assertStatement("SET PATH \"\"",
-                new SetPath(new PathSpecification(Optional.empty(), ImmutableList.of(
-                        new PathElement(Optional.empty(), new Identifier(""))))));
-
-        try {
-            assertStatement("SET PATH one.too.many, qualifiers",
-                    new SetPath(new PathSpecification(Optional.empty(), ImmutableList.of(
-                            new PathElement(Optional.empty(), new Identifier("dummyValue"))))));
-            fail();
-        }
-        catch (RuntimeException e) {
-            //expected - schema can only be qualified by catalog
-        }
-
-        try {
-            SQL_PARSER.createStatement("SET PATH ", new ParsingOptions());
-            fail();
-        }
-        catch (RuntimeException e) {
-            //expected - some form of parameter is required
-        }
+    @Test
+    public void testShowRoleGrants()
+    {
+        assertStatement("SHOW ROLE GRANTS",
+                new ShowRoleGrants(Optional.empty(), Optional.empty()));
+        assertStatement("SHOW ROLE GRANTS FROM catalog",
+                new ShowRoleGrants(Optional.of(new Identifier("catalog"))));
     }
 
     @Test
@@ -1734,12 +2043,19 @@ public class TestSqlParser
                                 new Identifier("SOME"),
                                 new Identifier("ANY")),
                         table(QualifiedName.of("t"))));
+        assertStatement("SELECT CURRENT_ROLE, t.current_role FROM t",
+                simpleQuery(
+                        selectList(
+                                new Identifier("CURRENT_ROLE"),
+                                new DereferenceExpression(new Identifier("t"), new Identifier("current_role"))),
+                        table(QualifiedName.of("t"))));
 
         assertExpression("stats", new Identifier("stats"));
         assertExpression("nfd", new Identifier("nfd"));
         assertExpression("nfc", new Identifier("nfc"));
         assertExpression("nfkd", new Identifier("nfkd"));
         assertExpression("nfkc", new Identifier("nfkc"));
+        assertExpression("current_role", new Identifier("current_role"));
     }
 
     @Test
@@ -1843,7 +2159,6 @@ public class TestSqlParser
         for (String fullName : tableNames) {
             QualifiedName qualifiedName = QualifiedName.of(Arrays.asList(fullName.split("\\.")));
             assertStatement(format("SHOW STATS FOR %s", qualifiedName), new ShowStats(new Table(qualifiedName)));
-            assertStatement(format("SHOW STATS ON %s", qualifiedName), new ShowStats(new Table(qualifiedName)));
         }
     }
 
@@ -1915,6 +2230,7 @@ public class TestSqlParser
                                                         new LongLiteral("4"))),
                                                 Optional.empty(),
                                                 false,
+                                                false,
                                                 ImmutableList.of(new Identifier("x")))),
                                 Optional.empty(),
                                 Optional.empty(),
@@ -1982,6 +2298,228 @@ public class TestSqlParser
                         Optional.empty()));
     }
 
+    @Test
+    public void testCreateRole()
+            throws Exception
+    {
+        assertStatement("CREATE ROLE role", new CreateRole(new Identifier("role"), Optional.empty()));
+        assertStatement("CREATE ROLE role1 WITH ADMIN admin",
+                new CreateRole(
+                        new Identifier("role1"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("admin")))))));
+        assertStatement("CREATE ROLE \"role\" WITH ADMIN \"admin\"",
+                new CreateRole(
+                        new Identifier("role"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("admin")))))));
+        assertStatement("CREATE ROLE \"ro le\" WITH ADMIN \"ad min\"",
+                new CreateRole(
+                        new Identifier("ro le"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("ad min")))))));
+        assertStatement("CREATE ROLE \"!@#$%^&*'\" WITH ADMIN \"ад\"\"мін\"",
+                new CreateRole(
+                        new Identifier("!@#$%^&*'"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("ад\"мін")))))));
+        assertStatement("CREATE ROLE role2 WITH ADMIN USER admin1",
+                new CreateRole(
+                        new Identifier("role2"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("admin1")))))));
+        assertStatement("CREATE ROLE role2 WITH ADMIN ROLE role1",
+                new CreateRole(
+                        new Identifier("role2"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role1")))))));
+        assertStatement("CREATE ROLE role2 WITH ADMIN CURRENT_USER",
+                new CreateRole(
+                        new Identifier("role2"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.CURRENT_USER,
+                                Optional.empty()))));
+        assertStatement("CREATE ROLE role2 WITH ADMIN CURRENT_ROLE",
+                new CreateRole(
+                        new Identifier("role2"),
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.CURRENT_ROLE,
+                                Optional.empty()))));
+    }
+
+    @Test
+    public void testDropRole()
+            throws Exception
+    {
+        assertStatement("DROP ROLE role", new DropRole(new Identifier("role")));
+        assertStatement("DROP ROLE \"role\"", new DropRole(new Identifier("role")));
+        assertStatement("DROP ROLE \"ro le\"", new DropRole(new Identifier("ro le")));
+        assertStatement("DROP ROLE \"!@#$%^&*'ад\"\"мін\"", new DropRole(new Identifier("!@#$%^&*'ад\"мін")));
+    }
+
+    @Test
+    public void testGrantRoles()
+            throws Exception
+    {
+        assertStatement("GRANT role1 TO user1",
+                new GrantRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("user1"))),
+                        false,
+                        Optional.empty()));
+        assertStatement("GRANT role1, role2, role3 TO user1, USER user2, ROLE role4 WITH ADMIN OPTION",
+                new GrantRoles(
+                        ImmutableSet.of(new Identifier("role1"), new Identifier("role2"), new Identifier("role3")),
+                        ImmutableSet.of(
+                                new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("user1")),
+                                new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("user2")),
+                                new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role4"))),
+                        true,
+                        Optional.empty()));
+        assertStatement("GRANT role1 TO user1 WITH ADMIN OPTION GRANTED BY admin",
+                new GrantRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("user1"))),
+                        true,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("admin")))))));
+        assertStatement("GRANT role1 TO USER user1 WITH ADMIN OPTION GRANTED BY USER admin",
+                new GrantRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("user1"))),
+                        true,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("admin")))))));
+        assertStatement("GRANT role1 TO ROLE role2 WITH ADMIN OPTION GRANTED BY ROLE admin",
+                new GrantRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role2"))),
+                        true,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("admin")))))));
+        assertStatement("GRANT role1 TO ROLE role2 GRANTED BY ROLE admin",
+                new GrantRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role2"))),
+                        false,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("admin")))))));
+        assertStatement("GRANT \"role1\" TO ROLE \"role2\" GRANTED BY ROLE \"admin\"",
+                new GrantRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role2"))),
+                        false,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("admin")))))));
+    }
+
+    @Test
+    public void testRevokeRoles()
+            throws Exception
+    {
+        assertStatement("REVOKE role1 FROM user1",
+                new RevokeRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("user1"))),
+                        false,
+                        Optional.empty()));
+        assertStatement("REVOKE ADMIN OPTION FOR role1, role2, role3 FROM user1, USER user2, ROLE role4",
+                new RevokeRoles(
+                        ImmutableSet.of(new Identifier("role1"), new Identifier("role2"), new Identifier("role3")),
+                        ImmutableSet.of(
+                                new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("user1")),
+                                new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("user2")),
+                                new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role4"))),
+                        true,
+                        Optional.empty()));
+        assertStatement("REVOKE ADMIN OPTION FOR role1 FROM user1 GRANTED BY admin",
+                new RevokeRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("user1"))),
+                        true,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.UNSPECIFIED, new Identifier("admin")))))));
+        assertStatement("REVOKE ADMIN OPTION FOR role1 FROM USER user1 GRANTED BY USER admin",
+                new RevokeRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("user1"))),
+                        true,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.USER, new Identifier("admin")))))));
+        assertStatement("REVOKE role1 FROM ROLE role2 GRANTED BY ROLE admin",
+                new RevokeRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role2"))),
+                        false,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("admin")))))));
+        assertStatement("REVOKE \"role1\" FROM ROLE \"role2\" GRANTED BY ROLE \"admin\"",
+                new RevokeRoles(
+                        ImmutableSet.of(new Identifier("role1")),
+                        ImmutableSet.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("role2"))),
+                        false,
+                        Optional.of(new GrantorSpecification(
+                                GrantorSpecification.Type.PRINCIPAL,
+                                Optional.of(new PrincipalSpecification(PrincipalSpecification.Type.ROLE, new Identifier("admin")))))));
+    }
+
+    @Test
+    public void testSetRole()
+            throws Exception
+    {
+        assertStatement("SET ROLE ALL", new SetRole(SetRole.Type.ALL, Optional.empty()));
+        assertStatement("SET ROLE NONE", new SetRole(SetRole.Type.NONE, Optional.empty()));
+        assertStatement("SET ROLE role", new SetRole(SetRole.Type.ROLE, Optional.of(new Identifier("role"))));
+        assertStatement("SET ROLE \"role\"", new SetRole(SetRole.Type.ROLE, Optional.of(new Identifier("role"))));
+    }
+
+    @Test
+    public void testNullTreatment()
+    {
+        assertExpression("lead(x, 1) ignore nulls over()",
+                new FunctionCall(
+                        QualifiedName.of("lead"),
+                        Optional.of(new Window(ImmutableList.of(), Optional.empty(), Optional.empty())),
+                        Optional.empty(),
+                        Optional.empty(),
+                        false,
+                        true,
+                        ImmutableList.of(new Identifier("x"), new LongLiteral("1"))));
+        assertExpression("lead(x, 1) respect nulls over()",
+                new FunctionCall(
+                        QualifiedName.of("lead"),
+                        Optional.of(new Window(ImmutableList.of(), Optional.empty(), Optional.empty())),
+                        Optional.empty(),
+                        Optional.empty(),
+                        false,
+                        false,
+                        ImmutableList.of(new Identifier("x"), new LongLiteral("1"))));
+    }
+
+    @Test
+    public void testUse()
+    {
+        assertStatement("Use test_schema", new Use(Optional.empty(), identifier("test_schema")));
+        assertStatement("Use test_catalog.test_schema", new Use(Optional.of(identifier("test_catalog")), new Identifier("test_schema")));
+
+        assertStatement("Use \"test_schema\"", new Use(Optional.empty(), quotedIdentifier("test_schema")));
+        assertStatement("Use \"test_catalog\".\"test_schema\"", new Use(Optional.of(quotedIdentifier("test_catalog")), quotedIdentifier("test_schema")));
+    }
+
     private static void assertCast(String type)
     {
         assertCast(type, type);
@@ -2010,6 +2548,19 @@ public class TestSqlParser
                     indent(input),
                     indent(formatSql(expected, Optional.empty())),
                     indent(formatSql(parsed, Optional.empty()))));
+        }
+    }
+
+    private static void assertInvalidStatement(String expression, String expectedErrorMessageRegex)
+    {
+        try {
+            Statement result = SQL_PARSER.createStatement(expression, ParsingOptions.builder().build());
+            fail("Expected to throw ParsingException for input:[" + expression + "], but got: " + result);
+        }
+        catch (ParsingException e) {
+            if (!e.getErrorMessage().matches(expectedErrorMessageRegex)) {
+                fail(format("Expected error message to match '%s', but was: '%s'", expectedErrorMessageRegex, e.getErrorMessage()));
+            }
         }
     }
 

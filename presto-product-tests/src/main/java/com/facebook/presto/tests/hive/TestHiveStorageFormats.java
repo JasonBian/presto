@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.tests.hive;
 
+import com.facebook.presto.tests.utils.JdbcDriverUtils;
 import com.google.common.collect.ImmutableMap;
 import io.prestodb.tempto.ProductTest;
 import io.prestodb.tempto.assertions.QueryAssert.Row;
@@ -47,24 +48,26 @@ public class TestHiveStorageFormats
     public static Object[][] storageFormats()
     {
         return new StorageFormat[][] {
-                {storageFormat("ORC")},
+                {storageFormat("ORC", ImmutableMap.of("hive.orc_optimized_writer_enabled", "false"))},
                 {storageFormat("ORC", ImmutableMap.of("hive.orc_optimized_writer_enabled", "true", "hive.orc_optimized_writer_validate", "true"))},
                 {storageFormat("DWRF")},
                 {storageFormat("PARQUET")},
-                {storageFormat("PARQUET", ImmutableMap.of("hive.parquet_optimized_reader_enabled", "true"))},
                 {storageFormat("RCBINARY", ImmutableMap.of("hive.rcfile_optimized_writer_enabled", "false", "hive.rcfile_optimized_writer_validate", "false"))},
                 {storageFormat("RCBINARY", ImmutableMap.of("hive.rcfile_optimized_writer_enabled", "true", "hive.rcfile_optimized_writer_validate", "true"))},
                 {storageFormat("RCTEXT", ImmutableMap.of("hive.rcfile_optimized_writer_enabled", "false", "hive.rcfile_optimized_writer_validate", "false"))},
                 {storageFormat("RCTEXT", ImmutableMap.of("hive.rcfile_optimized_writer_enabled", "true", "hive.rcfile_optimized_writer_validate", "true"))},
                 {storageFormat("SEQUENCEFILE")},
                 {storageFormat("TEXTFILE")},
-                {storageFormat("AVRO")}
+                {storageFormat("AVRO")},
+                {storageFormat("PAGEFILE")}
         };
     }
 
     @Test(dataProvider = "storage_formats", groups = {STORAGE_FORMATS})
     public void testInsertIntoTable(StorageFormat storageFormat)
     {
+        // only admin user is allowed to change session properties
+        setRole("admin");
         setSessionProperties(storageFormat);
 
         String tableName = "storage_formats_test_insert_into_" + storageFormat.getName().toLowerCase(Locale.ENGLISH);
@@ -106,6 +109,8 @@ public class TestHiveStorageFormats
     @Test(dataProvider = "storage_formats", groups = {STORAGE_FORMATS})
     public void testCreateTableAs(StorageFormat storageFormat)
     {
+        // only admin user is allowed to change session properties
+        setRole("admin");
         setSessionProperties(storageFormat);
 
         String tableName = "storage_formats_test_create_table_as_select_" + storageFormat.getName().toLowerCase(Locale.ENGLISH);
@@ -130,6 +135,8 @@ public class TestHiveStorageFormats
     @Test(dataProvider = "storage_formats", groups = {STORAGE_FORMATS})
     public void testInsertIntoPartitionedTable(StorageFormat storageFormat)
     {
+        // only admin user is allowed to change session properties
+        setRole("admin");
         setSessionProperties(storageFormat);
 
         String tableName = "storage_formats_test_insert_into_partitioned_" + storageFormat.getName().toLowerCase(Locale.ENGLISH);
@@ -171,6 +178,8 @@ public class TestHiveStorageFormats
     @Test(dataProvider = "storage_formats", groups = {STORAGE_FORMATS})
     public void testCreatePartitionedTableAs(StorageFormat storageFormat)
     {
+        // only admin user is allowed to change session properties
+        setRole("admin");
         setSessionProperties(storageFormat);
 
         String tableName = "storage_formats_test_create_table_as_select_partitioned_" + storageFormat.getName().toLowerCase(Locale.ENGLISH);
@@ -197,7 +206,7 @@ public class TestHiveStorageFormats
     {
         String tableName = "table_created_in_hive_parquet";
 
-        query("DROP TABLE IF EXISTS " + tableName);
+        onHive().executeQuery("DROP TABLE IF EXISTS " + tableName);
 
         onHive().executeQuery(format(
                 "CREATE TABLE %s (" +
@@ -211,7 +220,7 @@ public class TestHiveStorageFormats
 
         assertThat(query("SELECT * FROM " + tableName)).containsExactly(row(1, "test data"));
 
-        query("DROP TABLE " + tableName);
+        onHive().executeQuery("DROP TABLE " + tableName);
     }
 
     private static void assertSelect(String query, String tableName)
@@ -224,6 +233,17 @@ public class TestHiveStorageFormats
         assertThat(actual)
                 .hasColumns(expected.getColumnTypes())
                 .containsExactly(expectedRows);
+    }
+
+    private static void setRole(String role)
+    {
+        Connection connection = defaultQueryExecutor().getConnection();
+        try {
+            JdbcDriverUtils.setRole(connection, role);
+        }
+        catch (SQLException e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private static void setSessionProperties(StorageFormat storageFormat)

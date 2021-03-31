@@ -24,7 +24,7 @@ import java.time.ZoneId;
 import java.time.format.DateTimeFormatter;
 
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.google.common.base.Preconditions.checkState;
 import static org.testng.Assert.assertEquals;
 
@@ -55,7 +55,7 @@ public class TestH2QueryRunner
         assertEquals(rows.getOnlyValue(), LocalDate.of(2018, 1, 13).atStartOfDay());
 
         // date, which midnight was skipped in JVM zone
-        LocalDate forwardOffsetChangeAtMidnightInJvmZone = LocalDate.of(1986, 1, 1);
+        LocalDate forwardOffsetChangeAtMidnightInJvmZone = LocalDate.of(1970, 1, 1);
         checkState(ZoneId.systemDefault().getRules().getValidOffsets(forwardOffsetChangeAtMidnightInJvmZone.atStartOfDay()).size() == 0, "This test assumes certain JVM time zone");
         rows = h2QueryRunner.execute(TEST_SESSION, DateTimeFormatter.ofPattern("'SELECT DATE '''uuuu-MM-dd''").format(forwardOffsetChangeAtMidnightInJvmZone), ImmutableList.of(TIMESTAMP));
         assertEquals(rows.getOnlyValue(), forwardOffsetChangeAtMidnightInJvmZone.atStartOfDay());

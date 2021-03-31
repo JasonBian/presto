@@ -117,11 +117,6 @@ public class StringStatisticsBuilder
         }
         minimum = dropStringMinMaxIfNecessary(minimum);
         maximum = dropStringMinMaxIfNecessary(maximum);
-        if (minimum == null && maximum == null) {
-            // Create string stats only when min or max is not null.
-            // This corresponds to the behavior of metadata reader.
-            return Optional.empty();
-        }
         return Optional.of(new StringStatistics(minimum, maximum, sum));
     }
 
@@ -150,7 +145,7 @@ public class StringStatisticsBuilder
         for (ColumnStatistics columnStatistics : stats) {
             StringStatistics partialStatistics = columnStatistics.getStringStatistics();
             if (columnStatistics.getNumberOfValues() > 0) {
-                if (partialStatistics == null) {
+                if (partialStatistics == null || (partialStatistics.getMin() == null && partialStatistics.getMax() == null)) {
                     // there are non null values but no statistics, so we can not say anything about the data
                     return Optional.empty();
                 }

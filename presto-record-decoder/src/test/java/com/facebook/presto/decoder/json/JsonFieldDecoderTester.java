@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.decoder.json;
 
+import com.facebook.airlift.json.ObjectMapperProvider;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.decoder.DecoderColumnHandle;
 import com.facebook.presto.decoder.DecoderTestColumnHandle;
 import com.facebook.presto.decoder.FieldValueProvider;
 import com.facebook.presto.decoder.RowDecoder;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.json.ObjectMapperProvider;
 import io.airlift.slice.Slice;
 
 import java.util.Map;

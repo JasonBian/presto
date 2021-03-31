@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.rcfile.binary;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 
@@ -38,7 +38,7 @@ public class ListEncoding
     @Override
     public void encodeValue(Block block, int position, SliceOutput output)
     {
-        Block list = block.getObject(position, Block.class);
+        Block list = block.getBlock(position);
         writeVInt(output, list.getPositionCount());
 
         // write null bits

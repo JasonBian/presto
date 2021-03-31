@@ -14,9 +14,9 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.CatalogSchemaName;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.security.AccessControl;
-import com.facebook.presto.spi.CatalogSchemaName;
 import com.facebook.presto.sql.analyzer.SemanticException;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.RenameSchema;
@@ -55,7 +55,7 @@ public class RenameSchemaTask
             throw new SemanticException(SCHEMA_ALREADY_EXISTS, statement, "Target schema '%s' already exists", target);
         }
 
-        accessControl.checkCanRenameSchema(session.getRequiredTransactionId(), session.getIdentity(), source, statement.getTarget().getValue());
+        accessControl.checkCanRenameSchema(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), source, statement.getTarget().getValue());
 
         metadata.renameSchema(session, source, statement.getTarget().getValue());
 

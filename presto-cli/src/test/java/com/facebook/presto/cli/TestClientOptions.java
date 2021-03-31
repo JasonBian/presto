@@ -23,6 +23,7 @@ import java.util.Optional;
 
 import static io.airlift.airline.SingleCommand.singleCommand;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertTrue;
 
 public class TestClientOptions
 {
@@ -99,6 +100,16 @@ public class TestClientOptions
     }
 
     @Test
+    public void testExtraCredentials()
+    {
+        Console console = singleCommand(Console.class).parse("--extra-credential", "test.token.foo=foo", "--extra-credential", "test.token.bar=bar");
+        ClientOptions options = console.clientOptions;
+        assertEquals(options.extraCredentials, ImmutableList.of(
+                new ClientOptions.ClientExtraCredential("test.token.foo", "foo"),
+                new ClientOptions.ClientExtraCredential("test.token.bar", "bar")));
+    }
+
+    @Test
     public void testSessionProperties()
     {
         Console console = singleCommand(Console.class).parse("--session", "system=system-value", "--session", "catalog.name=catalog-property");
@@ -113,6 +124,14 @@ public class TestClientOptions
 
         // empty values are allowed
         assertEquals(new ClientSessionProperty("foo="), new ClientSessionProperty(Optional.empty(), "foo", ""));
+    }
+
+    @Test
+    public void testDisableCompression()
+    {
+        Console console = singleCommand(Console.class).parse("--disable-compression");
+        assertTrue(console.clientOptions.disableCompression);
+        assertTrue(console.clientOptions.toClientSession().isCompressionDisabled());
     }
 
     @Test(expectedExceptions = IllegalArgumentException.class)
@@ -143,5 +162,13 @@ public class TestClientOptions
     public void testEqualSignNoAllowedInPropertyCatalog()
     {
         new ClientSessionProperty(Optional.of("cat=alog"), "name", "value");
+    }
+
+    @Test(expectedExceptions = IllegalArgumentException.class, expectedExceptionsMessageRegExp = "Multiple entries with same key: test.token.foo=bar and test.token.foo=foo")
+    public void testDuplicateExtraCredentialKey()
+    {
+        Console console = singleCommand(Console.class).parse("--extra-credential", "test.token.foo=foo", "--extra-credential", "test.token.foo=bar");
+        ClientOptions options = console.clientOptions;
+        options.toClientSession();
     }
 }

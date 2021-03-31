@@ -14,37 +14,31 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.block.BlockEncodingManager;
 import com.facebook.presto.metadata.Catalog;
 import com.facebook.presto.metadata.CatalogManager;
-import com.facebook.presto.metadata.ColumnPropertyManager;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.SchemaPropertyManager;
-import com.facebook.presto.metadata.SessionPropertyManager;
-import com.facebook.presto.metadata.TablePropertyManager;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.security.AllowAllAccessControl;
-import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.ResetSession;
 import com.facebook.presto.transaction.TransactionManager;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
 
-import java.net.URI;
 import java.util.Set;
 import java.util.concurrent.ExecutorService;
 
+import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.presto.execution.TaskTestUtils.createQueryStateMachine;
+import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
 import static com.facebook.presto.spi.session.PropertyMetadata.stringProperty;
 import static com.facebook.presto.testing.TestingSession.createBogusTestingCatalog;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.facebook.presto.transaction.InMemoryTransactionManager.createTestTransactionManager;
-import static io.airlift.concurrent.MoreFutures.getFutureValue;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static java.util.Collections.emptyList;
 import static java.util.concurrent.Executors.newCachedThreadPool;
 import static org.testng.Assert.assertEquals;
@@ -63,15 +57,7 @@ public class TestResetSessionTask
         transactionManager = createTestTransactionManager(catalogManager);
         accessControl = new AllowAllAccessControl();
 
-        metadata = new MetadataManager(
-                new FeaturesConfig(),
-                new TypeRegistry(),
-                new BlockEncodingManager(new TypeRegistry()),
-                new SessionPropertyManager(),
-                new SchemaPropertyManager(),
-                new TablePropertyManager(),
-                new ColumnPropertyManager(),
-                transactionManager);
+        metadata = createTestMetadataManager(transactionManager, new FeaturesConfig());
 
         metadata.getSessionPropertyManager().addSystemSessionProperty(stringProperty(
                 "foo",
@@ -101,17 +87,7 @@ public class TestResetSessionTask
                 .setSystemProperty("foo", "bar")
                 .setCatalogSessionProperty(CATALOG_NAME, "baz", "blah")
                 .build();
-
-        QueryStateMachine stateMachine = QueryStateMachine.begin(
-                new QueryId("query"),
-                "reset foo",
-                session,
-                URI.create("fake://uri"),
-                false,
-                transactionManager,
-                accessControl,
-                executor,
-                metadata);
+        QueryStateMachine stateMachine = createQueryStateMachine("reset foo", session, false, transactionManager, executor, metadata);
 
         getFutureValue(new ResetSessionTask().execute(
                 new ResetSession(QualifiedName.of(CATALOG_NAME, "baz")),

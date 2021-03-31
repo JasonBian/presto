@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.operator.exchange;
 
+import com.facebook.presto.common.Page;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.operator.DriverContext;
 import com.facebook.presto.operator.LocalPlannerAware;
@@ -22,8 +23,7 @@ import com.facebook.presto.operator.OperatorFactory;
 import com.facebook.presto.operator.exchange.LocalExchange.LocalExchangeFactory;
 import com.facebook.presto.operator.exchange.LocalExchange.LocalExchangeSinkFactory;
 import com.facebook.presto.operator.exchange.LocalExchange.LocalExchangeSinkFactoryId;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.util.function.Function;
@@ -99,6 +99,7 @@ public class LocalExchangeSinkOperator
     private final OperatorContext operatorContext;
     private final LocalExchangeSink sink;
     private final Function<Page, Page> pagePreprocessor;
+    private ListenableFuture<?> isBlocked = NOT_BLOCKED;
 
     LocalExchangeSinkOperator(OperatorContext operatorContext, LocalExchangeSink sink, Function<Page, Page> pagePreprocessor)
     {
@@ -128,7 +129,13 @@ public class LocalExchangeSinkOperator
     @Override
     public ListenableFuture<?> isBlocked()
     {
-        return sink.waitForWriting();
+        if (isBlocked.isDone()) {
+            isBlocked = sink.waitForWriting();
+            if (isBlocked.isDone()) {
+                isBlocked = NOT_BLOCKED;
+            }
+        }
+        return isBlocked;
     }
 
     @Override
@@ -143,7 +150,7 @@ public class LocalExchangeSinkOperator
         requireNonNull(page, "page is null");
         page = pagePreprocessor.apply(page);
         sink.addPage(page);
-        operatorContext.recordGeneratedOutput(page.getSizeInBytes(), page.getPositionCount());
+        operatorContext.recordOutput(page.getSizeInBytes(), page.getPositionCount());
     }
 
     @Override

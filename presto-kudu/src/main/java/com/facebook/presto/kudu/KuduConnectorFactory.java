@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.kudu;
 
+import com.facebook.airlift.bootstrap.Bootstrap;
+import com.facebook.airlift.json.JsonModule;
 import com.facebook.presto.spi.ConnectorHandleResolver;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorContext;
 import com.facebook.presto.spi.connector.ConnectorFactory;
 import com.google.inject.Injector;
-import io.airlift.bootstrap.Bootstrap;
-import io.airlift.json.JsonModule;
 
 import java.util.Map;
 
@@ -53,9 +53,10 @@ public class KuduConnectorFactory
             Bootstrap app = new Bootstrap(new JsonModule(),
                     new KuduModule(catalogName, context.getTypeManager()));
 
-            Injector injector =
-                    app.strictConfig().doNotInitializeLogging().setRequiredConfigurationProperties(config)
-                            .initialize();
+            Injector injector = app
+                    .doNotInitializeLogging()
+                    .setRequiredConfigurationProperties(config)
+                    .initialize();
 
             return injector.getInstance(KuduConnector.class);
         }

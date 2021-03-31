@@ -16,8 +16,11 @@ package com.facebook.presto.plugin.jdbc;
 import java.sql.Connection;
 import java.sql.Driver;
 import java.sql.SQLException;
+import java.util.Map;
+import java.util.Optional;
 import java.util.Properties;
 
+import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 
 public class DriverConnectionFactory
@@ -26,10 +29,17 @@ public class DriverConnectionFactory
     private final Driver driver;
     private final String connectionUrl;
     private final Properties connectionProperties;
+    private final Optional<String> userCredentialName;
+    private final Optional<String> passwordCredentialName;
 
     public DriverConnectionFactory(Driver driver, BaseJdbcConfig config)
     {
-        this(driver, config.getConnectionUrl(), basicConnectionProperties(config));
+        this(
+                driver,
+                config.getConnectionUrl(),
+                Optional.ofNullable(config.getUserCredentialName()),
+                Optional.ofNullable(config.getPasswordCredentialName()),
+                basicConnectionProperties(config));
     }
 
     public static Properties basicConnectionProperties(BaseJdbcConfig config)
@@ -44,18 +54,41 @@ public class DriverConnectionFactory
         return connectionProperties;
     }
 
-    public DriverConnectionFactory(Driver driver, String connectionUrl, Properties connectionProperties)
+    public DriverConnectionFactory(Driver driver, String connectionUrl, Optional<String> userCredentialName, Optional<String> passwordCredentialName, Properties connectionProperties)
     {
         this.driver = requireNonNull(driver, "driver is null");
         this.connectionUrl = requireNonNull(connectionUrl, "connectionUrl is null");
         this.connectionProperties = new Properties();
-        this.connectionProperties.putAll(requireNonNull(connectionProperties, "basicConnectionProperties is null"));
+        this.connectionProperties.putAll(requireNonNull(connectionProperties, "connectionProperties is null"));
+        this.userCredentialName = requireNonNull(userCredentialName, "userCredentialName is null");
+        this.passwordCredentialName = requireNonNull(passwordCredentialName, "passwordCredentialName is null");
     }
 
     @Override
-    public Connection openConnection()
+    public Connection openConnection(JdbcIdentity identity)
             throws SQLException
     {
-        return driver.connect(connectionUrl, connectionProperties);
+        Properties updatedConnectionProperties;
+        if (userCredentialName.isPresent() || passwordCredentialName.isPresent()) {
+            updatedConnectionProperties = new Properties();
+            updatedConnectionProperties.putAll(connectionProperties);
+            userCredentialName.ifPresent(credentialName -> setConnectionProperty(updatedConnectionProperties, identity.getExtraCredentials(), credentialName, "user"));
+            passwordCredentialName.ifPresent(credentialName -> setConnectionProperty(updatedConnectionProperties, identity.getExtraCredentials(), credentialName, "password"));
+        }
+        else {
+            updatedConnectionProperties = connectionProperties;
+        }
+
+        Connection connection = driver.connect(connectionUrl, updatedConnectionProperties);
+        checkState(connection != null, "Driver returned null connection");
+        return connection;
+    }
+
+    private static void setConnectionProperty(Properties connectionProperties, Map<String, String> extraCredentials, String credentialName, String propertyName)
+    {
+        String value = extraCredentials.get(credentialName);
+        if (value != null) {
+            connectionProperties.setProperty(propertyName, value);
+        }
     }
 }

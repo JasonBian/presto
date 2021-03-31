@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.operator.index;
 
+import com.facebook.presto.common.Page;
 import com.facebook.presto.operator.DriverContext;
 import com.facebook.presto.operator.Operator;
 import com.facebook.presto.operator.OperatorContext;
 import com.facebook.presto.operator.OperatorFactory;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.spi.plan.PlanNodeId;
 
 import javax.annotation.concurrent.ThreadSafe;
 
@@ -111,7 +111,7 @@ public class PagesIndexBuilderOperator
             finish();
             return;
         }
-        operatorContext.recordGeneratedOutput(page.getSizeInBytes(), page.getPositionCount());
+        operatorContext.recordOutput(page.getSizeInBytes(), page.getPositionCount());
     }
 
     @Override

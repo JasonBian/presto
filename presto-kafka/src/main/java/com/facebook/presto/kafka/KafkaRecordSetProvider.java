@@ -41,13 +41,15 @@ public class KafkaRecordSetProvider
         implements ConnectorRecordSetProvider
 {
     private DispatchingRowDecoderFactory decoderFactory;
-    private final KafkaSimpleConsumerManager consumerManager;
+    private final KafkaConsumerManager consumerManager;
+    private final KafkaConnectorConfig config;
 
     @Inject
-    public KafkaRecordSetProvider(DispatchingRowDecoderFactory decoderFactory, KafkaSimpleConsumerManager consumerManager)
+    public KafkaRecordSetProvider(DispatchingRowDecoderFactory decoderFactory, KafkaConsumerManager consumerManager, KafkaConnectorConfig config)
     {
         this.decoderFactory = requireNonNull(decoderFactory, "decoderFactory is null");
         this.consumerManager = requireNonNull(consumerManager, "consumerManager is null");
+        this.config = requireNonNull(config, "config is null");
     }
 
     @Override
@@ -64,7 +66,7 @@ public class KafkaRecordSetProvider
                 getDecoderParameters(kafkaSplit.getKeyDataSchemaContents()),
                 kafkaColumns.stream()
                         .filter(col -> !col.isInternal())
-                        .filter(KafkaColumnHandle::isKeyDecoder)
+                        .filter(KafkaColumnHandle::isKeyCodec)
                         .collect(toImmutableSet()));
 
         RowDecoder messageDecoder = decoderFactory.create(
@@ -72,7 +74,7 @@ public class KafkaRecordSetProvider
                 getDecoderParameters(kafkaSplit.getMessageDataSchemaContents()),
                 kafkaColumns.stream()
                         .filter(col -> !col.isInternal())
-                        .filter(col -> !col.isKeyDecoder())
+                        .filter(col -> !col.isKeyCodec())
                         .collect(toImmutableSet()));
 
         return new KafkaRecordSet(kafkaSplit, consumerManager, kafkaColumns, keyDecoder, messageDecoder);

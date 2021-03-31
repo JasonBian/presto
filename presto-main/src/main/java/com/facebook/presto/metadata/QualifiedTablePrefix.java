@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.metadata;
 
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.spi.SchemaTablePrefix;
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
 import javax.annotation.concurrent.Immutable;
@@ -53,6 +55,7 @@ public class QualifiedTablePrefix
         this.tableName = Optional.of(checkTableName(tableName));
     }
 
+    @JsonCreator
     public QualifiedTablePrefix(
             @JsonProperty("catalogName") String catalogName,
             @JsonProperty("schemaName") Optional<String> schemaName,
@@ -62,6 +65,11 @@ public class QualifiedTablePrefix
         this.catalogName = catalogName;
         this.schemaName = schemaName;
         this.tableName = tableName;
+    }
+
+    public static QualifiedTablePrefix toQualifiedTablePrefix(QualifiedObjectName qualifiedObjectName)
+    {
+        return new QualifiedTablePrefix(qualifiedObjectName.getCatalogName(), qualifiedObjectName.getSchemaName(), qualifiedObjectName.getObjectName());
     }
 
     @JsonProperty

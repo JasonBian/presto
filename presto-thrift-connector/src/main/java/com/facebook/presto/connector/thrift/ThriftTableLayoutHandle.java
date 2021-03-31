@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.connector.thrift;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorTableLayoutHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableSet;
@@ -24,7 +24,6 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public class ThriftTableLayoutHandle
@@ -97,11 +96,6 @@ public class ThriftTableLayoutHandle
     @Override
     public String toString()
     {
-        return toStringHelper(this)
-                .add("schemaName", schemaName)
-                .add("tableName", tableName)
-                .add("columns", columns)
-                .add("constraint", constraint)
-                .toString();
+        return schemaName + ":" + tableName;
     }
 }

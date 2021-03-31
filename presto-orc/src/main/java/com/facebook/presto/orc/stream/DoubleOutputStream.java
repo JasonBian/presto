@@ -13,15 +13,17 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcOutputBuffer;
 import com.facebook.presto.orc.checkpoint.DoubleStreamCheckpoint;
-import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.orc.metadata.CompressionParameters;
 import com.facebook.presto.orc.metadata.Stream;
 import com.google.common.collect.ImmutableList;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 import static com.facebook.presto.orc.metadata.Stream.StreamKind.DATA;
 import static com.google.common.base.Preconditions.checkState;
@@ -36,9 +38,9 @@ public class DoubleOutputStream
 
     private boolean closed;
 
-    public DoubleOutputStream(CompressionKind compression, int bufferSize)
+    public DoubleOutputStream(CompressionParameters compressionParameters, Optional<DwrfDataEncryptor> dwrfEncryptor)
     {
-        this.buffer = new OrcOutputBuffer(compression, bufferSize);
+        this.buffer = new OrcOutputBuffer(compressionParameters, dwrfEncryptor);
     }
 
     public void writeDouble(double value)

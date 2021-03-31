@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.execution.buffer;
 
-import com.facebook.presto.OutputBuffers;
-import com.facebook.presto.OutputBuffers.OutputBufferId;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.StateMachine;
+import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
 import com.facebook.presto.memory.context.SimpleLocalMemoryContext;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.BigintType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
@@ -28,12 +28,13 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ScheduledExecutorService;
 
-import static com.facebook.presto.OutputBuffers.BROADCAST_PARTITION_ID;
-import static com.facebook.presto.OutputBuffers.BufferType.ARBITRARY;
-import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.execution.buffer.BufferResult.emptyResults;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
 import static com.facebook.presto.execution.buffer.BufferState.TERMINAL_BUFFER_STATES;
@@ -48,11 +49,14 @@ import static com.facebook.presto.execution.buffer.BufferTestUtils.createBufferR
 import static com.facebook.presto.execution.buffer.BufferTestUtils.createPage;
 import static com.facebook.presto.execution.buffer.BufferTestUtils.getFuture;
 import static com.facebook.presto.execution.buffer.BufferTestUtils.sizeOfPages;
+import static com.facebook.presto.execution.buffer.OutputBuffers.BROADCAST_PARTITION_ID;
+import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.ARBITRARY;
+import static com.facebook.presto.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.units.DataSize.Unit.BYTE;
 import static java.util.concurrent.Executors.newScheduledThreadPool;
+import static java.util.stream.Collectors.toList;
+import static org.assertj.core.api.Assertions.assertThat;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
@@ -423,6 +427,54 @@ public class TestArbitraryOutputBuffer
         addPage(buffer, createPage(33));
         assertTrue(future.isDone());
         assertBufferResultEquals(TYPES, getFuture(future, NO_WAIT), bufferResult(0, createPage(33)));
+    }
+
+    @Test
+    public void testResumeFromPreviousPosition()
+    {
+        OutputBuffers outputBuffers = createInitialEmptyOutputBuffers(ARBITRARY);
+        OutputBufferId[] ids = new OutputBufferId[5];
+        for (int i = 0; i < ids.length; i++) {
+            ids[i] = new OutputBufferId(i);
+            outputBuffers = outputBuffers.withBuffer(ids[i], i);
+        }
+
+        ArbitraryOutputBuffer buffer = createArbitraryBuffer(outputBuffers, sizeOfPages(5));
+        assertFalse(buffer.isFinished());
+
+        Map<OutputBufferId, ListenableFuture<BufferResult>> firstReads = new HashMap<>();
+        for (OutputBufferId id : ids) {
+            firstReads.put(id, buffer.get(id, 0L, sizeOfPages(1)));
+        }
+        // All must be blocked initially
+        assertThat(firstReads.values()).allMatch(future -> !future.isDone());
+
+        List<ListenableFuture<BufferResult>> secondReads = new ArrayList<>();
+
+        for (int i = 0; i < ids.length; i++) {
+            // add one page
+            addPage(buffer, createPage(33));
+            assertThat(secondReads).allMatch(future -> !future.isDone(), "No secondary reads should complete until after all first reads");
+            List<OutputBufferId> completedIds = firstReads.entrySet().stream()
+                                                        .filter(entry -> entry.getValue().isDone())
+                                                        .map(Map.Entry::getKey)
+                                                        .collect(toList());
+            assertEquals(completedIds.size(), 1, "One completed buffer read per page addition");
+            OutputBufferId completed = completedIds.get(0);
+
+            BufferResult result = getFuture(firstReads.remove(completed), NO_WAIT);
+            // Store completion order of first for follow up sequence
+            secondReads.add(buffer.get(completed, result.getNextToken(), sizeOfPages(1)));
+        }
+        // Test sanity
+        assertEquals(secondReads.size(), ids.length);
+
+        // Completion order should be identical to the first iteration at this point
+        for (int i = 0; i < ids.length; i++) {
+            // add one page
+            addPage(buffer, createPage(33));
+            assertTrue(secondReads.get(i).isDone(), "Invalid second read completion order at index: " + i);
+        }
     }
 
     @Test(expectedExceptions = IllegalStateException.class, expectedExceptionsMessageRegExp = "No more buffers already set")
@@ -950,7 +1002,7 @@ public class TestArbitraryOutputBuffer
 
     private static ListenableFuture<?> enqueuePage(OutputBuffer buffer, Page page)
     {
-        buffer.enqueue(ImmutableList.of(PAGES_SERDE.serialize(page)));
+        buffer.enqueue(Lifespan.taskWide(), ImmutableList.of(PAGES_SERDE.serialize(page)));
         ListenableFuture<?> future = buffer.isFull();
         assertFalse(future.isDone());
         return future;
@@ -958,7 +1010,7 @@ public class TestArbitraryOutputBuffer
 
     private static void addPage(OutputBuffer buffer, Page page)
     {
-        buffer.enqueue(ImmutableList.of(PAGES_SERDE.serialize(page)));
+        buffer.enqueue(Lifespan.taskWide(), ImmutableList.of(PAGES_SERDE.serialize(page)));
         assertTrue(buffer.isFull().isDone(), "Expected add page to not block");
     }
 
@@ -1028,6 +1080,7 @@ public class TestArbitraryOutputBuffer
                 () -> new SimpleLocalMemoryContext(newSimpleAggregatedMemoryContext(), "test"),
                 stateNotificationExecutor);
         buffer.setOutputBuffers(buffers);
+        buffer.registerLifespanCompletionCallback(ignore -> {});
         return buffer;
     }
 

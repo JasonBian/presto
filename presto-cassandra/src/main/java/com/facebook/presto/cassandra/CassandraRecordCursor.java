@@ -15,9 +15,9 @@ package com.facebook.presto.cassandra;
 
 import com.datastax.driver.core.ResultSet;
 import com.datastax.driver.core.Row;
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.RecordCursor;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 
 import java.util.List;
@@ -95,11 +95,17 @@ public class CassandraRecordCursor
         switch (getCassandraType(i)) {
             case INT:
                 return currentRow.getInt(i);
+            case SMALLINT:
+                return currentRow.getShort(i);
+            case TINYINT:
+                return currentRow.getByte(i);
             case BIGINT:
             case COUNTER:
                 return currentRow.getLong(i);
             case TIMESTAMP:
                 return currentRow.getTimestamp(i).getTime();
+            case DATE:
+                return currentRow.getDate(i).getDaysSinceEpoch();
             case FLOAT:
                 return floatToRawIntBits(currentRow.getFloat(i));
             default:

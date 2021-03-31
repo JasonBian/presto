@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
@@ -112,6 +112,16 @@ public class PagesSpatialIndexFactory
     }
 
     /**
+     * Called by SpatialJoinOperatorFactory to indicate that a duplicate factory will be created
+     * and this class should wait for an extra {@link noMoreProbeOperators} call before
+     * releasing spatial index.
+     */
+    public synchronized void addProbeOperatorFactory()
+    {
+        activeProbeOperators.retain();
+    }
+
+    /**
      * Called by SpatialJoinOperatorFactory to indicate that all
      * {@link SpatialJoinOperator} have been created.
      */
@@ -138,7 +148,7 @@ public class PagesSpatialIndexFactory
     /**
      * Called by {@link SpatialIndexBuilderOperator} to provide a
      * {@link Supplier} of spatial indexes for {@link SpatialJoinOperator}s to use.
-     *
+     * <p>
      * Returns a Future that completes once all the {@link SpatialJoinOperator}s have completed.
      */
     public ListenableFuture<?> lendPagesSpatialIndex(Supplier<PagesSpatialIndex> pagesSpatialIndex)

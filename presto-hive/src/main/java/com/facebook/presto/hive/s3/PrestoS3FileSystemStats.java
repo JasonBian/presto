@@ -14,8 +14,8 @@
 package com.facebook.presto.hive.s3;
 
 import com.amazonaws.AbortedException;
-import io.airlift.stats.CounterStat;
-import io.airlift.stats.TimeStat;
+import com.facebook.airlift.stats.CounterStat;
+import com.facebook.airlift.stats.TimeStat;
 import io.airlift.units.Duration;
 import org.weakref.jmx.Managed;
 import org.weakref.jmx.Nested;
@@ -51,6 +51,7 @@ public class PrestoS3FileSystemStats
     private final CounterStat awsThrottleExceptions = new CounterStat();
     private final TimeStat awsRequestTime = new TimeStat(MILLISECONDS);
     private final TimeStat awsClientExecuteTime = new TimeStat(MILLISECONDS);
+    private final TimeStat awsClientRetryPauseTime = new TimeStat(MILLISECONDS);
 
     @Managed
     @Nested
@@ -187,6 +188,13 @@ public class PrestoS3FileSystemStats
 
     @Managed
     @Nested
+    public TimeStat getAwsClientRetryPauseTime()
+    {
+        return awsClientRetryPauseTime;
+    }
+
+    @Managed
+    @Nested
     public CounterStat getGetObjectRetries()
     {
         return getObjectRetries;
@@ -251,15 +259,15 @@ public class PrestoS3FileSystemStats
         listObjectsCalls.update(1);
     }
 
-    public void newReadError(Exception e)
+    public void newReadError(Throwable t)
     {
-        if (e instanceof SocketException) {
+        if (t instanceof SocketException) {
             socketExceptions.update(1);
         }
-        else if (e instanceof SocketTimeoutException) {
+        else if (t instanceof SocketTimeoutException) {
             socketTimeoutExceptions.update(1);
         }
-        else if (e instanceof AbortedException) {
+        else if (t instanceof AbortedException) {
             awsAbortedExceptions.update(1);
         }
         else {
@@ -300,6 +308,11 @@ public class PrestoS3FileSystemStats
     public void addAwsClientExecuteTime(Duration duration)
     {
         awsClientExecuteTime.add(duration);
+    }
+
+    public void addAwsClientRetryPauseTime(Duration duration)
+    {
+        awsClientRetryPauseTime.add(duration);
     }
 
     public void newGetObjectRetry()

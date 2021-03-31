@@ -13,15 +13,14 @@
  */
 package com.facebook.presto.block;
 
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.BlockBuilderStatus;
-import com.facebook.presto.spi.block.BlockEncodingSerde;
-import com.facebook.presto.spi.block.DictionaryId;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import com.facebook.presto.type.TypeRegistry;
+import com.facebook.presto.common.block.AbstractMapBlock.HashTables;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.BlockBuilderStatus;
+import com.facebook.presto.common.block.BlockEncodingManager;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.DictionaryId;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
@@ -34,20 +33,26 @@ import java.lang.invoke.MethodHandle;
 import java.lang.reflect.Array;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
+import java.util.UUID;
 import java.util.function.Supplier;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.airlift.testing.Assertions.assertBetweenInclusive;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static io.airlift.slice.SizeOf.SIZE_OF_BYTE;
 import static io.airlift.slice.SizeOf.SIZE_OF_INT;
 import static io.airlift.slice.SizeOf.SIZE_OF_LONG;
 import static io.airlift.slice.SizeOf.SIZE_OF_SHORT;
 import static io.airlift.slice.SizeOf.sizeOf;
+import static java.lang.Math.max;
+import static java.lang.Math.min;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
+import static java.util.Arrays.fill;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotSame;
@@ -58,15 +63,13 @@ import static org.testng.Assert.fail;
 @Test
 public abstract class AbstractTestBlock
 {
-    private static final TypeManager TYPE_MANAGER = new TypeRegistry();
-    private static final BlockEncodingSerde BLOCK_ENCODING_SERDE = new BlockEncodingManager(TYPE_MANAGER);
-    static {
-        // associate TYPE_MANAGER with a function registry
-        new FunctionRegistry(TYPE_MANAGER, new BlockEncodingManager(TYPE_MANAGER), new FeaturesConfig());
-    }
+    private static final BlockEncodingSerde BLOCK_ENCODING_SERDE = new BlockEncodingManager();
 
     protected <T> void assertBlock(Block block, Supplier<BlockBuilder> newBlockBuilder, T[] expectedValues)
     {
+        assertBlockSize(block);
+        assertRetainedSize(block);
+
         assertBlockPositions(block, newBlockBuilder, expectedValues);
         assertBlockPositions(copyBlockViaBlockSerde(block), newBlockBuilder, expectedValues);
         assertBlockPositions(copyBlockViaWritePositionTo(block, newBlockBuilder), newBlockBuilder, expectedValues);
@@ -75,6 +78,10 @@ public abstract class AbstractTestBlock
                 expectedValues.getClass().getComponentType() == Map.class) {
             assertBlockPositions(copyBlockViaWriteStructure(block, newBlockBuilder), newBlockBuilder, expectedValues);
         }
+
+        Block blockWithNull = copyBlockViaBlockSerde(block).appendNull();
+        T[] expectedValuesWithNull = Arrays.copyOf(expectedValues, expectedValues.length + 1);
+        assertBlockPositions(blockWithNull, newBlockBuilder, expectedValuesWithNull);
 
         assertBlockSize(block);
         assertRetainedSize(block);
@@ -151,6 +158,9 @@ public abstract class AbstractTestBlock
                 else if (type == DictionaryId.class) {
                     retainedSize += ClassLayout.parseClass(DictionaryId.class).instanceSize();
                 }
+                else if (type == HashTables.class) {
+                    retainedSize += ((HashTables) field.get(block)).getRetainedSizeInBytes();
+                }
                 else if (type == MethodHandle.class) {
                     // MethodHandles are only used in MapBlock/MapBlockBuilder,
                     // and they are shared among blocks created by the same MapType.
@@ -210,19 +220,108 @@ public abstract class AbstractTestBlock
     {
         // Asserting on `block` is not very effective because most blocks passed to this method is compact.
         // Therefore, we split the `block` into two and assert again.
+        //------------------Test Whole Block Sizes---------------------------------------------------
+        // Assert sizeInBytes for the whole block.
         long expectedBlockSize = copyBlockViaBlockSerde(block).getSizeInBytes();
         assertEquals(block.getSizeInBytes(), expectedBlockSize);
         assertEquals(block.getRegionSizeInBytes(0, block.getPositionCount()), expectedBlockSize);
 
+        // Assert logicalSize for the whole block. Note that copyBlockViaBlockSerde would flatten DictionaryBlock or RleBlock
+        long logicalSizeInBytes = block.getLogicalSizeInBytes();
+
+        long expectedLogicalBlockSize = copyBlockViaBlockSerde(block).getLogicalSizeInBytes();
+        assertEquals(logicalSizeInBytes, expectedLogicalBlockSize);
+        assertEquals(block.getRegionLogicalSizeInBytes(0, block.getPositionCount()), expectedLogicalBlockSize);
+
+        // Assert approximateLogicalSize for the whole block
+        long approximateLogicalSizeInBytes = block.getApproximateRegionLogicalSizeInBytes(0, block.getPositionCount());
+
+        long expectedApproximateLogicalBlockSize = expectedLogicalBlockSize;
+        if (block instanceof DictionaryBlock) {
+            int dictionaryPositionCount = ((DictionaryBlock) block).getDictionary().getPositionCount();
+            expectedApproximateLogicalBlockSize = ((DictionaryBlock) block).getDictionary().getApproximateRegionLogicalSizeInBytes(0, dictionaryPositionCount) * block.getPositionCount() / dictionaryPositionCount;
+        }
+        assertEquals(approximateLogicalSizeInBytes, expectedApproximateLogicalBlockSize);
+
+        //------------------Test First Half Sizes---------------------------------------------------
         List<Block> splitBlock = splitBlock(block, 2);
         Block firstHalf = splitBlock.get(0);
+        int firstHalfPositionCount = firstHalf.getPositionCount();
+
+        // Assert sizeInBytes for the firstHalf block.
         long expectedFirstHalfSize = copyBlockViaBlockSerde(firstHalf).getSizeInBytes();
         assertEquals(firstHalf.getSizeInBytes(), expectedFirstHalfSize);
-        assertEquals(block.getRegionSizeInBytes(0, firstHalf.getPositionCount()), expectedFirstHalfSize);
+        assertEquals(block.getRegionSizeInBytes(0, firstHalfPositionCount), expectedFirstHalfSize);
+
+        // Assert logicalSize for the firstHalf block
+        long firstHalfLogicalSizeInBytes = firstHalf.getLogicalSizeInBytes();
+        long expectedFirstHalfLogicalSize = copyBlockViaBlockSerde(firstHalf).getLogicalSizeInBytes();
+        assertEquals(firstHalfLogicalSizeInBytes, expectedFirstHalfLogicalSize);
+        assertEquals(firstHalf.getRegionLogicalSizeInBytes(0, firstHalfPositionCount), expectedFirstHalfLogicalSize);
+
+        // Assert approximateLogicalSize for the firstHalf block using logicalSize
+        long approximateFirstHalfLogicalSize = firstHalf.getApproximateRegionLogicalSizeInBytes(0, firstHalfPositionCount);
+
+        long expectedApproximateFirstHalfLogicalSize = expectedFirstHalfLogicalSize;
+        if (firstHalf instanceof DictionaryBlock) {
+            int dictionaryPositionCount = ((DictionaryBlock) firstHalf).getDictionary().getPositionCount();
+            expectedApproximateFirstHalfLogicalSize = ((DictionaryBlock) firstHalf).getDictionary().getApproximateRegionLogicalSizeInBytes(0, dictionaryPositionCount) * firstHalfPositionCount / dictionaryPositionCount;
+        }
+        assertEquals(approximateFirstHalfLogicalSize, expectedApproximateFirstHalfLogicalSize);
+
+        // Assert approximateLogicalSize for the firstHalf block using the ratio of firstHalf logicalSize vs whole block logicalSize
+        long expectedApproximateFirstHalfLogicalSizeFromUnsplittedBlock = logicalSizeInBytes == 0 ?
+                approximateLogicalSizeInBytes :
+                approximateLogicalSizeInBytes * firstHalfLogicalSizeInBytes / logicalSizeInBytes;
+        assertBetweenInclusive(
+                approximateFirstHalfLogicalSize,
+                // Allow for some error margins due to skew in blocks
+                min(expectedApproximateFirstHalfLogicalSizeFromUnsplittedBlock - 3, (long) (expectedApproximateFirstHalfLogicalSizeFromUnsplittedBlock * 0.7)),
+                max(expectedApproximateFirstHalfLogicalSizeFromUnsplittedBlock + 3, (long) (expectedApproximateFirstHalfLogicalSizeFromUnsplittedBlock * 1.3)));
+
+        //------------------Test Second Half Sizes---------------------------------------------------
         Block secondHalf = splitBlock.get(1);
+        int secondHalfPositionCount = secondHalf.getPositionCount();
+
+        // Assert sizeInBytes for the secondHalf block.
         long expectedSecondHalfSize = copyBlockViaBlockSerde(secondHalf).getSizeInBytes();
         assertEquals(secondHalf.getSizeInBytes(), expectedSecondHalfSize);
-        assertEquals(block.getRegionSizeInBytes(firstHalf.getPositionCount(), secondHalf.getPositionCount()), expectedSecondHalfSize);
+        assertEquals(block.getRegionSizeInBytes(firstHalfPositionCount, secondHalfPositionCount), expectedSecondHalfSize);
+
+        // Assert logicalSize for the secondHalf block.
+        long secondHalfLogicalSizeInBytes = secondHalf.getLogicalSizeInBytes();
+        long expectedSecondHalfLogicalSize = copyBlockViaBlockSerde(secondHalf).getLogicalSizeInBytes();
+        assertEquals(secondHalfLogicalSizeInBytes, expectedSecondHalfLogicalSize);
+        assertEquals(secondHalf.getRegionLogicalSizeInBytes(0, secondHalfPositionCount), expectedSecondHalfLogicalSize);
+
+        // Assert approximateLogicalSize for the secondHalf block using logicalSize
+        long approximateSecondHalfLogicalSize = secondHalf.getApproximateRegionLogicalSizeInBytes(0, secondHalfPositionCount);
+
+        long expectedApproximateSecondHalfLogicalSize = copyBlockViaBlockSerde(secondHalf).getApproximateRegionLogicalSizeInBytes(0, secondHalfPositionCount);
+        if (secondHalf instanceof DictionaryBlock) {
+            int dictionaryPositionCount = ((DictionaryBlock) secondHalf).getDictionary().getPositionCount();
+            expectedApproximateSecondHalfLogicalSize = ((DictionaryBlock) secondHalf).getDictionary().getApproximateRegionLogicalSizeInBytes(0, dictionaryPositionCount) * secondHalfPositionCount / dictionaryPositionCount;
+        }
+        assertEquals(approximateSecondHalfLogicalSize, expectedApproximateSecondHalfLogicalSize);
+
+        // Assert approximateLogicalSize for the secondHalf block using the ratio of firstHalf logicalSize vs whole block logicalSize
+        long expectedApproximateSecondHalfLogicalSizeFromUnsplittedBlock = logicalSizeInBytes == 0 ?
+                approximateLogicalSizeInBytes :
+                approximateLogicalSizeInBytes * secondHalfLogicalSizeInBytes / logicalSizeInBytes;
+        assertBetweenInclusive(
+                approximateSecondHalfLogicalSize,
+                // Allow for some error margins due to skew in blocks
+                min(expectedApproximateSecondHalfLogicalSizeFromUnsplittedBlock - 3, (long) (expectedApproximateSecondHalfLogicalSizeFromUnsplittedBlock * 0.7)),
+                max(expectedApproximateSecondHalfLogicalSizeFromUnsplittedBlock + 3, (long) (expectedApproximateSecondHalfLogicalSizeFromUnsplittedBlock * 1.3)));
+
+        //----------------Test getPositionsSizeInBytes----------------------------------------
+        boolean[] positions = new boolean[block.getPositionCount()];
+        fill(positions, 0, firstHalfPositionCount, true);
+        assertEquals(block.getPositionsSizeInBytes(positions), expectedFirstHalfSize);
+        fill(positions, true);
+        assertEquals(block.getPositionsSizeInBytes(positions), expectedBlockSize);
+        fill(positions, 0, firstHalfPositionCount, false);
+        assertEquals(block.getPositionsSizeInBytes(positions), expectedSecondHalfSize);
     }
 
     // expectedValueType is required since otherwise the expected value type is unknown when expectedValue is null.
@@ -256,8 +355,15 @@ public abstract class AbstractTestBlock
         assertPositionValue(block.copyPositions(new int[] {position}, 0, 1), 0, expectedValue);
     }
 
-    protected <T> void assertPositionValue(Block block, int position, T expectedValue)
+    private <T> void assertPositionValue(Block block, int position, T expectedValue)
     {
+        assertCheckedPositionValue(block, position, expectedValue);
+        assertPositionValueUnchecked(block, position + block.getOffsetBase(), expectedValue);
+    }
+
+    protected <T> void assertCheckedPositionValue(Block block, int position, T expectedValue)
+    {
+        assertPositionValueUnchecked(block, position + block.getOffsetBase(), expectedValue);
         if (expectedValue == null) {
             assertTrue(block.isNull(position));
             return;
@@ -268,26 +374,24 @@ public abstract class AbstractTestBlock
         if (expectedValue instanceof Slice) {
             Slice expectedSliceValue = (Slice) expectedValue;
 
-            if (isByteAccessSupported()) {
-                for (int offset = 0; offset <= expectedSliceValue.length() - SIZE_OF_BYTE; offset++) {
-                    assertEquals(block.getByte(position, offset), expectedSliceValue.getByte(offset));
-                }
+            if (isByteAccessSupported() && expectedSliceValue.length() >= SIZE_OF_BYTE) {
+                assertEquals(block.getByte(position), expectedSliceValue.getByte(0));
             }
 
-            if (isShortAccessSupported()) {
-                for (int offset = 0; offset <= expectedSliceValue.length() - SIZE_OF_SHORT; offset++) {
-                    assertEquals(block.getShort(position, offset), expectedSliceValue.getShort(offset));
-                }
+            if (isShortAccessSupported() && expectedSliceValue.length() >= SIZE_OF_SHORT) {
+                assertEquals(block.getShort(position), expectedSliceValue.getShort(0));
             }
 
-            if (isIntAccessSupported()) {
-                for (int offset = 0; offset <= expectedSliceValue.length() - SIZE_OF_INT; offset++) {
-                    assertEquals(block.getInt(position, offset), expectedSliceValue.getInt(offset));
-                }
+            if (isIntAccessSupported() && expectedSliceValue.length() >= SIZE_OF_INT) {
+                assertEquals(block.getInt(position), expectedSliceValue.getInt(0));
             }
 
-            if (isLongAccessSupported()) {
-                for (int offset = 0; offset <= expectedSliceValue.length() - SIZE_OF_LONG; offset++) {
+            if (isIntAccessSupported() && expectedSliceValue.length() >= SIZE_OF_LONG) {
+                assertEquals(block.getLong(position), expectedSliceValue.getLong(0));
+            }
+
+            if (isAlignedLongAccessSupported()) {
+                for (int offset = 0; offset <= expectedSliceValue.length() - SIZE_OF_LONG; offset += SIZE_OF_LONG) {
                     assertEquals(block.getLong(position, offset), expectedSliceValue.getLong(offset));
                 }
             }
@@ -298,7 +402,7 @@ public abstract class AbstractTestBlock
             }
         }
         else if (expectedValue instanceof long[]) {
-            Block actual = block.getObject(position, Block.class);
+            Block actual = block.getBlock(position);
             long[] expected = (long[]) expectedValue;
             assertEquals(actual.getPositionCount(), expected.length);
             for (int i = 0; i < expected.length; i++) {
@@ -306,7 +410,7 @@ public abstract class AbstractTestBlock
             }
         }
         else if (expectedValue instanceof Slice[]) {
-            Block actual = block.getObject(position, Block.class);
+            Block actual = block.getBlock(position);
             Slice[] expected = (Slice[]) expectedValue;
             assertEquals(actual.getPositionCount(), expected.length);
             for (int i = 0; i < expected.length; i++) {
@@ -314,7 +418,75 @@ public abstract class AbstractTestBlock
             }
         }
         else if (expectedValue instanceof long[][]) {
-            Block actual = block.getObject(position, Block.class);
+            Block actual = block.getBlock(position);
+            long[][] expected = (long[][]) expectedValue;
+            assertEquals(actual.getPositionCount(), expected.length);
+            for (int i = 0; i < expected.length; i++) {
+                assertPositionValue(actual, i, expected[i]);
+            }
+        }
+        else {
+            fail("Unexpected type: " + expectedValue.getClass().getSimpleName());
+        }
+    }
+
+    protected <T> void assertPositionValueUnchecked(Block block, int internalPosition, T expectedValue)
+    {
+        if (expectedValue == null) {
+            assertTrue(block.isNullUnchecked(internalPosition));
+            return;
+        }
+
+        assertFalse(block.mayHaveNull() && block.isNullUnchecked(internalPosition));
+
+        if (expectedValue instanceof Slice) {
+            Slice expectedSliceValue = (Slice) expectedValue;
+
+            if (isByteAccessSupported() && expectedSliceValue.length() >= SIZE_OF_BYTE) {
+                assertEquals(block.getByteUnchecked(internalPosition), expectedSliceValue.getByte(0));
+            }
+
+            if (isShortAccessSupported() && expectedSliceValue.length() >= SIZE_OF_SHORT) {
+                assertEquals(block.getShortUnchecked(internalPosition), expectedSliceValue.getShort(0));
+            }
+
+            if (isIntAccessSupported() && expectedSliceValue.length() >= SIZE_OF_INT) {
+                assertEquals(block.getIntUnchecked(internalPosition), expectedSliceValue.getInt(0));
+            }
+
+            if (isIntAccessSupported() && expectedSliceValue.length() >= SIZE_OF_LONG) {
+                assertEquals(block.getLongUnchecked(internalPosition), expectedSliceValue.getLong(0));
+            }
+
+            if (isAlignedLongAccessSupported()) {
+                for (int offset = 0; offset <= expectedSliceValue.length() - SIZE_OF_LONG; offset += SIZE_OF_LONG) {
+                    assertEquals(block.getLongUnchecked(internalPosition, offset), expectedSliceValue.getLong(offset));
+                }
+            }
+
+            if (isSliceAccessSupported()) {
+                assertEquals(block.getSliceLengthUnchecked(internalPosition), expectedSliceValue.length());
+                assertSlicePositionUnchecked(block, internalPosition, expectedSliceValue);
+            }
+        }
+        else if (expectedValue instanceof long[]) {
+            Block actual = block.getBlockUnchecked(internalPosition);
+            long[] expected = (long[]) expectedValue;
+            assertEquals(actual.getPositionCount(), expected.length);
+            for (int i = 0; i < actual.getPositionCount(); i++) {
+                assertEquals(BIGINT.getLongUnchecked(actual, i + actual.getOffsetBase()), expected[i]);
+            }
+        }
+        else if (expectedValue instanceof Slice[]) {
+            Block actual = block.getBlockUnchecked(internalPosition);
+            Slice[] expected = (Slice[]) expectedValue;
+            assertEquals(actual.getPositionCount(), expected.length);
+            for (int i = 0; i < expected.length; i++) {
+                assertEquals(VARCHAR.getSlice(actual, i), expected[i]);
+            }
+        }
+        else if (expectedValue instanceof long[][]) {
+            Block actual = block.getBlockUnchecked(internalPosition);
             long[][] expected = (long[][]) expectedValue;
             assertEquals(actual.getPositionCount(), expected.length);
             for (int i = 0; i < expected.length; i++) {
@@ -355,6 +527,34 @@ public abstract class AbstractTestBlock
         }
     }
 
+    protected void assertSlicePositionUnchecked(Block block, int internalPosition, Slice expectedSliceValue)
+    {
+        int length = block.getSliceLengthUnchecked(internalPosition);
+        assertEquals(length, expectedSliceValue.length());
+
+        Block expectedBlock = toSingeValuedBlock(expectedSliceValue);
+        for (int offset = 0; offset < length - 3; offset++) {
+            assertEquals(block.getSliceUnchecked(internalPosition, offset, 3), expectedSliceValue.slice(offset, 3));
+            assertTrue(block.bytesEqual(internalPosition - block.getOffsetBase(), offset, expectedSliceValue, offset, 3));
+            assertFalse(block.bytesEqual(internalPosition - block.getOffsetBase(), offset, Slices.utf8Slice(UUID.randomUUID().toString()), 0, 3));
+
+            assertEquals(block.bytesCompare(internalPosition - block.getOffsetBase(), offset, 3, expectedSliceValue, offset, 3), 0);
+            assertTrue(block.bytesCompare(internalPosition - block.getOffsetBase(), offset, 3, expectedSliceValue, offset, 2) > 0);
+            Slice greaterSlice = createGreaterValue(expectedSliceValue, offset, 3);
+            assertTrue(block.bytesCompare(internalPosition - block.getOffsetBase(), offset, 3, greaterSlice, 0, greaterSlice.length()) < 0);
+
+            assertTrue(block.equals(internalPosition - block.getOffsetBase(), offset, expectedBlock, 0, offset, 3));
+            assertEquals(block.compareTo(internalPosition - block.getOffsetBase(), offset, 3, expectedBlock, 0, offset, 3), 0);
+
+            BlockBuilder blockBuilder = VARBINARY.createBlockBuilder(null, 1);
+            block.writeBytesTo(internalPosition - block.getOffsetBase(), offset, 3, blockBuilder);
+            blockBuilder.closeEntry();
+            Block segment = blockBuilder.build();
+
+            assertTrue(block.equals(internalPosition - block.getOffsetBase(), offset, segment, 0, 0, 3));
+        }
+    }
+
     protected boolean isByteAccessSupported()
     {
         return true;
@@ -373,6 +573,11 @@ public abstract class AbstractTestBlock
     protected boolean isLongAccessSupported()
     {
         return true;
+    }
+
+    protected boolean isAlignedLongAccessSupported()
+    {
+        return false;
     }
 
     protected boolean isSliceAccessSupported()
@@ -409,7 +614,7 @@ public abstract class AbstractTestBlock
                 blockBuilder.appendNull();
             }
             else {
-                blockBuilder.appendStructure(block.getObject(i, Block.class));
+                blockBuilder.appendStructure(block.getBlock(i));
             }
         }
         return blockBuilder.build();
@@ -448,9 +653,9 @@ public abstract class AbstractTestBlock
         return dynamicSliceOutput.slice();
     }
 
-    protected static Object[] alternatingNullValues(Object[] objects)
+    protected static <T> T[] alternatingNullValues(T[] objects)
     {
-        Object[] objectsWithNulls = (Object[]) Array.newInstance(objects.getClass().getComponentType(), objects.length * 2 + 1);
+        T[] objectsWithNulls = Arrays.copyOf(objects, objects.length * 2 + 1);
         for (int i = 0; i < objects.length; i++) {
             objectsWithNulls[i * 2] = null;
             objectsWithNulls[i * 2 + 1] = objects[i];

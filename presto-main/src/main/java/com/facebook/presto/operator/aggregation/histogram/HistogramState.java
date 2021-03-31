@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.operator.aggregation.histogram;
 
-import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.function.AccumulatorState;
 import com.facebook.presto.spi.function.AccumulatorStateMetadata;
-import com.facebook.presto.spi.type.Type;
 
 @AccumulatorStateMetadata(stateFactoryClass = HistogramStateFactory.class, stateSerializerClass = HistogramStateSerializer.class)
 public interface HistogramState
@@ -24,6 +24,7 @@ public interface HistogramState
 {
     /**
      * will create an empty histogram if none exists
+     *
      * @return histogram based on the type of state (single, grouped). Note that empty histograms will serialize to null as required
      */
     TypedHistogram get();

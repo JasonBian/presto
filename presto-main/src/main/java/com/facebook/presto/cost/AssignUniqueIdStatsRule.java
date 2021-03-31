@@ -22,7 +22,7 @@ import com.facebook.presto.sql.planner.plan.Patterns;
 
 import java.util.Optional;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 
 public class AssignUniqueIdStatsRule
         implements ComposableStatsCalculator.Rule<AssignUniqueId>
@@ -40,7 +40,7 @@ public class AssignUniqueIdStatsRule
     {
         PlanNodeStatsEstimate sourceStats = statsProvider.getStats(assignUniqueId.getSource());
         return Optional.of(PlanNodeStatsEstimate.buildFrom(sourceStats)
-                .addSymbolStatistics(assignUniqueId.getIdColumn(), SymbolStatsEstimate.builder()
+                .addVariableStatistics(assignUniqueId.getIdVariable(), VariableStatsEstimate.builder()
                         .setDistinctValuesCount(sourceStats.getOutputRowCount())
                         .setNullsFraction(0.0)
                         .setAverageRowSize(BIGINT.getFixedSize())

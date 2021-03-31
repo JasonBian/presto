@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.spi.function.ValueWindowFunction;
 import com.facebook.presto.spi.function.WindowFunctionSignature;
 
@@ -40,6 +40,23 @@ public class LastValueFunction
             return;
         }
 
-        windowIndex.appendTo(argumentChannel, frameEnd, output);
+        int valuePosition = frameEnd;
+
+        if (ignoreNulls) {
+            while (valuePosition >= frameStart) {
+                if (!windowIndex.isNull(argumentChannel, valuePosition)) {
+                    break;
+                }
+
+                valuePosition--;
+            }
+
+            if (valuePosition < frameStart) {
+                output.appendNull();
+                return;
+            }
+        }
+
+        windowIndex.appendTo(argumentChannel, valuePosition, output);
     }
 }

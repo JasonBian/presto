@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.AbstractLongType;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.AbstractLongType;
+import com.facebook.presto.common.type.StandardTypes;
 
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 
 public final class IntervalDayTimeType
         extends AbstractLongType
@@ -31,12 +31,12 @@ public final class IntervalDayTimeType
     }
 
     @Override
-    public Object getObjectValue(ConnectorSession session, Block block, int position)
+    public Object getObjectValue(SqlFunctionProperties properties, Block block, int position)
     {
         if (block.isNull(position)) {
             return null;
         }
-        return new SqlIntervalDayTime(block.getLong(position, 0));
+        return new SqlIntervalDayTime(block.getLong(position));
     }
 
     @Override

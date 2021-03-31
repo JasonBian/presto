@@ -48,6 +48,11 @@ General Properties
     redistributing all the data across the network. This can also be specified
     on a per-query basis using the ``redistribute_writes`` session property.
 
+.. _tuning-memory:
+
+Memory Management Properties
+----------------------------
+
 ``query.max-memory-per-node``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -58,7 +63,8 @@ General Properties
     User memory is allocated during execution for things that are directly
     attributable to or controllable by a user query. For example, memory used
     by the hash tables built during execution, memory used during sorting, etc.
-    When a query hits this limit it will be killed by Presto.
+    When the user memory allocation of a query on any worker hits this limit
+    it will be killed.
 
 ``query.max-total-memory-per-node``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -69,9 +75,37 @@ General Properties
     This is the max amount of user and system memory a query can use on a worker.
     System memory is allocated during execution for things that are not directly
     attributable to or controllable by a user query. For example, memory allocated
-    by the readers, writers, and network buffers, etc. The value of
-    ``query.max-total-memory-per-node`` must be greater than
+    by the readers, writers, network buffers, etc. When the sum of the user and
+    system memory allocated by a query on any worker hits this limit it will be killed.
+    The value of ``query.max-total-memory-per-node`` must be greater than
     ``query.max-memory-per-node``.
+
+``query.max-memory``
+^^^^^^^^^^^^^^^^^^^^
+
+    * **Type:** ``data size``
+    * **Default value:** ``20GB``
+
+    This is the max amount of user memory a query can use across the entire cluster.
+    User memory is allocated during execution for things that are directly
+    attributable to or controllable by a user query. For example, memory used
+    by the hash tables built during execution, memory used during sorting, etc.
+    When the user memory allocation of a query across all workers hits this limit
+    it will be killed.
+
+``query.max-total-memory``
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type:** ``data size``
+    * **Default value:** ``query.max-memory * 2``
+
+    This is the max amount of user and system memory a query can use across the entire cluster.
+    System memory is allocated during execution for things that are not directly
+    attributable to or controllable by a user query. For example, memory allocated
+    by the readers, writers, network buffers, etc. When the sum of the user and
+    system memory allocated by a query across all workers hits this limit it will be
+    killed. The value of ``query.max-total-memory`` must be greater than
+    ``query.max-memory``.
 
 ``memory.heap-headroom-per-node``
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -82,27 +116,18 @@ General Properties
     This is the amount of memory set aside as headroom/buffer in the JVM heap
     for allocations that are not tracked by Presto.
 
-``resources.reserved-system-memory``
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+``query.low-memory-killer.policy``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-    * **Type:** ``data size``
-    * **Default value:** ``JVM max memory * 0.4``
+    * **Type:** ``string``
+    * **Default value:** ``none``
 
-    The amount of JVM memory reserved for system memory usage. System memory is
-    allocated during execution for things that are not directly attributable to
-    or controllable by a user query. For example, memory allocated by the readers,
-    writers, and network buffers, etc. This also accounts for memory that is not
-    tracked by the memory tracking system.
-
-    The purpose of this property is to prevent the JVM from running out of
-    memory (OOM). The default value is suitable for smaller JVM heap sizes or
-    clusters with many concurrent queries. If running fewer queries with a
-    large heap, a smaller value may work. Basically, set this value large
-    enough that the JVM does not fail with ``OutOfMemoryError``.
-
-    Please note that this config property is only used when
-    ``deprecated.legacy-system-pool-enabled=true``, and it will be removed
-    in the future.
+    The policy used for selecting the query to kill when the cluster is out of memory (OOM).
+    This property can have one of the following values: ``none``, ``total-reservation``,
+    or ``total-reservation-on-blocked-nodes``. ``none`` disables the cluster OOM killer.
+    The value of ``total-reservation`` configures a policy that kills the query with the largest
+    memory reservation across the cluster. The value of ``total-reservation-on-blocked-nodes``
+    configures a policy that kills the query using the most memory on the workers that are out of memory (blocked).
 
 .. _tuning-spilling:
 
@@ -181,6 +206,23 @@ Spilling Properties
     * **Default value:** ``4 MB``
 
     Limit for memory used for unspilling a single aggregation operator instance.
+
+``experimental.spill-compression-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type:** ``boolean``
+    * **Default value:** ``false``
+
+    Enables data compression for pages spilled to disk
+
+``experimental.spill-encryption-enabled``
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+    * **Type:** ``boolean``
+    * **Default value:** ``false``
+
+    Enables using a randomly generated secret key (per spill file) to encrypt and decrypt
+    data spilled to disk
 
 
 Exchange Properties
@@ -424,6 +466,12 @@ Node Scheduler Properties
     * **Type:** ``string``
     * **Allowed values:** ``legacy``, ``flat``
     * **Default value:** ``legacy``
+
+    Sets the network topology to use when scheduling splits. ``legacy`` will ignore
+    the topology when scheduling splits. ``flat`` will try to schedule splits on the host
+    where the data is located by reserving 50% of the work queue for local splits.
+    It is recommended to use ``flat`` for clusters where distributed storage runs on
+    the same nodes as Presto workers.
 
 
 Optimizer Properties

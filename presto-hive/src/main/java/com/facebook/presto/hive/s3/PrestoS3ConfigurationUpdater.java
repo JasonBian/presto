@@ -30,6 +30,7 @@ public class PrestoS3ConfigurationUpdater
     private final PrestoS3SignerType signerType;
     private final boolean pathStyleAccess;
     private final boolean useInstanceCredentials;
+    private String s3IamRole;
     private final boolean sslEnabled;
     private final boolean sseEnabled;
     private final PrestoS3SseType sseType;
@@ -48,6 +49,8 @@ public class PrestoS3ConfigurationUpdater
     private final File stagingDirectory;
     private final boolean pinClientToCurrentRegion;
     private final String userAgentPrefix;
+    private final PrestoS3AclType aclType;
+    private boolean skipGlacierObjects;
 
     @Inject
     public PrestoS3ConfigurationUpdater(HiveS3Config config)
@@ -58,6 +61,7 @@ public class PrestoS3ConfigurationUpdater
         this.signerType = config.getS3SignerType();
         this.pathStyleAccess = config.isS3PathStyleAccess();
         this.useInstanceCredentials = config.isS3UseInstanceCredentials();
+        this.s3IamRole = config.getS3IamRole();
         this.sslEnabled = config.isS3SslEnabled();
         this.sseEnabled = config.isS3SseEnabled();
         this.sseType = config.getS3SseType();
@@ -76,6 +80,8 @@ public class PrestoS3ConfigurationUpdater
         this.stagingDirectory = config.getS3StagingDirectory();
         this.pinClientToCurrentRegion = config.isPinS3ClientToCurrentRegion();
         this.userAgentPrefix = config.getS3UserAgentPrefix();
+        this.aclType = config.getS3AclType();
+        this.skipGlacierObjects = config.isSkipGlacierObjects();
     }
 
     @Override
@@ -100,6 +106,9 @@ public class PrestoS3ConfigurationUpdater
         }
         config.setBoolean(S3_PATH_STYLE_ACCESS, pathStyleAccess);
         config.setBoolean(S3_USE_INSTANCE_CREDENTIALS, useInstanceCredentials);
+        if (s3IamRole != null) {
+            config.set(S3_IAM_ROLE, s3IamRole);
+        }
         config.setBoolean(S3_SSL_ENABLED, sslEnabled);
         config.setBoolean(S3_SSE_ENABLED, sseEnabled);
         config.set(S3_SSE_TYPE, sseType.name());
@@ -124,5 +133,7 @@ public class PrestoS3ConfigurationUpdater
         config.setLong(S3_MULTIPART_MIN_PART_SIZE, multipartMinPartSize.toBytes());
         config.setBoolean(S3_PIN_CLIENT_TO_CURRENT_REGION, pinClientToCurrentRegion);
         config.set(S3_USER_AGENT_PREFIX, userAgentPrefix);
+        config.set(S3_ACL_TYPE, aclType.name());
+        config.setBoolean(S3_SKIP_GLACIER_OBJECTS, skipGlacierObjects);
     }
 }

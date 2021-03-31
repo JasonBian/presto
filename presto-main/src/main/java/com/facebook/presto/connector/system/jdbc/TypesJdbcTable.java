@@ -13,6 +13,10 @@
  */
 package com.facebook.presto.connector.system.jdbc;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.ParametricType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.InMemoryRecordSet;
@@ -20,10 +24,6 @@ import com.facebook.presto.spi.InMemoryRecordSet.Builder;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.ParametricType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 
 import javax.inject.Inject;
 
@@ -31,13 +31,13 @@ import java.sql.DatabaseMetaData;
 import java.sql.Types;
 import java.util.Collection;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.connector.system.jdbc.ColumnJdbcTable.columnSize;
 import static com.facebook.presto.connector.system.jdbc.ColumnJdbcTable.jdbcDataType;
 import static com.facebook.presto.connector.system.jdbc.ColumnJdbcTable.numPrecRadix;
 import static com.facebook.presto.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
 import static java.util.Objects.requireNonNull;
 
 public class TypesJdbcTable
@@ -66,12 +66,12 @@ public class TypesJdbcTable
             .column("num_prec_radix", BIGINT)
             .build();
 
-    private final TypeManager typeManager;
+    private final FunctionAndTypeManager functionAndTypeManager;
 
     @Inject
-    public TypesJdbcTable(TypeManager typeManager)
+    public TypesJdbcTable(FunctionAndTypeManager typeManager)
     {
-        this.typeManager = requireNonNull(typeManager, "typeManager is null");
+        this.functionAndTypeManager = requireNonNull(typeManager, "typeManager is null");
     }
 
     @Override
@@ -84,10 +84,10 @@ public class TypesJdbcTable
     public RecordCursor cursor(ConnectorTransactionHandle transactionHandle, ConnectorSession connectorSession, TupleDomain<Integer> constraint)
     {
         Builder table = InMemoryRecordSet.builder(METADATA);
-        for (Type type : typeManager.getTypes()) {
+        for (Type type : functionAndTypeManager.getTypes()) {
             addTypeRow(table, type);
         }
-        addParametricTypeRows(table, typeManager.getParametricTypes());
+        addParametricTypeRows(table, functionAndTypeManager.getParametricTypes());
         return table.build().cursor();
     }
 

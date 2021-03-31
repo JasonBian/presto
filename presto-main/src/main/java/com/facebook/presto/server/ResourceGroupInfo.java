@@ -16,9 +16,9 @@ package com.facebook.presto.server;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupState;
 import com.facebook.presto.spi.resourceGroups.SchedulingPolicy;
+import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import io.airlift.units.DataSize;
-import io.airlift.units.Duration;
 
 import javax.annotation.Nullable;
 
@@ -42,8 +42,6 @@ public class ResourceGroupInfo
     private final int softConcurrencyLimit;
     private final int hardConcurrencyLimit;
     private final int maxQueuedQueries;
-    private final Duration runningTimeLimit;
-    private final Duration queuedTimeLimit;
 
     private final DataSize memoryUsage;
     private final int numQueuedQueries;
@@ -54,28 +52,22 @@ public class ResourceGroupInfo
     private final List<ResourceGroupInfo> subGroups;
     private final List<QueryStateInfo> runningQueries;
 
+    @JsonCreator
     public ResourceGroupInfo(
-            ResourceGroupId id,
-            ResourceGroupState state,
-
-            SchedulingPolicy schedulingPolicy,
-            int schedulingWeight,
-
-            DataSize softMemoryLimit,
-            int softConcurrencyLimit,
-            int hardConcurrencyLimit,
-            int maxQueuedQueries,
-            Duration runningTimeLimit,
-            Duration queuedTimeLimit,
-
-            DataSize memoryUsage,
-            int numQueuedQueries,
-            int numRunningQueries,
-            int numEligibleSubGroups,
-
-            List<ResourceGroupInfo> subGroups,
-
-            List<QueryStateInfo> runningQueries)
+            @JsonProperty("id") ResourceGroupId id,
+            @JsonProperty("state") ResourceGroupState state,
+            @JsonProperty("schedulingPolicy") SchedulingPolicy schedulingPolicy,
+            @JsonProperty("schedulingWeight") int schedulingWeight,
+            @JsonProperty("softMemoryLimit") DataSize softMemoryLimit,
+            @JsonProperty("softConcurrencyLimit") int softConcurrencyLimit,
+            @JsonProperty("hardConcurrencyLimit") int hardConcurrencyLimit,
+            @JsonProperty("maxQueuedQueries") int maxQueuedQueries,
+            @JsonProperty("memoryUsage") DataSize memoryUsage,
+            @JsonProperty("numQueuedQueries") int numQueuedQueries,
+            @JsonProperty("numRunningQueries") int numRunningQueries,
+            @JsonProperty("numEligibleSubGroups") int numEligibleSubGroups,
+            @JsonProperty("subGroups") List<ResourceGroupInfo> subGroups,
+            @JsonProperty("runningQueries") List<QueryStateInfo> runningQueries)
     {
         this.id = requireNonNull(id, "id is null");
         this.state = requireNonNull(state, "state is null");
@@ -88,8 +80,6 @@ public class ResourceGroupInfo
         this.softConcurrencyLimit = softConcurrencyLimit;
         this.hardConcurrencyLimit = hardConcurrencyLimit;
         this.maxQueuedQueries = maxQueuedQueries;
-        this.runningTimeLimit = requireNonNull(runningTimeLimit, "runningTimeLimit is null");
-        this.queuedTimeLimit = requireNonNull(queuedTimeLimit, "queuedTimeLimit is null");
 
         this.memoryUsage = requireNonNull(memoryUsage, "memoryUsage is null");
         this.numQueuedQueries = numQueuedQueries;
@@ -153,18 +143,6 @@ public class ResourceGroupInfo
     public int getMaxQueuedQueries()
     {
         return maxQueuedQueries;
-    }
-
-    @JsonProperty
-    public Duration getQueuedTimeLimit()
-    {
-        return queuedTimeLimit;
-    }
-
-    @JsonProperty
-    public Duration getRunningTimeLimit()
-    {
-        return runningTimeLimit;
     }
 
     @JsonProperty

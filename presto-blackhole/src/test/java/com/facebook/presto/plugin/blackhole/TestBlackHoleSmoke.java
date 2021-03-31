@@ -14,7 +14,7 @@
 package com.facebook.presto.plugin.blackhole;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.metadata.QualifiedObjectName;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
 import com.facebook.presto.testing.QueryRunner;
@@ -30,6 +30,7 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 
+import static com.facebook.airlift.testing.Assertions.assertGreaterThan;
 import static com.facebook.presto.plugin.blackhole.BlackHoleConnector.FIELD_LENGTH_PROPERTY;
 import static com.facebook.presto.plugin.blackhole.BlackHoleConnector.PAGES_PER_SPLIT_PROPERTY;
 import static com.facebook.presto.plugin.blackhole.BlackHoleConnector.PAGE_PROCESSING_DELAY;
@@ -37,7 +38,6 @@ import static com.facebook.presto.plugin.blackhole.BlackHoleConnector.ROWS_PER_P
 import static com.facebook.presto.plugin.blackhole.BlackHoleConnector.SPLIT_COUNT_PROPERTY;
 import static com.facebook.presto.plugin.blackhole.BlackHoleQueryRunner.createQueryRunner;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
-import static io.airlift.testing.Assertions.assertGreaterThan;
 import static java.lang.String.format;
 import static java.util.concurrent.TimeUnit.MILLISECONDS;
 import static java.util.concurrent.TimeUnit.SECONDS;
@@ -69,8 +69,14 @@ public class TestBlackHoleSmoke
     public void testCreateSchema()
     {
         assertEquals(queryRunner.execute("SHOW SCHEMAS FROM blackhole").getRowCount(), 2);
+        assertThatQueryReturnsValue("CREATE TABLE nation as SELECT * FROM tpch.tiny.nation", 25L);
+
         queryRunner.execute("CREATE SCHEMA blackhole.test");
         assertEquals(queryRunner.execute("SHOW SCHEMAS FROM blackhole").getRowCount(), 3);
+        assertThatQueryReturnsValue("CREATE TABLE test.nation as SELECT * FROM tpch.tiny.nation", 25L);
+
+        assertThatQueryReturnsValue("DROP TABLE nation", true);
+        assertThatQueryReturnsValue("DROP TABLE test.nation", true);
     }
 
     @Test
@@ -258,7 +264,7 @@ public class TestBlackHoleSmoke
         assertEquals(row.getField(6), 0.0);
         assertEquals(row.getField(7), false);
         assertEquals(row.getField(8), LocalDate.ofEpochDay(0));
-        assertEquals(row.getField(9), LocalDateTime.of(1970, 1, 1, 0, 0, 0));
+        assertEquals(row.getField(9), LocalDateTime.of(1969, 12, 31, 13, 0, 0)); // TODO #7122 should be 1970-01-01 00:00:00
         assertEquals(row.getField(10), "****************".getBytes());
         assertEquals(row.getField(11), new BigDecimal("0.00"));
         assertEquals(row.getField(12), new BigDecimal("00000000000000000000.0000000000"));

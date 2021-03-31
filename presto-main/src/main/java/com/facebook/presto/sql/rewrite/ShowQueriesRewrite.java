@@ -14,20 +14,27 @@
 package com.facebook.presto.sql.rewrite;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
-import com.facebook.presto.metadata.FunctionKind;
+import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.SessionPropertyManager.SessionPropertyValue;
-import com.facebook.presto.metadata.SqlFunction;
-import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.metadata.ViewDefinition;
 import com.facebook.presto.security.AccessControl;
-import com.facebook.presto.spi.CatalogSchemaName;
+import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.ConnectorMaterializedViewDefinition;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.StandardErrorCode;
+import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.function.FunctionKind;
+import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.function.SqlFunction;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.security.PrestoPrincipal;
+import com.facebook.presto.spi.security.PrincipalType;
 import com.facebook.presto.spi.session.PropertyMetadata;
 import com.facebook.presto.sql.analyzer.QueryExplainer;
 import com.facebook.presto.sql.analyzer.SemanticException;
@@ -38,6 +45,8 @@ import com.facebook.presto.sql.tree.ArrayConstructor;
 import com.facebook.presto.sql.tree.AstVisitor;
 import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.ColumnDefinition;
+import com.facebook.presto.sql.tree.CreateFunction;
+import com.facebook.presto.sql.tree.CreateMaterializedView;
 import com.facebook.presto.sql.tree.CreateTable;
 import com.facebook.presto.sql.tree.CreateView;
 import com.facebook.presto.sql.tree.DoubleLiteral;
@@ -52,15 +61,20 @@ import com.facebook.presto.sql.tree.Property;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.Query;
 import com.facebook.presto.sql.tree.Relation;
+import com.facebook.presto.sql.tree.RoutineCharacteristics;
 import com.facebook.presto.sql.tree.ShowCatalogs;
 import com.facebook.presto.sql.tree.ShowColumns;
 import com.facebook.presto.sql.tree.ShowCreate;
+import com.facebook.presto.sql.tree.ShowCreateFunction;
 import com.facebook.presto.sql.tree.ShowFunctions;
 import com.facebook.presto.sql.tree.ShowGrants;
+import com.facebook.presto.sql.tree.ShowRoleGrants;
+import com.facebook.presto.sql.tree.ShowRoles;
 import com.facebook.presto.sql.tree.ShowSchemas;
 import com.facebook.presto.sql.tree.ShowSession;
 import com.facebook.presto.sql.tree.ShowTables;
 import com.facebook.presto.sql.tree.SortItem;
+import com.facebook.presto.sql.tree.SqlParameterDeclaration;
 import com.facebook.presto.sql.tree.Statement;
 import com.facebook.presto.sql.tree.StringLiteral;
 import com.facebook.presto.sql.tree.TableElement;
@@ -71,6 +85,7 @@ import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.primitives.Primitives;
 
+import java.util.Collection;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
@@ -79,21 +94,30 @@ import java.util.Set;
 import java.util.SortedMap;
 
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_COLUMNS;
+import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_ENABLED_ROLES;
+import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_ROLES;
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_SCHEMATA;
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_TABLES;
 import static com.facebook.presto.connector.informationSchema.InformationSchemaMetadata.TABLE_TABLE_PRIVILEGES;
+import static com.facebook.presto.metadata.BuiltInTypeAndFunctionNamespaceManager.DEFAULT_NAMESPACE;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.qualifyObjectName;
 import static com.facebook.presto.metadata.MetadataListing.listCatalogs;
 import static com.facebook.presto.metadata.MetadataListing.listSchemas;
 import static com.facebook.presto.metadata.MetadataUtil.createCatalogSchemaName;
 import static com.facebook.presto.metadata.MetadataUtil.createQualifiedName;
 import static com.facebook.presto.metadata.MetadataUtil.createQualifiedObjectName;
+import static com.facebook.presto.metadata.SessionFunctionHandle.SESSION_NAMESPACE;
+import static com.facebook.presto.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
+import static com.facebook.presto.spi.StandardErrorCode.GENERIC_USER_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_COLUMN_PROPERTY;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
+import static com.facebook.presto.sql.ExpressionUtils.combineConjuncts;
 import static com.facebook.presto.sql.ParsingUtil.createParsingOptions;
 import static com.facebook.presto.sql.QueryUtil.aliased;
 import static com.facebook.presto.sql.QueryUtil.aliasedName;
 import static com.facebook.presto.sql.QueryUtil.aliasedNullToEmpty;
 import static com.facebook.presto.sql.QueryUtil.ascending;
+import static com.facebook.presto.sql.QueryUtil.descending;
 import static com.facebook.presto.sql.QueryUtil.equal;
 import static com.facebook.presto.sql.QueryUtil.functionCall;
 import static com.facebook.presto.sql.QueryUtil.identifier;
@@ -114,12 +138,18 @@ import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NOT_SUPPORTED;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.VIEW_PARSE_ERROR;
 import static com.facebook.presto.sql.tree.BooleanLiteral.FALSE_LITERAL;
 import static com.facebook.presto.sql.tree.BooleanLiteral.TRUE_LITERAL;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.Determinism;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.Language;
+import static com.facebook.presto.sql.tree.RoutineCharacteristics.NullCallClause;
+import static com.facebook.presto.sql.tree.ShowCreate.Type.MATERIALIZED_VIEW;
 import static com.facebook.presto.sql.tree.ShowCreate.Type.TABLE;
 import static com.facebook.presto.sql.tree.ShowCreate.Type.VIEW;
 import static com.google.common.base.Strings.nullToEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
+import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
+import static java.util.stream.Collectors.joining;
 import static java.util.stream.Collectors.toList;
 
 final class ShowQueriesRewrite
@@ -133,9 +163,10 @@ final class ShowQueriesRewrite
             Optional<QueryExplainer> queryExplainer,
             Statement node,
             List<Expression> parameters,
-            AccessControl accessControl)
+            AccessControl accessControl,
+            WarningCollector warningCollector)
     {
-        return (Statement) new Visitor(metadata, parser, session, parameters, accessControl, queryExplainer).process(node, null);
+        return (Statement) new Visitor(metadata, parser, session, parameters, accessControl, queryExplainer, warningCollector).process(node, null);
     }
 
     private static class Visitor
@@ -146,9 +177,10 @@ final class ShowQueriesRewrite
         private final SqlParser sqlParser;
         final List<Expression> parameters;
         private final AccessControl accessControl;
-        private final Optional<QueryExplainer> queryExplainer;
+        private Optional<QueryExplainer> queryExplainer;
+        private final WarningCollector warningCollector;
 
-        public Visitor(Metadata metadata, SqlParser sqlParser, Session session, List<Expression> parameters, AccessControl accessControl, Optional<QueryExplainer> queryExplainer)
+        public Visitor(Metadata metadata, SqlParser sqlParser, Session session, List<Expression> parameters, AccessControl accessControl, Optional<QueryExplainer> queryExplainer, WarningCollector warningCollector)
         {
             this.metadata = requireNonNull(metadata, "metadata is null");
             this.sqlParser = requireNonNull(sqlParser, "sqlParser is null");
@@ -156,6 +188,7 @@ final class ShowQueriesRewrite
             this.parameters = requireNonNull(parameters, "parameters is null");
             this.accessControl = requireNonNull(accessControl, "accessControl is null");
             this.queryExplainer = requireNonNull(queryExplainer, "queryExplainer is null");
+            this.warningCollector = requireNonNull(warningCollector, "warningCollector is null");
         }
 
         @Override
@@ -175,7 +208,7 @@ final class ShowQueriesRewrite
         {
             CatalogSchemaName schema = createCatalogSchemaName(session, showTables, showTables.getSchema());
 
-            accessControl.checkCanShowTablesMetadata(session.getRequiredTransactionId(), session.getIdentity(), schema);
+            accessControl.checkCanShowTablesMetadata(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), schema);
 
             if (!metadata.catalogExists(session, schema.getCatalogName())) {
                 throw new SemanticException(MISSING_CATALOG, showTables, "Catalog '%s' does not exist", schema.getCatalogName());
@@ -223,31 +256,83 @@ final class ShowQueriesRewrite
                 accessControl.checkCanShowTablesMetadata(
                         session.getRequiredTransactionId(),
                         session.getIdentity(),
+                        session.getAccessControlContext(),
                         new CatalogSchemaName(catalogName, qualifiedTableName.getSchemaName()));
 
-                predicate = Optional.of(equal(identifier("table_name"), new StringLiteral(qualifiedTableName.getObjectName())));
+                predicate = Optional.of(combineConjuncts(
+                        equal(identifier("table_schema"), new StringLiteral(qualifiedTableName.getSchemaName())),
+                        equal(identifier("table_name"), new StringLiteral(qualifiedTableName.getObjectName()))));
             }
+            else {
+                if (catalogName == null) {
+                    throw new SemanticException(CATALOG_NOT_SPECIFIED, showGrants, "Catalog must be specified when session catalog is not set");
+                }
 
-            if (catalogName == null) {
-                throw new SemanticException(CATALOG_NOT_SPECIFIED, showGrants, "Catalog must be specified when session catalog is not set");
-            }
-
-            Set<String> allowedSchemas = listSchemas(session, metadata, accessControl, catalogName);
-            for (String schema : allowedSchemas) {
-                accessControl.checkCanShowTablesMetadata(session.getRequiredTransactionId(), session.getIdentity(), new CatalogSchemaName(catalogName, schema));
+                Set<String> allowedSchemas = listSchemas(session, metadata, accessControl, catalogName);
+                for (String schema : allowedSchemas) {
+                    accessControl.checkCanShowTablesMetadata(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), new CatalogSchemaName(catalogName, schema));
+                }
             }
 
             return simpleQuery(
                     selectList(
+                            aliasedName("grantor", "Grantor"),
+                            aliasedName("grantor_type", "Grantor Type"),
                             aliasedName("grantee", "Grantee"),
+                            aliasedName("grantee_type", "Grantee Type"),
                             aliasedName("table_catalog", "Catalog"),
                             aliasedName("table_schema", "Schema"),
                             aliasedName("table_name", "Table"),
                             aliasedName("privilege_type", "Privilege"),
-                            aliasedName("is_grantable", "Grantable")),
+                            aliasedName("is_grantable", "Grantable"),
+                            aliasedName("with_hierarchy", "With Hierarchy")),
                     from(catalogName, TABLE_TABLE_PRIVILEGES),
                     predicate,
-                    Optional.of(ordering(ascending("grantee"), ascending("table_name"))));
+                    Optional.empty());
+        }
+
+        @Override
+        protected Node visitShowRoles(ShowRoles node, Void context)
+        {
+            if (!node.getCatalog().isPresent() && !session.getCatalog().isPresent()) {
+                throw new SemanticException(CATALOG_NOT_SPECIFIED, node, "Catalog must be specified when session catalog is not set");
+            }
+
+            String catalog = node.getCatalog().map(c -> c.getValue().toLowerCase(ENGLISH)).orElseGet(() -> session.getCatalog().get());
+
+            if (node.isCurrent()) {
+                accessControl.checkCanShowCurrentRoles(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), catalog);
+                return simpleQuery(
+                        selectList(aliasedName("role_name", "Role")),
+                        from(catalog, TABLE_ENABLED_ROLES));
+            }
+            else {
+                accessControl.checkCanShowRoles(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), catalog);
+                return simpleQuery(
+                        selectList(aliasedName("role_name", "Role")),
+                        from(catalog, TABLE_ROLES));
+            }
+        }
+
+        @Override
+        protected Node visitShowRoleGrants(ShowRoleGrants node, Void context)
+        {
+            if (!node.getCatalog().isPresent() && !session.getCatalog().isPresent()) {
+                throw new SemanticException(CATALOG_NOT_SPECIFIED, node, "Catalog must be specified when session catalog is not set");
+            }
+
+            String catalog = node.getCatalog().map(c -> c.getValue().toLowerCase(ENGLISH)).orElseGet(() -> session.getCatalog().get());
+            PrestoPrincipal principal = new PrestoPrincipal(PrincipalType.USER, session.getUser());
+
+            accessControl.checkCanShowRoleGrants(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), catalog);
+            List<Expression> rows = metadata.listRoleGrants(session, catalog, principal).stream()
+                    .map(roleGrant -> row(new StringLiteral(roleGrant.getRoleName())))
+                    .collect(toList());
+
+            return simpleQuery(
+                    selectList(new AllColumns()),
+                    aliased(new Values(rows), "role_grants", ImmutableList.of("Role Grants")),
+                    ordering(ascending("Role Grants")));
         }
 
         @Override
@@ -258,7 +343,7 @@ final class ShowQueriesRewrite
             }
 
             String catalog = node.getCatalog().map(Identifier::getValue).orElseGet(() -> session.getCatalog().get());
-            accessControl.checkCanShowSchemas(session.getRequiredTransactionId(), session.getIdentity(), catalog);
+            accessControl.checkCanShowSchemas(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), catalog);
 
             Optional<Expression> predicate = Optional.empty();
             Optional<String> likePattern = node.getLikePattern();
@@ -359,9 +444,13 @@ final class ShowQueriesRewrite
         {
             QualifiedObjectName objectName = createQualifiedObjectName(session, node, node.getName());
             Optional<ViewDefinition> viewDefinition = metadata.getView(session, objectName);
+            Optional<ConnectorMaterializedViewDefinition> materializedViewDefinition = metadata.getMaterializedView(session, objectName);
 
             if (node.getType() == VIEW) {
                 if (!viewDefinition.isPresent()) {
+                    if (materializedViewDefinition.isPresent()) {
+                        throw new SemanticException(NOT_SUPPORTED, node, "Relation '%s' is a materialized view, not a view", objectName);
+                    }
                     if (metadata.getTableHandle(session, objectName).isPresent()) {
                         throw new SemanticException(NOT_SUPPORTED, node, "Relation '%s' is a table, not a view", objectName);
                     }
@@ -369,13 +458,46 @@ final class ShowQueriesRewrite
                 }
 
                 Query query = parseView(viewDefinition.get().getOriginalSql(), objectName, node);
-                String sql = formatSql(new CreateView(createQualifiedName(objectName), query, false), Optional.of(parameters)).trim();
+                String sql = formatSql(new CreateView(createQualifiedName(objectName), query, false, Optional.empty()), Optional.of(parameters)).trim();
                 return singleValueQuery("Create View", sql);
+            }
+
+            if (node.getType() == MATERIALIZED_VIEW) {
+                Optional<TableHandle> tableHandle = metadata.getTableHandle(session, objectName);
+
+                if (!materializedViewDefinition.isPresent()) {
+                    if (viewDefinition.isPresent()) {
+                        throw new SemanticException(NOT_SUPPORTED, node, "Relation '%s' is a view, not a materialized view", objectName);
+                    }
+                    if (tableHandle.isPresent()) {
+                        throw new SemanticException(NOT_SUPPORTED, node, "Relation '%s' is a table, not a materialized view", objectName);
+                    }
+                    throw new SemanticException(MISSING_TABLE, node, "Materialized view '%s' does not exist", objectName);
+                }
+
+                Query query = parseView(materializedViewDefinition.get().getOriginalSql(), objectName, node);
+
+                ConnectorTableMetadata connectorTableMetadata = metadata.getTableMetadata(session, tableHandle.get()).getMetadata();
+                Map<String, Object> properties = connectorTableMetadata.getProperties();
+                Map<String, PropertyMetadata<?>> allTableProperties = metadata.getTablePropertyManager().getAllProperties().get(tableHandle.get().getConnectorId());
+                List<Property> propertyNodes = buildProperties(objectName, Optional.empty(), INVALID_TABLE_PROPERTY, properties, allTableProperties);
+
+                CreateMaterializedView createMaterializedView = new CreateMaterializedView(
+                        Optional.empty(),
+                        createQualifiedName(objectName),
+                        query,
+                        false,
+                        propertyNodes,
+                        connectorTableMetadata.getComment());
+                return singleValueQuery("Create Materialized View", formatSql(createMaterializedView, Optional.of(parameters)).trim());
             }
 
             if (node.getType() == TABLE) {
                 if (viewDefinition.isPresent()) {
                     throw new SemanticException(NOT_SUPPORTED, node, "Relation '%s' is a view, not a table", objectName);
+                }
+                if (materializedViewDefinition.isPresent()) {
+                    throw new SemanticException(NOT_SUPPORTED, node, "Relation '%s' is a materialized view, not a table", objectName);
                 }
 
                 Optional<TableHandle> tableHandle = metadata.getTableHandle(session, objectName);
@@ -391,7 +513,7 @@ final class ShowQueriesRewrite
                         .filter(column -> !column.isHidden())
                         .map(column -> {
                             List<Property> propertyNodes = buildProperties(objectName, Optional.of(column.getName()), INVALID_COLUMN_PROPERTY, column.getProperties(), allColumnProperties);
-                            return new ColumnDefinition(new Identifier(column.getName()), column.getType().getDisplayName(), propertyNodes, Optional.ofNullable(column.getComment()));
+                            return new ColumnDefinition(new Identifier(column.getName()), column.getType().getDisplayName(), column.isNullable(), propertyNodes, Optional.ofNullable(column.getComment()));
                         })
                         .collect(toImmutableList());
 
@@ -409,6 +531,66 @@ final class ShowQueriesRewrite
             }
 
             throw new UnsupportedOperationException("SHOW CREATE only supported for tables and views");
+        }
+
+        @Override
+        protected Node visitShowCreateFunction(ShowCreateFunction node, Void context)
+        {
+            QualifiedObjectName functionName = qualifyObjectName(node.getName());
+            Collection<? extends SqlFunction> functions = metadata.getFunctionAndTypeManager().getFunctions(session, functionName);
+            if (node.getParameterTypes().isPresent()) {
+                List<TypeSignature> parameterTypes = node.getParameterTypes().get().stream()
+                        .map(TypeSignature::parseTypeSignature)
+                        .collect(toImmutableList());
+                functions = functions.stream()
+                        .filter(function -> function.getSignature().getArgumentTypes().equals(parameterTypes))
+                        .collect(toImmutableList());
+            }
+            if (functions.isEmpty()) {
+                String types = node.getParameterTypes().map(parameterTypes -> format("(%s)", Joiner.on(", ").join(parameterTypes))).orElse("");
+                throw new PrestoException(FUNCTION_NOT_FOUND, format("Function not found: %s%s", functionName, types));
+            }
+
+            ImmutableList.Builder<Expression> rows = ImmutableList.builder();
+            for (SqlFunction function : functions) {
+                if (!(function instanceof SqlInvokedFunction)) {
+                    throw new PrestoException(GENERIC_USER_ERROR, "SHOW CREATE FUNCTION is only supported for SQL functions");
+                }
+
+                SqlInvokedFunction sqlFunction = (SqlInvokedFunction) function;
+                boolean temporary = sqlFunction.getFunctionId().getFunctionName().getCatalogSchemaName().equals(SESSION_NAMESPACE);
+                CreateFunction createFunction = new CreateFunction(
+                        node.getName(),
+                        false,
+                        temporary,
+                        sqlFunction.getParameters().stream()
+                                .map(parameter -> new SqlParameterDeclaration(new Identifier(parameter.getName()), parameter.getType().toString()))
+                                .collect(toImmutableList()),
+                        sqlFunction.getSignature().getReturnType().toString(),
+                        Optional.of(sqlFunction.getDescription()),
+                        new RoutineCharacteristics(
+                                new Language(sqlFunction.getRoutineCharacteristics().getLanguage().getLanguage()),
+                                Determinism.valueOf(sqlFunction.getRoutineCharacteristics().getDeterminism().name()),
+                                NullCallClause.valueOf(sqlFunction.getRoutineCharacteristics().getNullCallClause().name())),
+                        sqlParser.createReturn(sqlFunction.getBody(), createParsingOptions(session, warningCollector)));
+                rows.add(row(
+                        new StringLiteral(formatSql(createFunction, Optional.empty())),
+                        new StringLiteral(function.getSignature().getArgumentTypes().stream()
+                                .map(TypeSignature::toString)
+                                .collect(joining(", ")))));
+            }
+
+            Map<String, String> columns = ImmutableMap.<String, String>builder()
+                    .put("create_function", "Create Function")
+                    .put("argument_types", "Argument Types")
+                    .build();
+
+            return simpleQuery(
+                    selectAll(columns.entrySet().stream()
+                            .map(entry -> aliasedName(entry.getKey(), entry.getValue()))
+                            .collect(toImmutableList())),
+                    aliased(new Values(rows.build()), "functions", ImmutableList.copyOf(columns.keySet())),
+                    ordering(ascending("argument_types")));
         }
 
         private List<Property> buildProperties(
@@ -460,14 +642,24 @@ final class ShowQueriesRewrite
         protected Node visitShowFunctions(ShowFunctions node, Void context)
         {
             ImmutableList.Builder<Expression> rows = ImmutableList.builder();
-            for (SqlFunction function : metadata.listFunctions()) {
+            for (SqlFunction function : metadata.listFunctions(session)) {
+                Signature signature = function.getSignature();
+
+                boolean builtIn = signature.getName().getCatalogSchemaName().equals(DEFAULT_NAMESPACE);
+                boolean temporary = signature.getName().getCatalogSchemaName().equals(SESSION_NAMESPACE);
                 rows.add(row(
-                        new StringLiteral(function.getSignature().getName()),
-                        new StringLiteral(function.getSignature().getReturnType().toString()),
-                        new StringLiteral(Joiner.on(", ").join(function.getSignature().getArgumentTypes())),
+                        builtIn || temporary ? new StringLiteral(signature.getNameSuffix()) : new StringLiteral(signature.getName().toString()),
+                        new StringLiteral(signature.getReturnType().toString()),
+                        new StringLiteral(Joiner.on(", ").join(signature.getArgumentTypes())),
                         new StringLiteral(getFunctionType(function)),
                         function.isDeterministic() ? TRUE_LITERAL : FALSE_LITERAL,
-                        new StringLiteral(nullToEmpty(function.getDescription()))));
+                        new StringLiteral(nullToEmpty(function.getDescription())),
+                        signature.isVariableArity() ? TRUE_LITERAL : FALSE_LITERAL,
+                        builtIn ? TRUE_LITERAL : FALSE_LITERAL,
+                        temporary ? TRUE_LITERAL : FALSE_LITERAL,
+                        function instanceof SqlInvokedFunction
+                                ? new StringLiteral(((SqlInvokedFunction) function).getRoutineCharacteristics().getLanguage().getLanguage().toLowerCase(ENGLISH))
+                                : new StringLiteral("")));
             }
 
             Map<String, String> columns = ImmutableMap.<String, String>builder()
@@ -477,6 +669,10 @@ final class ShowQueriesRewrite
                     .put("function_type", "Function Type")
                     .put("deterministic", "Deterministic")
                     .put("description", "Description")
+                    .put("variable_arity", "Variable Arity")
+                    .put("built_in", "Built In")
+                    .put("temporary", "Temporary")
+                    .put("language", "Language")
                     .build();
 
             return simpleQuery(
@@ -484,14 +680,19 @@ final class ShowQueriesRewrite
                             .map(entry -> aliasedName(entry.getKey(), entry.getValue()))
                             .collect(toImmutableList())),
                     aliased(new Values(rows.build()), "functions", ImmutableList.copyOf(columns.keySet())),
-                    ordering(
+                    node.getLikePattern().map(pattern -> new LikePredicate(
+                            identifier("function_name"),
+                            new StringLiteral(pattern),
+                            node.getEscape().map(StringLiteral::new))),
+                    Optional.of(ordering(
+                            descending("built_in"),
                             new SortItem(
                                     functionCall("lower", identifier("function_name")),
                                     SortItem.Ordering.ASCENDING,
                                     SortItem.NullOrdering.UNDEFINED),
                             ascending("return_type"),
                             ascending("argument_types"),
-                            ascending("function_type")));
+                            ascending("function_type"))));
         }
 
         private static String getFunctionType(SqlFunction function)
@@ -551,7 +752,7 @@ final class ShowQueriesRewrite
         private Query parseView(String view, QualifiedObjectName name, Node node)
         {
             try {
-                Statement statement = sqlParser.createStatement(view, createParsingOptions(session));
+                Statement statement = sqlParser.createStatement(view, createParsingOptions(session, warningCollector));
                 return (Query) statement;
             }
             catch (ParsingException e) {

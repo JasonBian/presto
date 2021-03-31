@@ -13,28 +13,34 @@
  */
 package com.facebook.presto.teradata.functions;
 
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.airlift.concurrent.ThreadLocalCache;
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.TimeZoneKey;
-import io.airlift.concurrent.ThreadLocalCache;
 import io.airlift.slice.Slice;
-import org.joda.time.DateTimeZone;
-import org.joda.time.chrono.ISOChronology;
-import org.joda.time.format.DateTimeFormatter;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.chrono.IsoChronology;
+import java.time.format.DateTimeFormatter;
+import java.time.zone.ZoneRulesException;
 import java.util.Locale;
 
+import static com.facebook.presto.common.type.DateTimeEncoding.unpackMillisUtc;
+import static com.facebook.presto.common.type.DateTimeEncoding.unpackZoneKey;
+import static com.facebook.presto.common.type.TimeZoneKey.MAX_TIME_ZONE_KEY;
+import static com.facebook.presto.common.type.TimeZoneKey.UTC_KEY;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKeys;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.DateTimeEncoding.unpackMillisUtc;
-import static com.facebook.presto.spi.type.DateTimeEncoding.unpackZoneKey;
-import static com.facebook.presto.spi.type.TimeZoneKey.MAX_TIME_ZONE_KEY;
-import static com.facebook.presto.spi.type.TimeZoneKey.UTC_KEY;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKeys;
+import static com.facebook.presto.teradata.functions.dateformat.DateFormatParser.Mode.FORMATTER;
+import static com.facebook.presto.teradata.functions.dateformat.DateFormatParser.Mode.PARSER;
 import static com.facebook.presto.teradata.functions.dateformat.DateFormatParser.createDateTimeFormatter;
 import static com.google.common.base.Throwables.throwIfInstanceOf;
 import static io.airlift.slice.Slices.utf8Slice;
@@ -43,15 +49,31 @@ import static java.util.concurrent.TimeUnit.MILLISECONDS;
 
 public final class TeradataDateFunctions
 {
-    private static final ThreadLocalCache<Slice, DateTimeFormatter> DATETIME_FORMATTER_CACHE =
-            new ThreadLocalCache<>(100, format -> createDateTimeFormatter(format.toStringUtf8()));
+    // Separate DateTimeFormatter instance caches (for formatting and parsing) in order to keep support the following use cases:
+    // 1. Do not require leading zero for parsing two position date fields (MM, DD, HH, HH24, MI, SS)
+    //    e.g. allow "to_timestamp('1988/4/8 2:3:4','yyyy/mm/dd hh24:mi:ss')"
+    // 2. Always add leading zero for formatting single valued two position date fields (MM, DD, HH, HH24, MI, SS)
+    //    e.g. evaluate "to_char(TIMESTAMP '1988-4-8 2:3:4','yyyy/mm/dd hh24:mi:ss')" to "1988/04/08 02:03:04"
 
-    private static final ISOChronology[] CHRONOLOGIES = new ISOChronology[MAX_TIME_ZONE_KEY + 1];
+    private static final ThreadLocalCache<Slice, DateTimeFormatter> DATETIME_PARSER_CACHE =
+            new ThreadLocalCache<>(100, format -> createDateTimeFormatter(format.toStringUtf8(), PARSER));
+
+    private static final ThreadLocalCache<Slice, DateTimeFormatter> DATETIME_FORMATTER_CACHE =
+            new ThreadLocalCache<>(100, format -> createDateTimeFormatter(format.toStringUtf8(), FORMATTER));
+
+    private static final Logger LOG = Logger.get(TeradataDateFunctions.class);
+
+    private static final ZoneId[] ZONE_IDS = new ZoneId[MAX_TIME_ZONE_KEY + 1];
 
     static {
         for (TimeZoneKey timeZoneKey : getTimeZoneKeys()) {
-            DateTimeZone dateTimeZone = DateTimeZone.forID(timeZoneKey.getId());
-            CHRONOLOGIES[timeZoneKey.getKey()] = ISOChronology.getInstance(dateTimeZone);
+            try {
+                ZONE_IDS[timeZoneKey.getKey()] = ZoneId.of(timeZoneKey.getId());
+            }
+            catch (ZoneRulesException ex) {
+                // Ignore this exception so that older JRE versions that might not support newer time-zone identifiers do not fail
+                LOG.error(ex, "Failed to obtain an instance of ZoneId for %s, ignoring this exception", timeZoneKey.getId());
+            }
         }
     }
 
@@ -63,24 +85,25 @@ public final class TeradataDateFunctions
     @ScalarFunction("to_char")
     @SqlType(StandardTypes.VARCHAR)
     public static Slice toChar(
-            ConnectorSession session,
+            SqlFunctionProperties properties,
             @SqlType(StandardTypes.TIMESTAMP_WITH_TIME_ZONE) long timestampWithTimeZone,
             @SqlType(StandardTypes.VARCHAR) Slice formatString)
     {
         DateTimeFormatter formatter = DATETIME_FORMATTER_CACHE.get(formatString)
-                .withChronology(CHRONOLOGIES[unpackZoneKey(timestampWithTimeZone).getKey()])
-                .withLocale(session.getLocale());
+                .withChronology(IsoChronology.INSTANCE)
+                .withZone(ZONE_IDS[unpackZoneKey(timestampWithTimeZone).getKey()])
+                .withLocale(properties.getSessionLocale());
 
-        return utf8Slice(formatter.print(unpackMillisUtc(timestampWithTimeZone)));
+        return utf8Slice(formatter.format(Instant.ofEpochMilli((unpackMillisUtc(timestampWithTimeZone)))));
     }
 
     @Description("Converts a string to a DATE data type")
     @ScalarFunction("to_date")
     @SqlType(StandardTypes.DATE)
-    public static long toDate(ConnectorSession session, @SqlType(StandardTypes.VARCHAR) Slice dateTime, @SqlType(StandardTypes.VARCHAR) Slice formatString)
+    public static long toDate(SqlFunctionProperties properties, @SqlType(StandardTypes.VARCHAR) Slice dateTime, @SqlType(StandardTypes.VARCHAR) Slice formatString)
     {
         try {
-            long millis = parseMillis(UTC_KEY, session.getLocale(), dateTime, formatString);
+            long millis = parseMillis(UTC_KEY, properties.getSessionLocale(), dateTime, formatString);
             return MILLISECONDS.toDays(millis);
         }
         catch (Throwable t) {
@@ -94,30 +117,31 @@ public final class TeradataDateFunctions
     @ScalarFunction("to_timestamp")
     @SqlType(StandardTypes.TIMESTAMP)
     public static long toTimestamp(
-            ConnectorSession session,
+            SqlFunctionProperties properties,
             @SqlType(StandardTypes.VARCHAR) Slice dateTime,
             @SqlType(StandardTypes.VARCHAR) Slice formatString)
     {
-        return parseMillis(session, dateTime, formatString);
+        return parseMillis(properties, dateTime, formatString);
     }
 
-    private static long parseMillis(ConnectorSession session, Slice dateTime, Slice formatString)
+    private static long parseMillis(SqlFunctionProperties properties, Slice dateTime, Slice formatString)
     {
         TimeZoneKey timeZoneKey = UTC_KEY;
-        if (session.isLegacyTimestamp()) {
-            timeZoneKey = session.getTimeZoneKey();
+        if (properties.isLegacyTimestamp()) {
+            timeZoneKey = properties.getTimeZoneKey();
         }
-        return parseMillis(timeZoneKey, session.getLocale(), dateTime, formatString);
+        return parseMillis(timeZoneKey, properties.getSessionLocale(), dateTime, formatString);
     }
 
     private static long parseMillis(TimeZoneKey timeZoneKey, Locale locale, Slice dateTime, Slice formatString)
     {
-        DateTimeFormatter formatter = DATETIME_FORMATTER_CACHE.get(formatString)
-                .withChronology(CHRONOLOGIES[timeZoneKey.getKey()])
+        DateTimeFormatter formatter = DATETIME_PARSER_CACHE.get(formatString)
+                .withChronology(IsoChronology.INSTANCE)
+                .withZone(ZONE_IDS[timeZoneKey.getKey()])
                 .withLocale(locale);
 
         try {
-            return formatter.parseMillis(dateTime.toString(UTF_8));
+            return ZonedDateTime.parse(dateTime.toString(UTF_8), formatter).toInstant().toEpochMilli();
         }
         catch (IllegalArgumentException e) {
             throw new PrestoException(INVALID_FUNCTION_ARGUMENT, e);

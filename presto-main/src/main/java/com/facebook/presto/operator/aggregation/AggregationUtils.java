@@ -13,17 +13,20 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.operator.aggregation.state.CentralMomentsState;
 import com.facebook.presto.operator.aggregation.state.CorrelationState;
 import com.facebook.presto.operator.aggregation.state.CovarianceState;
 import com.facebook.presto.operator.aggregation.state.RegressionState;
 import com.facebook.presto.operator.aggregation.state.VarianceState;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.facebook.presto.spi.plan.AggregationNode;
 import com.google.common.base.CaseFormat;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -33,6 +36,38 @@ public final class AggregationUtils
 {
     private AggregationUtils()
     {
+    }
+
+    public static boolean isDecomposable(AggregationNode aggregationNode, FunctionAndTypeManager functionAndTypeManager)
+    {
+        boolean hasOrderBy = aggregationNode.getAggregations().values().stream()
+                .map(AggregationNode.Aggregation::getOrderBy)
+                .anyMatch(Optional::isPresent);
+
+        boolean hasDistinct = aggregationNode.getAggregations().values().stream()
+                .anyMatch(AggregationNode.Aggregation::isDistinct);
+
+        boolean decomposableFunctions = aggregationNode.getAggregations().values().stream()
+                .map(AggregationNode.Aggregation::getFunctionHandle)
+                .map(functionAndTypeManager::getAggregateFunctionImplementation)
+                .allMatch(InternalAggregationFunction::isDecomposable);
+
+        return !hasOrderBy && !hasDistinct && decomposableFunctions;
+    }
+
+    public static boolean hasSingleNodeExecutionPreference(AggregationNode aggregationNode, FunctionAndTypeManager functionAndTypeManager)
+    {
+        // There are two kinds of aggregations the have single node execution preference:
+        //
+        // 1. aggregations with only empty grouping sets like
+        //
+        // SELECT count(*) FROM lineitem;
+        //
+        // there is no need for distributed aggregation. Single node FINAL aggregation will suffice,
+        // since all input have to be aggregated into one line output.
+        //
+        // 2. aggregations that must produce default output and are not decomposable, we can not distribute them.
+        return (aggregationNode.hasEmptyGroupingSet() && !aggregationNode.hasNonEmptyGroupingSet()) || (aggregationNode.hasDefaultOutput() && !isDecomposable(aggregationNode, functionAndTypeManager));
     }
 
     public static void updateVarianceState(VarianceState state, double value)
@@ -233,13 +268,22 @@ public final class AggregationUtils
     public static String generateAggregationName(String baseName, TypeSignature outputType, List<TypeSignature> inputTypes)
     {
         StringBuilder sb = new StringBuilder();
-        sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, outputType.toString()));
+        sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, getAbbreviatedTypeName(outputType)));
         for (TypeSignature inputType : inputTypes) {
-            sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, inputType.toString()));
+            sb.append(CaseFormat.LOWER_CAMEL.to(CaseFormat.UPPER_CAMEL, getAbbreviatedTypeName(inputType)));
         }
         sb.append(CaseFormat.LOWER_UNDERSCORE.to(CaseFormat.UPPER_CAMEL, baseName.toLowerCase(ENGLISH)));
 
         return sb.toString();
+    }
+
+    private static String getAbbreviatedTypeName(TypeSignature type)
+    {
+        String typeName = type.toString();
+        if (typeName.length() > 10) {
+            return typeName.substring(0, 10);
+        }
+        return typeName;
     }
 
     // used by aggregation compiler

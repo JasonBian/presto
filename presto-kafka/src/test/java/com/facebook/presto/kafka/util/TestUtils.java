@@ -13,16 +13,19 @@
  */
 package com.facebook.presto.kafka.util;
 
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.kafka.KafkaPlugin;
 import com.facebook.presto.kafka.KafkaTopicDescription;
-import com.facebook.presto.metadata.QualifiedObjectName;
+import com.facebook.presto.kafka.MapBasedTableDescriptionSupplier;
+import com.facebook.presto.kafka.TableDescriptionSupplier;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.testing.QueryRunner;
 import com.facebook.presto.tests.TestingPrestoClient;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
-import io.airlift.json.JsonCodec;
+import org.apache.kafka.clients.producer.KafkaProducer;
 
 import java.io.IOException;
 import java.net.ServerSocket;
@@ -31,7 +34,8 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 
-import static com.facebook.presto.kafka.util.EmbeddedKafka.CloseableProducer;
+import static com.facebook.presto.kafka.ConfigurationAwareModules.combine;
+import static com.google.inject.multibindings.Multibinder.newSetBinder;
 import static java.lang.String.format;
 
 public final class TestUtils
@@ -57,21 +61,24 @@ public final class TestUtils
 
     public static void installKafkaPlugin(EmbeddedKafka embeddedKafka, QueryRunner queryRunner, Map<SchemaTableName, KafkaTopicDescription> topicDescriptions)
     {
-        KafkaPlugin kafkaPlugin = new KafkaPlugin();
-        kafkaPlugin.setTableDescriptionSupplier(() -> topicDescriptions);
+        KafkaPlugin kafkaPlugin = new KafkaPlugin(combine(
+                binder -> newSetBinder(binder, TableDescriptionSupplier.class)
+                        .addBinding()
+                        .toInstance(new MapBasedTableDescriptionSupplier(topicDescriptions))));
         queryRunner.installPlugin(kafkaPlugin);
 
         Map<String, String> kafkaConfig = ImmutableMap.of(
                 "kafka.nodes", embeddedKafka.getConnectString(),
                 "kafka.table-names", Joiner.on(",").join(topicDescriptions.keySet()),
                 "kafka.connect-timeout", "120s",
-                "kafka.default-schema", "default");
+                "kafka.default-schema", "default",
+                "kafka.table-description-dir", "write-test");
         queryRunner.createCatalog("kafka", "kafka", kafkaConfig);
     }
 
     public static void loadTpchTopic(EmbeddedKafka embeddedKafka, TestingPrestoClient prestoClient, String topicName, QualifiedObjectName tpchTableName)
     {
-        try (CloseableProducer<Long, Object> producer = embeddedKafka.createProducer();
+        try (KafkaProducer<Long, Object> producer = embeddedKafka.createProducer();
                 KafkaLoader tpchLoader = new KafkaLoader(producer, topicName, prestoClient.getServer(), prestoClient.getDefaultSession())) {
             tpchLoader.execute(format("SELECT * from %s", tpchTableName));
         }

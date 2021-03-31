@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.client;
 
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.client.OkHttpUtil.NullCallback;
-import com.facebook.presto.spi.type.TimeZoneKey;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.spi.security.SelectedRole;
 import com.google.common.base.Joiner;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import com.google.common.collect.Sets;
-import io.airlift.json.JsonCodec;
 import io.airlift.units.Duration;
 import okhttp3.Headers;
 import okhttp3.HttpUrl;
@@ -45,22 +45,25 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.airlift.json.JsonCodec.jsonCodec;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_ADDED_PREPARE;
+import static com.facebook.presto.client.PrestoHeaders.PRESTO_ADDED_SESSION_FUNCTION;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CATALOG;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CLEAR_SESSION;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CLEAR_TRANSACTION_ID;
-import static com.facebook.presto.client.PrestoHeaders.PRESTO_CLIENT_CAPABILITIES;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CLIENT_INFO;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_CLIENT_TAGS;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_DEALLOCATED_PREPARE;
+import static com.facebook.presto.client.PrestoHeaders.PRESTO_EXTRA_CREDENTIAL;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_LANGUAGE;
-import static com.facebook.presto.client.PrestoHeaders.PRESTO_PATH;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_PREPARED_STATEMENT;
+import static com.facebook.presto.client.PrestoHeaders.PRESTO_REMOVED_SESSION_FUNCTION;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_RESOURCE_ESTIMATE;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_SCHEMA;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_SESSION;
+import static com.facebook.presto.client.PrestoHeaders.PRESTO_SESSION_FUNCTION;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_SET_CATALOG;
-import static com.facebook.presto.client.PrestoHeaders.PRESTO_SET_PATH;
+import static com.facebook.presto.client.PrestoHeaders.PRESTO_SET_ROLE;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_SET_SCHEMA;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_SET_SESSION;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_SOURCE;
@@ -71,8 +74,9 @@ import static com.facebook.presto.client.PrestoHeaders.PRESTO_TRANSACTION_ID;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_USER;
 import static com.google.common.base.MoreObjects.firstNonNull;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.Sets.newConcurrentHashSet;
+import static com.google.common.net.HttpHeaders.ACCEPT_ENCODING;
 import static com.google.common.net.HttpHeaders.USER_AGENT;
-import static io.airlift.json.JsonCodec.jsonCodec;
 import static java.lang.String.format;
 import static java.net.HttpURLConnection.HTTP_OK;
 import static java.net.HttpURLConnection.HTTP_UNAUTHORIZED;
@@ -97,17 +101,19 @@ class StatementClientV1
     private final AtomicReference<QueryResults> currentResults = new AtomicReference<>();
     private final AtomicReference<String> setCatalog = new AtomicReference<>();
     private final AtomicReference<String> setSchema = new AtomicReference<>();
-    private final AtomicReference<String> setPath = new AtomicReference<>();
     private final Map<String, String> setSessionProperties = new ConcurrentHashMap<>();
-    private final Set<String> resetSessionProperties = Sets.newConcurrentHashSet();
+    private final Set<String> resetSessionProperties = newConcurrentHashSet();
+    private final Map<String, SelectedRole> setRoles = new ConcurrentHashMap<>();
     private final Map<String, String> addedPreparedStatements = new ConcurrentHashMap<>();
-    private final Set<String> deallocatedPreparedStatements = Sets.newConcurrentHashSet();
+    private final Set<String> deallocatedPreparedStatements = newConcurrentHashSet();
     private final AtomicReference<String> startedTransactionId = new AtomicReference<>();
     private final AtomicBoolean clearTransactionId = new AtomicBoolean();
     private final TimeZoneKey timeZone;
     private final Duration requestTimeoutNanos;
     private final String user;
-    private final String clientCapabilities;
+    private final boolean compressionDisabled;
+    private final Map<String, String> addedSessionFunctions = new ConcurrentHashMap<>();
+    private final Set<String> removedSessionFunctions = newConcurrentHashSet();
 
     private final AtomicReference<State> state = new AtomicReference<>(State.RUNNING);
 
@@ -122,7 +128,7 @@ class StatementClientV1
         this.query = query;
         this.requestTimeoutNanos = session.getClientRequestTimeout();
         this.user = session.getUser();
-        this.clientCapabilities = Joiner.on(",").join(ClientCapabilities.values());
+        this.compressionDisabled = session.isCompressionDisabled();
 
         Request request = buildQueryRequest(session, query);
 
@@ -164,9 +170,6 @@ class StatementClientV1
         if (session.getSchema() != null) {
             builder.addHeader(PRESTO_SCHEMA, session.getSchema());
         }
-        if (session.getPath() != null) {
-            builder.addHeader(PRESTO_PATH, session.getPath());
-        }
         builder.addHeader(PRESTO_TIME_ZONE, session.getTimeZone().getId());
         if (session.getLocale() != null) {
             builder.addHeader(PRESTO_LANGUAGE, session.getLocale().toLanguageTag());
@@ -174,12 +177,22 @@ class StatementClientV1
 
         Map<String, String> property = session.getProperties();
         for (Entry<String, String> entry : property.entrySet()) {
-            builder.addHeader(PRESTO_SESSION, entry.getKey() + "=" + entry.getValue());
+            builder.addHeader(PRESTO_SESSION, entry.getKey() + "=" + urlEncode(entry.getValue()));
         }
 
         Map<String, String> resourceEstimates = session.getResourceEstimates();
         for (Entry<String, String> entry : resourceEstimates.entrySet()) {
             builder.addHeader(PRESTO_RESOURCE_ESTIMATE, entry.getKey() + "=" + entry.getValue());
+        }
+
+        Map<String, SelectedRole> roles = session.getRoles();
+        for (Entry<String, SelectedRole> entry : roles.entrySet()) {
+            builder.addHeader(PrestoHeaders.PRESTO_ROLE, entry.getKey() + '=' + urlEncode(entry.getValue().toString()));
+        }
+
+        Map<String, String> extraCredentials = session.getExtraCredentials();
+        for (Entry<String, String> entry : extraCredentials.entrySet()) {
+            builder.addHeader(PRESTO_EXTRA_CREDENTIAL, entry.getKey() + "=" + entry.getValue());
         }
 
         Map<String, String> statements = session.getPreparedStatements();
@@ -189,7 +202,10 @@ class StatementClientV1
 
         builder.addHeader(PRESTO_TRANSACTION_ID, session.getTransactionId() == null ? "NONE" : session.getTransactionId());
 
-        builder.addHeader(PRESTO_CLIENT_CAPABILITIES, clientCapabilities);
+        Map<String, String> sessionFunctions = session.getSessionFunctions();
+        for (Entry<String, String> entry : sessionFunctions.entrySet()) {
+            builder.addHeader(PRESTO_SESSION_FUNCTION, urlEncode(entry.getKey()) + "=" + urlEncode(entry.getValue()));
+        }
 
         return builder.build();
     }
@@ -266,12 +282,6 @@ class StatementClientV1
     }
 
     @Override
-    public Optional<String> getSetPath()
-    {
-        return Optional.ofNullable(setPath.get());
-    }
-
-    @Override
     public Map<String, String> getSetSessionProperties()
     {
         return ImmutableMap.copyOf(setSessionProperties);
@@ -281,6 +291,12 @@ class StatementClientV1
     public Set<String> getResetSessionProperties()
     {
         return ImmutableSet.copyOf(resetSessionProperties);
+    }
+
+    @Override
+    public Map<String, SelectedRole> getSetRoles()
+    {
+        return ImmutableMap.copyOf(setRoles);
     }
 
     @Override
@@ -308,12 +324,28 @@ class StatementClientV1
         return clearTransactionId.get();
     }
 
+    @Override
+    public Map<String, String> getAddedSessionFunctions()
+    {
+        return ImmutableMap.copyOf(addedSessionFunctions);
+    }
+
+    @Override
+    public Set<String> getRemovedSessionFunctions()
+    {
+        return ImmutableSet.copyOf(removedSessionFunctions);
+    }
+
     private Request.Builder prepareRequest(HttpUrl url)
     {
-        return new Request.Builder()
+        Request.Builder builder = new Request.Builder()
                 .addHeader(PRESTO_USER, user)
                 .addHeader(USER_AGENT, USER_AGENT_VALUE)
                 .url(url);
+        if (compressionDisabled) {
+            builder.header(ACCEPT_ENCODING, "identity");
+        }
+        return builder;
     }
 
     @Override
@@ -389,16 +421,23 @@ class StatementClientV1
     {
         setCatalog.set(headers.get(PRESTO_SET_CATALOG));
         setSchema.set(headers.get(PRESTO_SET_SCHEMA));
-        setPath.set(headers.get(PRESTO_SET_PATH));
 
         for (String setSession : headers.values(PRESTO_SET_SESSION)) {
             List<String> keyValue = SESSION_HEADER_SPLITTER.splitToList(setSession);
             if (keyValue.size() != 2) {
                 continue;
             }
-            setSessionProperties.put(keyValue.get(0), keyValue.get(1));
+            setSessionProperties.put(keyValue.get(0), urlDecode(keyValue.get(1)));
         }
         resetSessionProperties.addAll(headers.values(PRESTO_CLEAR_SESSION));
+
+        for (String setRole : headers.values(PRESTO_SET_ROLE)) {
+            List<String> keyValue = SESSION_HEADER_SPLITTER.splitToList(setRole);
+            if (keyValue.size() != 2) {
+                continue;
+            }
+            setRoles.put(keyValue.get(0), SelectedRole.valueOf(urlDecode(keyValue.get(1))));
+        }
 
         for (String entry : headers.values(PRESTO_ADDED_PREPARE)) {
             List<String> keyValue = SESSION_HEADER_SPLITTER.splitToList(entry);
@@ -419,6 +458,17 @@ class StatementClientV1
             clearTransactionId.set(true);
         }
 
+        for (String sessionFunction : headers.values(PRESTO_ADDED_SESSION_FUNCTION)) {
+            List<String> keyValue = SESSION_HEADER_SPLITTER.splitToList(sessionFunction);
+            if (keyValue.size() != 2) {
+                continue;
+            }
+            addedSessionFunctions.put(urlDecode(keyValue.get(0)), urlDecode(keyValue.get(1)));
+        }
+        for (String signature : headers.values(PRESTO_REMOVED_SESSION_FUNCTION)) {
+            removedSessionFunctions.add(urlDecode(signature));
+        }
+
         currentResults.set(results);
     }
 
@@ -430,6 +480,12 @@ class StatementClientV1
                         Optional.ofNullable(response.getStatusMessage())
                                 .map(message -> ": " + message)
                                 .orElse(""));
+            }
+            if (response.getStatusCode() == 429) {
+                return new ClientException("Request throttled " +
+                        Optional.ofNullable(response.getStatusMessage())
+                                .map(message -> ": " + message)
+                                .orElse(""), true);
             }
             return new RuntimeException(
                     format("Error %s at %s returned an invalid response: %s [Error: %s]", task, request.url(), response, response.getResponseBody()),

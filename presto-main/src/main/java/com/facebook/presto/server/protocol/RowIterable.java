@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.server.protocol;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableList;
 
@@ -74,7 +74,7 @@ class RowIterable
             for (int channel = 0; channel < page.getChannelCount(); channel++) {
                 Type type = types.get(channel);
                 Block block = page.getBlock(channel);
-                values.add(type.getObjectValue(session, block, position));
+                values.add(type.getObjectValue(session.getSqlFunctionProperties(), block, position));
             }
             return Collections.unmodifiableList(values);
         }

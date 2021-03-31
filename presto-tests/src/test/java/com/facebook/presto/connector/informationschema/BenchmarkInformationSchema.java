@@ -50,7 +50,7 @@ import java.util.function.BiFunction;
 import java.util.function.Function;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.collect.ImmutableMap.toImmutableMap;
@@ -85,9 +85,9 @@ public class BenchmarkInformationSchema
         private QueryRunner queryRunner;
 
         private Session session = testSessionBuilder()
-                    .setCatalog("test_catalog")
-                    .setSchema("test_schema")
-                    .build();
+                .setCatalog("test_catalog")
+                .setSchema("test_schema")
+                .build();
 
         private String query;
 
@@ -96,7 +96,8 @@ public class BenchmarkInformationSchema
                 throws Exception
         {
             queryRunner = DistributedQueryRunner.builder(session).build();
-            queryRunner.installPlugin(new Plugin() {
+            queryRunner.installPlugin(new Plugin()
+            {
                 @Override
                 public Iterable<ConnectorFactory> getConnectorFactories()
                 {

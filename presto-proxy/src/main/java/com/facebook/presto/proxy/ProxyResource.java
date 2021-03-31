@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.proxy;
 
+import com.facebook.airlift.http.client.HttpClient;
+import com.facebook.airlift.http.client.Request;
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.proxy.ProxyResponseHandler.ProxyResponse;
 import com.fasterxml.jackson.core.JsonFactory;
 import com.fasterxml.jackson.core.JsonGenerator;
@@ -22,9 +25,6 @@ import com.google.common.hash.HashCode;
 import com.google.common.hash.HashFunction;
 import com.google.common.util.concurrent.FluentFuture;
 import com.google.common.util.concurrent.ListenableFuture;
-import io.airlift.http.client.HttpClient;
-import io.airlift.http.client.Request;
-import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 
 import javax.annotation.PreDestroy;
@@ -54,6 +54,13 @@ import java.util.Base64;
 import java.util.concurrent.ExecutorService;
 import java.util.function.Function;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
+import static com.facebook.airlift.http.client.Request.Builder.prepareDelete;
+import static com.facebook.airlift.http.client.Request.Builder.prepareGet;
+import static com.facebook.airlift.http.client.Request.Builder.preparePost;
+import static com.facebook.airlift.http.client.StaticBodyGenerator.createStaticBodyGenerator;
+import static com.facebook.airlift.http.server.AsyncResponseHandler.bindAsyncResponse;
 import static com.fasterxml.jackson.core.JsonFactory.Feature.CANONICALIZE_FIELD_NAMES;
 import static com.fasterxml.jackson.core.JsonToken.END_OBJECT;
 import static com.fasterxml.jackson.core.JsonToken.FIELD_NAME;
@@ -64,14 +71,8 @@ import static com.google.common.net.HttpHeaders.AUTHORIZATION;
 import static com.google.common.net.HttpHeaders.COOKIE;
 import static com.google.common.net.HttpHeaders.SET_COOKIE;
 import static com.google.common.net.HttpHeaders.USER_AGENT;
+import static com.google.common.net.HttpHeaders.X_FORWARDED_FOR;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.airlift.http.client.HttpUriBuilder.uriBuilderFrom;
-import static io.airlift.http.client.Request.Builder.prepareDelete;
-import static io.airlift.http.client.Request.Builder.prepareGet;
-import static io.airlift.http.client.Request.Builder.preparePost;
-import static io.airlift.http.client.StaticBodyGenerator.createStaticBodyGenerator;
-import static io.airlift.http.server.AsyncResponseHandler.bindAsyncResponse;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.UTF_8;
 import static java.nio.file.Files.readAllBytes;
@@ -79,7 +80,6 @@ import static java.util.Collections.list;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.Executors.newCachedThreadPool;
-import static java.util.concurrent.TimeUnit.MINUTES;
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 import static javax.ws.rs.core.MediaType.TEXT_PLAIN_TYPE;
 import static javax.ws.rs.core.Response.Status.BAD_GATEWAY;
@@ -92,7 +92,6 @@ public class ProxyResource
     private static final Logger log = Logger.get(ProxyResource.class);
 
     private static final String X509_ATTRIBUTE = "javax.servlet.request.X509Certificate";
-    private static final Duration ASYNC_TIMEOUT = new Duration(2, MINUTES);
     private static final JsonFactory JSON_FACTORY = new JsonFactory().disable(CANONICALIZE_FIELD_NAMES);
 
     private final ExecutorService executor = newCachedThreadPool(daemonThreadsNamed("proxy-%s"));
@@ -100,6 +99,7 @@ public class ProxyResource
     private final JsonWebTokenHandler jwtHandler;
     private final URI remoteUri;
     private final HashFunction hmac;
+    private final Duration asyncTimeout;
 
     @Inject
     public ProxyResource(@ForProxy HttpClient httpClient, JsonWebTokenHandler jwtHandler, ProxyConfig config)
@@ -108,6 +108,7 @@ public class ProxyResource
         this.jwtHandler = requireNonNull(jwtHandler, "jwtHandler is null");
         this.remoteUri = requireNonNull(config.getUri(), "uri is null");
         this.hmac = hmacSha256(loadSharedSecret(config.getSharedSecretFile()));
+        this.asyncTimeout = requireNonNull(config.getAsyncTimeout(), "asyncTimeout is null");
     }
 
     @PreDestroy
@@ -189,6 +190,7 @@ public class ProxyResource
             Request.Builder requestBuilder,
             Function<ProxyResponse, Response> responseBuilder)
     {
+        setupXForwardedFor(servletRequest, requestBuilder);
         setupBearerToken(servletRequest, requestBuilder);
 
         for (String name : list(servletRequest.getHeaderNames())) {
@@ -234,10 +236,10 @@ public class ProxyResource
     private void setupAsyncResponse(AsyncResponse asyncResponse, ListenableFuture<Response> future)
     {
         bindAsyncResponse(asyncResponse, future, executor)
-                .withTimeout(ASYNC_TIMEOUT, () -> Response
+                .withTimeout(asyncTimeout, () -> Response
                         .status(BAD_GATEWAY)
                         .type(TEXT_PLAIN_TYPE)
-                        .entity("Request to remote Presto server timed out after" + ASYNC_TIMEOUT)
+                        .entity("Request to remote Presto server timed out after" + asyncTimeout)
                         .build());
     }
 
@@ -262,6 +264,16 @@ public class ProxyResource
         requestBuilder.addHeader(AUTHORIZATION, "Bearer " + accessToken);
     }
 
+    private void setupXForwardedFor(HttpServletRequest servletRequest, Request.Builder requestBuilder)
+    {
+        StringBuilder xForwardedFor = new StringBuilder();
+        if (servletRequest.getHeader(X_FORWARDED_FOR) != null) {
+            xForwardedFor.append(servletRequest.getHeader(X_FORWARDED_FOR) + ",");
+        }
+        xForwardedFor.append(servletRequest.getRemoteAddr());
+        requestBuilder.addHeader(X_FORWARDED_FOR, xForwardedFor.toString());
+    }
+
     private static <T> T handleProxyException(Request request, ProxyException e)
     {
         log.warn(e, "Proxy request failed: %s %s", request.getMethod(), request.getUri());
@@ -284,7 +296,7 @@ public class ProxyResource
 
     private static Response responseWithHeaders(ResponseBuilder builder, ProxyResponse response)
     {
-        response.getHeaders().asMap().forEach((headerName, value) -> {
+        response.getHeaders().forEach((headerName, value) -> {
             String name = headerName.toString();
             if (isPrestoHeader(name) || name.equalsIgnoreCase(SET_COOKIE)) {
                 builder.header(name, value);

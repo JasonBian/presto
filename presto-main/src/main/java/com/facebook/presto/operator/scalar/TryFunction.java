@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.block.Block;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
@@ -24,13 +24,16 @@ import com.facebook.presto.spi.function.TypeParameterSpecialization;
 import com.facebook.presto.sql.gen.lambda.LambdaFunctionInterface;
 import io.airlift.slice.Slice;
 
+import java.util.function.Supplier;
+
 import static com.facebook.presto.spi.StandardErrorCode.DIVISION_BY_ZERO;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.NUMERIC_VALUE_OUT_OF_RANGE;
+import static com.facebook.presto.spi.function.SqlFunctionVisibility.HIDDEN;
 
 @Description("internal try function for desugaring TRY")
-@ScalarFunction(value = "$internal$try", hidden = true, deterministic = false)
+@ScalarFunction(value = "$internal$try", visibility = HIDDEN, deterministic = false)
 public final class TryFunction
 {
     private TryFunction() {}
@@ -143,6 +146,17 @@ public final class TryFunction
             extends LambdaFunctionInterface
     {
         Block apply();
+    }
+
+    public static <T> T evaluate(Supplier<T> supplier, T defaultValue)
+    {
+        try {
+            return supplier.get();
+        }
+        catch (PrestoException e) {
+            propagateIfUnhandled(e);
+            return defaultValue;
+        }
     }
 
     private static void propagateIfUnhandled(PrestoException e)

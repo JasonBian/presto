@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.plugin.postgresql;
 
-import com.facebook.presto.tests.AbstractTestQueries;
-import io.airlift.testing.postgresql.TestingPostgreSqlServer;
+import com.facebook.airlift.testing.postgresql.TestingPostgreSqlServer;
+import com.facebook.presto.tests.AbstractTestDistributedQueries;
+import com.google.common.collect.ImmutableMap;
 import io.airlift.tpch.TpchTable;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.Test;
@@ -25,7 +26,7 @@ import static com.facebook.presto.plugin.postgresql.PostgreSqlQueryRunner.create
 
 @Test
 public class TestPostgreSqlDistributedQueries
-        extends AbstractTestQueries
+        extends AbstractTestDistributedQueries
 {
     private final TestingPostgreSqlServer postgreSqlServer;
 
@@ -37,8 +38,14 @@ public class TestPostgreSqlDistributedQueries
 
     public TestPostgreSqlDistributedQueries(TestingPostgreSqlServer postgreSqlServer)
     {
-        super(() -> createPostgreSqlQueryRunner(postgreSqlServer, TpchTable.getTables()));
+        super(() -> createPostgreSqlQueryRunner(postgreSqlServer, ImmutableMap.of(), TpchTable.getTables()));
         this.postgreSqlServer = postgreSqlServer;
+    }
+
+    @Override
+    protected boolean supportsViews()
+    {
+        return false;
     }
 
     @AfterClass(alwaysRun = true)
@@ -46,6 +53,19 @@ public class TestPostgreSqlDistributedQueries
             throws IOException
     {
         postgreSqlServer.close();
+    }
+
+    @Override
+    public void testInsert()
+    {
+        // no op -- test not supported due to lack of support for array types.  See
+        // TestPostgreSqlIntegrationSmokeTest for insertion tests.
+    }
+
+    @Override
+    public void testDelete()
+    {
+        // Delete is currently unsupported
     }
 
     // PostgreSQL specific tests should normally go in TestPostgreSqlIntegrationSmokeTest

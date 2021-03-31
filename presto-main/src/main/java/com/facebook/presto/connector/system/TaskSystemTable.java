@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.connector.system;
 
+import com.facebook.airlift.node.NodeInfo;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.execution.TaskInfo;
 import com.facebook.presto.execution.TaskManager;
 import com.facebook.presto.execution.TaskStatus;
@@ -25,19 +27,18 @@ import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import io.airlift.node.NodeInfo;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import org.joda.time.DateTime;
 
 import javax.inject.Inject;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
 import static com.facebook.presto.spi.SystemTable.Distribution.ALL_NODES;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 public class TaskSystemTable
         implements SystemTable
@@ -48,6 +49,7 @@ public class TaskSystemTable
             .column("node_id", createUnboundedVarcharType())
 
             .column("task_id", createUnboundedVarcharType())
+            .column("stage_execution_id", createUnboundedVarcharType())
             .column("stage_id", createUnboundedVarcharType())
             .column("query_id", createUnboundedVarcharType())
             .column("state", createUnboundedVarcharType())
@@ -110,9 +112,10 @@ public class TaskSystemTable
             table.addRow(
                     nodeId,
 
-                    taskStatus.getTaskId().toString(),
-                    taskStatus.getTaskId().getStageId().toString(),
-                    taskStatus.getTaskId().getQueryId().toString(),
+                    taskInfo.getTaskId().toString(),
+                    taskInfo.getTaskId().getStageExecutionId().toString(),
+                    taskInfo.getTaskId().getStageExecutionId().getStageId().toString(),
+                    taskInfo.getTaskId().getQueryId().toString(),
                     taskStatus.getState().toString(),
 
                     (long) stats.getTotalDrivers(),
@@ -120,20 +123,20 @@ public class TaskSystemTable
                     (long) stats.getRunningDrivers(),
                     (long) stats.getCompletedDrivers(),
 
-                    toMillis(stats.getTotalScheduledTime()),
-                    toMillis(stats.getTotalCpuTime()),
-                    toMillis(stats.getTotalBlockedTime()),
+                    NANOSECONDS.toMillis(stats.getTotalScheduledTimeInNanos()),
+                    NANOSECONDS.toMillis(stats.getTotalCpuTimeInNanos()),
+                    NANOSECONDS.toMillis(stats.getTotalBlockedTimeInNanos()),
 
-                    toBytes(stats.getRawInputDataSize()),
+                    stats.getRawInputDataSizeInBytes(),
                     stats.getRawInputPositions(),
 
-                    toBytes(stats.getProcessedInputDataSize()),
+                    stats.getProcessedInputDataSizeInBytes(),
                     stats.getProcessedInputPositions(),
 
-                    toBytes(stats.getOutputDataSize()),
+                    stats.getOutputDataSizeInBytes(),
                     stats.getOutputPositions(),
 
-                    toBytes(stats.getPhysicalWrittenDataSize()),
+                    stats.getPhysicalWrittenDataSizeInBytes(),
 
                     toTimeStamp(stats.getCreateTime()),
                     toTimeStamp(stats.getFirstStartTime()),

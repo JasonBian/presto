@@ -13,21 +13,21 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 
 public class TestScalarParser
         extends AbstractTestFunctions
@@ -55,7 +55,7 @@ public class TestScalarParser
         assertFunction("generic_incomplete_specialization_not_nullable(array[1, 2])", new ArrayType(INTEGER), ImmutableList.of(1, 2));
     }
 
-    @ScalarFunction("generic_incomplete_specialization_nullable")
+    @ScalarFunction(value = "generic_incomplete_specialization_nullable", calledOnNullInput = true)
     public static class GenericWithIncompleteSpecializationNullable
     {
         @TypeParameter("E")

@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.tests.utils;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.jdbc.PrestoConnection;
-import io.airlift.log.Logger;
 
 import java.math.BigDecimal;
 import java.sql.Connection;
@@ -26,6 +26,14 @@ public class JdbcDriverUtils
 {
     private static final Logger LOGGER = Logger.get(JdbcDriverUtils.class);
     private static final String IS_NUMERIC_REGEX = "-?\\d*[\\.\\d]*";
+
+    public static void setRole(Connection connection, String role)
+            throws SQLException
+    {
+        try (Statement statement = connection.createStatement()) {
+            statement.execute(String.format("SET ROLE %s", role));
+        }
+    }
 
     public static String getSessionProperty(Connection connection, String key)
             throws SQLException

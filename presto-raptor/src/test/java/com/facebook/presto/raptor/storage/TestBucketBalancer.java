@@ -14,7 +14,8 @@
 package com.facebook.presto.raptor.storage;
 
 import com.facebook.presto.client.NodeVersion;
-import com.facebook.presto.metadata.PrestoNode;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.raptor.NodeSupplier;
 import com.facebook.presto.raptor.metadata.BucketNode;
 import com.facebook.presto.raptor.metadata.ColumnInfo;
@@ -25,7 +26,6 @@ import com.facebook.presto.raptor.storage.BucketBalancer.BucketAssignment;
 import com.facebook.presto.raptor.storage.BucketBalancer.ClusterState;
 import com.facebook.presto.spi.Node;
 import com.facebook.presto.testing.TestingNodeManager;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.HashMultiset;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Multiset;
@@ -42,13 +42,14 @@ import java.util.List;
 import java.util.OptionalLong;
 import java.util.stream.Collectors;
 
+import static com.facebook.airlift.testing.Assertions.assertGreaterThanOrEqual;
+import static com.facebook.airlift.testing.Assertions.assertLessThanOrEqual;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.raptor.metadata.Distribution.serializeColumnTypes;
 import static com.facebook.presto.raptor.metadata.SchemaDaoUtil.createTablesWithRetry;
 import static com.facebook.presto.raptor.metadata.TestDatabaseShardManager.createShardManager;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.base.Preconditions.checkArgument;
-import static io.airlift.testing.Assertions.assertGreaterThanOrEqual;
-import static io.airlift.testing.Assertions.assertLessThanOrEqual;
 import static java.util.concurrent.TimeUnit.DAYS;
 import static org.testng.Assert.assertEquals;
 
@@ -67,9 +68,9 @@ public class TestBucketBalancer
     @BeforeMethod
     public void setup()
     {
-        TypeRegistry typeRegistry = new TypeRegistry();
+        FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
         dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime());
-        dbi.registerMapper(new Distribution.Mapper(typeRegistry));
+        dbi.registerMapper(new Distribution.Mapper(functionAndTypeManager));
         dummyHandle = dbi.open();
         createTablesWithRetry(dbi);
 
@@ -80,7 +81,7 @@ public class TestBucketBalancer
 
         NodeSupplier nodeSupplier = nodeManager::getWorkerNodes;
         shardManager = createShardManager(dbi, nodeSupplier);
-        balancer = new BucketBalancer(nodeSupplier, shardManager, true, new Duration(1, DAYS), true, true, "test");
+        balancer = new BucketBalancer(nodeSupplier, shardManager, true, new Duration(1, DAYS), 0, true, true, "test");
     }
 
     @AfterMethod(alwaysRun = true)
@@ -275,11 +276,11 @@ public class TestBucketBalancer
     private long createBucketedTable(String tableName, long distributionId, DataSize compressedSize)
     {
         MetadataDao dao = dbi.onDemand(MetadataDao.class);
-        long tableId = dao.insertTable("test", tableName, false, false, distributionId, 0);
+        long tableId = dao.insertTable("test", tableName, false, false, distributionId, 0, false);
         List<ColumnInfo> columnsA = ImmutableList.of(new ColumnInfo(1, BIGINT));
-        shardManager.createTable(tableId, columnsA, false, OptionalLong.empty());
+        shardManager.createTable(tableId, columnsA, false, OptionalLong.empty(), false);
 
-        metadataDao.updateTableStats(tableId, 1024, 1024 * 1024 * 1024, compressedSize.toBytes(), compressedSize.toBytes() * 2);
+        metadataDao.updateTableStats(tableId, 1024, 0, 1024 * 1024 * 1024, compressedSize.toBytes(), compressedSize.toBytes() * 2);
         return tableId;
     }
 
@@ -306,6 +307,6 @@ public class TestBucketBalancer
 
     private static Node createTestingNode(String nodeIdentifier)
     {
-        return new PrestoNode(nodeIdentifier, URI.create("http://test"), NodeVersion.UNKNOWN, false);
+        return new InternalNode(nodeIdentifier, URI.create("http://test"), NodeVersion.UNKNOWN, false);
     }
 }

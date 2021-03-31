@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.block;
 
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.LongArrayBlock;
-import com.facebook.presto.spi.block.LongArrayBlockBuilder;
-import com.facebook.presto.spi.block.VariableWidthBlockBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.LongArrayBlock;
+import com.facebook.presto.common.block.LongArrayBlockBuilder;
+import com.facebook.presto.common.block.VariableWidthBlockBuilder;
 import io.airlift.slice.Slice;
 import org.testng.annotations.Test;
 
@@ -34,13 +34,13 @@ public class TestLongArrayBlock
     {
         Slice[] expectedValues = createTestValue(17);
         assertFixedWithValues(expectedValues);
-        assertFixedWithValues((Slice[]) alternatingNullValues(expectedValues));
+        assertFixedWithValues(alternatingNullValues(expectedValues));
     }
 
     @Test
     public void testCopyPositions()
     {
-        Slice[] expectedValues = (Slice[]) alternatingNullValues(createTestValue(17));
+        Slice[] expectedValues = alternatingNullValues(createTestValue(17));
         BlockBuilder blockBuilder = createBlockBuilderWithValues(expectedValues);
         assertBlockFilteredPositions(expectedValues, blockBuilder.build(), () -> blockBuilder.newBlockBuilderLike(null), 0, 2, 4, 6, 7, 9, 10, 16);
     }

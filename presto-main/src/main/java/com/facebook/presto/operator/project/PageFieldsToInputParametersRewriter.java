@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.operator.project;
 
-import com.facebook.presto.sql.relational.CallExpression;
-import com.facebook.presto.sql.relational.ConstantExpression;
-import com.facebook.presto.sql.relational.InputReferenceExpression;
-import com.facebook.presto.sql.relational.LambdaDefinitionExpression;
-import com.facebook.presto.sql.relational.RowExpression;
-import com.facebook.presto.sql.relational.RowExpressionVisitor;
-import com.facebook.presto.sql.relational.VariableReferenceExpression;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.ConstantExpression;
+import com.facebook.presto.spi.relation.InputReferenceExpression;
+import com.facebook.presto.spi.relation.LambdaDefinitionExpression;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.RowExpressionVisitor;
+import com.facebook.presto.spi.relation.SpecialFormExpression;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.google.common.collect.ImmutableList;
 
 import java.util.ArrayList;
@@ -28,6 +29,7 @@ import java.util.List;
 import java.util.Map;
 
 import static com.facebook.presto.sql.relational.Expressions.field;
+import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 
 /**
@@ -40,10 +42,15 @@ public final class PageFieldsToInputParametersRewriter
 
     public static Result rewritePageFieldsToInputParameters(RowExpression expression)
     {
+        return rewritePageFieldsToInputParameters(ImmutableList.of(expression));
+    }
+
+    public static Result rewritePageFieldsToInputParameters(List<RowExpression> expressions)
+    {
         Visitor visitor = new Visitor();
-        RowExpression rewrittenProjection = expression.accept(visitor, null);
+        List<RowExpression> rewrittenExpressions = expressions.stream().map(expression -> expression.accept(visitor, null)).collect(toImmutableList());
         InputChannels inputChannels = new InputChannels(visitor.getInputChannels());
-        return new Result(rewrittenProjection, inputChannels);
+        return new Result(rewrittenExpressions, inputChannels);
     }
 
     private static class Visitor
@@ -77,7 +84,8 @@ public final class PageFieldsToInputParametersRewriter
         public RowExpression visitCall(CallExpression call, Void context)
         {
             return new CallExpression(
-                    call.getSignature(),
+                    call.getDisplayName(),
+                    call.getFunctionHandle(),
                     call.getType(),
                     call.getArguments().stream()
                             .map(expression -> expression.accept(this, context))
@@ -104,22 +112,39 @@ public final class PageFieldsToInputParametersRewriter
         {
             return reference;
         }
+
+        @Override
+        public RowExpression visitSpecialForm(SpecialFormExpression specialForm, Void context)
+        {
+            return new SpecialFormExpression(
+                    specialForm.getForm(),
+                    specialForm.getType(),
+                    specialForm.getArguments().stream()
+                            .map(expression -> expression.accept(this, context))
+                            .collect(toImmutableList()));
+        }
     }
 
     public static class Result
     {
-        private final RowExpression rewrittenExpression;
+        private final List<RowExpression> rewrittenExpressions;
         private final InputChannels inputChannels;
 
-        public Result(RowExpression rewrittenExpression, InputChannels inputChannels)
+        public Result(List<RowExpression> rewrittenExpressions, InputChannels inputChannels)
         {
-            this.rewrittenExpression = rewrittenExpression;
+            this.rewrittenExpressions = rewrittenExpressions;
             this.inputChannels = inputChannels;
+        }
+
+        public List<RowExpression> getRewrittenExpressions()
+        {
+            return rewrittenExpressions;
         }
 
         public RowExpression getRewrittenExpression()
         {
-            return rewrittenExpression;
+            checkState(rewrittenExpressions.size() == 1, "Expect only one expression");
+            return rewrittenExpressions.get(0);
         }
 
         public InputChannels getInputChannels()

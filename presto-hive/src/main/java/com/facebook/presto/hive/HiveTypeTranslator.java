@@ -13,19 +13,31 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
-import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.collect.ImmutableList;
 import org.apache.hadoop.hive.common.type.HiveChar;
 import org.apache.hadoop.hive.common.type.HiveVarchar;
 import org.apache.hadoop.hive.serde2.typeinfo.DecimalTypeInfo;
 import org.apache.hadoop.hive.serde2.typeinfo.TypeInfo;
 
+import java.util.Optional;
+
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.hive.HiveType.HIVE_BINARY;
 import static com.facebook.presto.hive.HiveType.HIVE_BOOLEAN;
 import static com.facebook.presto.hive.HiveType.HIVE_BYTE;
@@ -37,20 +49,10 @@ import static com.facebook.presto.hive.HiveType.HIVE_LONG;
 import static com.facebook.presto.hive.HiveType.HIVE_SHORT;
 import static com.facebook.presto.hive.HiveType.HIVE_STRING;
 import static com.facebook.presto.hive.HiveType.HIVE_TIMESTAMP;
-import static com.facebook.presto.hive.HiveUtil.isArrayType;
-import static com.facebook.presto.hive.HiveUtil.isMapType;
-import static com.facebook.presto.hive.HiveUtil.isRowType;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.isArrayType;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.isMapType;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.isRowType;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static java.lang.String.format;
 import static java.util.stream.Collectors.toList;
 import static org.apache.hadoop.hive.serde2.typeinfo.TypeInfoFactory.getCharTypeInfo;
@@ -63,7 +65,7 @@ public class HiveTypeTranslator
         implements TypeTranslator
 {
     @Override
-    public TypeInfo translate(Type type)
+    public TypeInfo translate(Type type, Optional<HiveType> defaultHiveType)
     {
         if (BOOLEAN.equals(type)) {
             return HIVE_BOOLEAN.getTypeInfo();
@@ -123,12 +125,12 @@ public class HiveTypeTranslator
             return new DecimalTypeInfo(decimalType.getPrecision(), decimalType.getScale());
         }
         if (isArrayType(type)) {
-            TypeInfo elementType = translate(type.getTypeParameters().get(0));
+            TypeInfo elementType = translate(type.getTypeParameters().get(0), defaultHiveType);
             return getListTypeInfo(elementType);
         }
         if (isMapType(type)) {
-            TypeInfo keyType = translate(type.getTypeParameters().get(0));
-            TypeInfo valueType = translate(type.getTypeParameters().get(1));
+            TypeInfo keyType = translate(type.getTypeParameters().get(0), defaultHiveType);
+            TypeInfo valueType = translate(type.getTypeParameters().get(1), defaultHiveType);
             return getMapTypeInfo(keyType, valueType);
         }
         if (isRowType(type)) {
@@ -146,9 +148,66 @@ public class HiveTypeTranslator
             return getStructTypeInfo(
                     fieldNames.build(),
                     type.getTypeParameters().stream()
-                            .map(this::translate)
+                            .map(t -> translate(t, defaultHiveType))
                             .collect(toList()));
         }
-        throw new PrestoException(NOT_SUPPORTED, format("Unsupported Hive type: %s", type));
+        return defaultHiveType
+                .orElseThrow(() -> new PrestoException(NOT_SUPPORTED, format("No default Hive type provided for unsupported Hive type: %s", type)))
+                .getTypeInfo();
+    }
+
+    public static boolean isSupportedHiveType(Type type)
+    {
+        if (BOOLEAN.equals(type)) {
+            return true;
+        }
+        if (BIGINT.equals(type)) {
+            return true;
+        }
+        if (INTEGER.equals(type)) {
+            return true;
+        }
+        if (SMALLINT.equals(type)) {
+            return true;
+        }
+        if (TINYINT.equals(type)) {
+            return true;
+        }
+        if (REAL.equals(type)) {
+            return true;
+        }
+        if (DOUBLE.equals(type)) {
+            return true;
+        }
+        if (type instanceof VarcharType) {
+            return true;
+        }
+        if (type instanceof CharType) {
+            return true;
+        }
+        if (VARBINARY.equals(type)) {
+            return true;
+        }
+        if (DATE.equals(type)) {
+            return true;
+        }
+        if (TIMESTAMP.equals(type)) {
+            return true;
+        }
+        if (type instanceof DecimalType) {
+            return true;
+        }
+        if (isArrayType(type)) {
+            return isSupportedHiveType(type.getTypeParameters().get(0));
+        }
+        if (isMapType(type)) {
+            return isSupportedHiveType(type.getTypeParameters().get(0)) &&
+                    isSupportedHiveType(type.getTypeParameters().get(1));
+        }
+        if (isRowType(type)) {
+            return type.getTypeParameters().stream()
+                    .allMatch(HiveTypeTranslator::isSupportedHiveType);
+        }
+        return false;
     }
 }

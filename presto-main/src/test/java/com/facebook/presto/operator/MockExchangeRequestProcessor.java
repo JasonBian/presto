@@ -13,21 +13,21 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.airlift.http.client.HttpStatus;
+import com.facebook.airlift.http.client.Request;
+import com.facebook.airlift.http.client.Response;
+import com.facebook.airlift.http.client.testing.TestingHttpClient;
+import com.facebook.airlift.http.client.testing.TestingResponse;
 import com.facebook.presto.client.PrestoHeaders;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.execution.buffer.BufferResult;
-import com.facebook.presto.execution.buffer.PagesSerde;
-import com.facebook.presto.execution.buffer.PagesSerdeUtil;
-import com.facebook.presto.execution.buffer.SerializedPage;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.PagesSerdeUtil;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.cache.CacheBuilder;
 import com.google.common.cache.CacheLoader;
 import com.google.common.cache.LoadingCache;
 import com.google.common.collect.ImmutableListMultimap;
-import io.airlift.http.client.HttpStatus;
-import io.airlift.http.client.Request;
-import io.airlift.http.client.Response;
-import io.airlift.http.client.testing.TestingHttpClient;
-import io.airlift.http.client.testing.TestingResponse;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.units.DataSize;
 
@@ -39,6 +39,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
 
 import static com.facebook.presto.PrestoMediaTypes.PRESTO_PAGES;
 import static com.facebook.presto.client.PrestoHeaders.PRESTO_BUFFER_COMPLETE;
@@ -48,6 +49,7 @@ import static com.facebook.presto.client.PrestoHeaders.PRESTO_TASK_INSTANCE_ID;
 import static com.facebook.presto.execution.buffer.TestingPagesSerdeFactory.testingPagesSerde;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.net.HttpHeaders.CONTENT_TYPE;
+import static java.util.Collections.synchronizedList;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
 
@@ -55,20 +57,30 @@ public class MockExchangeRequestProcessor
         implements TestingHttpClient.Processor
 {
     private static final String TASK_INSTANCE_ID = "task-instance-id";
-    private static final PagesSerde PAGES_SERDE = testingPagesSerde();
 
     private final LoadingCache<URI, MockBuffer> buffers = CacheBuilder.newBuilder().build(CacheLoader.from(MockBuffer::new));
 
     private final DataSize expectedMaxSize;
+    private final PagesSerde pagesSerde;
+    private final Function<byte[], byte[]> dataChanger;
+
+    private final List<DataSize> requestMaxSizes = synchronizedList(new ArrayList<>());
 
     public MockExchangeRequestProcessor(DataSize expectedMaxSize)
     {
+        this(expectedMaxSize, testingPagesSerde(), in -> in);
+    }
+
+    public MockExchangeRequestProcessor(DataSize expectedMaxSize, PagesSerde pagesSerde, Function<byte[], byte[]> dataChanger)
+    {
         this.expectedMaxSize = expectedMaxSize;
+        this.pagesSerde = pagesSerde;
+        this.dataChanger = dataChanger;
     }
 
     public void addPage(URI location, Page page)
     {
-        buffers.getUnchecked(location).addPage(page);
+        buffers.getUnchecked(location).addPage(page, pagesSerde);
     }
 
     public void setComplete(URI location)
@@ -86,7 +98,8 @@ public class MockExchangeRequestProcessor
         // verify we got a data size and it parses correctly
         assertTrue(!request.getHeaders().get(PrestoHeaders.PRESTO_MAX_SIZE).isEmpty());
         DataSize maxSize = DataSize.valueOf(request.getHeader(PrestoHeaders.PRESTO_MAX_SIZE));
-        assertEquals(maxSize, expectedMaxSize);
+        assertTrue(maxSize.compareTo(expectedMaxSize) <= 0);
+        requestMaxSizes.add(maxSize);
 
         RequestLocation requestLocation = new RequestLocation(request.getUri());
         URI location = requestLocation.getLocation();
@@ -98,7 +111,7 @@ public class MockExchangeRequestProcessor
         if (!result.getSerializedPages().isEmpty()) {
             DynamicSliceOutput sliceOutput = new DynamicSliceOutput(64);
             PagesSerdeUtil.writeSerializedPages(sliceOutput, result.getSerializedPages());
-            bytes = sliceOutput.slice().getBytes();
+            bytes = dataChanger.apply(sliceOutput.slice().getBytes());
             status = HttpStatus.OK;
         }
         else {
@@ -114,6 +127,11 @@ public class MockExchangeRequestProcessor
                         PRESTO_PAGE_NEXT_TOKEN, String.valueOf(result.getNextToken()),
                         PRESTO_BUFFER_COMPLETE, String.valueOf(result.isBufferComplete())),
                 bytes);
+    }
+
+    public List<DataSize> getRequestMaxSizes()
+    {
+        return requestMaxSizes;
     }
 
     private class RequestLocation
@@ -157,10 +175,10 @@ public class MockExchangeRequestProcessor
             completed.set(true);
         }
 
-        public synchronized void addPage(Page page)
+        public synchronized void addPage(Page page, PagesSerde pagesSerde)
         {
             checkState(completed.get() != Boolean.TRUE, "Location %s is complete", location);
-            serializedPages.add(PAGES_SERDE.serialize(page));
+            serializedPages.add(pagesSerde.serialize(page));
         }
 
         public BufferResult getPages(long sequenceId, DataSize maxSize)

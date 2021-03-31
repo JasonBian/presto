@@ -18,24 +18,19 @@ import com.facebook.presto.matching.Pattern;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.Constraint;
+import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.spi.statistics.ColumnStatistics;
 import com.facebook.presto.spi.statistics.TableStatistics;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.Symbol;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.Lookup;
-import com.facebook.presto.sql.planner.plan.TableScanNode;
+import com.google.common.collect.ImmutableList;
 
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
-import java.util.OptionalDouble;
 
-import static com.facebook.presto.cost.StatsUtil.toStatsRepresentation;
-import static com.facebook.presto.cost.SymbolStatsEstimate.UNKNOWN_STATS;
 import static com.facebook.presto.sql.planner.plan.Patterns.tableScan;
-import static java.lang.Double.NEGATIVE_INFINITY;
-import static java.lang.Double.POSITIVE_INFINITY;
 import static java.util.Objects.requireNonNull;
 
 public class TableScanStatsRule
@@ -63,39 +58,18 @@ public class TableScanStatsRule
         // TODO Construct predicate like AddExchanges's LayoutConstraintEvaluator
         Constraint<ColumnHandle> constraint = new Constraint<>(node.getCurrentConstraint());
 
-        TableStatistics tableStatistics = metadata.getTableStatistics(session, node.getTable(), constraint);
-        Map<Symbol, SymbolStatsEstimate> outputSymbolStats = new HashMap<>();
+        TableStatistics tableStatistics = metadata.getTableStatistics(session, node.getTable(), ImmutableList.copyOf(node.getAssignments().values()), constraint);
+        Map<VariableReferenceExpression, VariableStatsEstimate> outputVariableStats = new HashMap<>();
 
-        for (Map.Entry<Symbol, ColumnHandle> entry : node.getAssignments().entrySet()) {
-            Symbol symbol = entry.getKey();
-            Type symbolType = types.get(symbol);
+        for (Map.Entry<VariableReferenceExpression, ColumnHandle> entry : node.getAssignments().entrySet()) {
             Optional<ColumnStatistics> columnStatistics = Optional.ofNullable(tableStatistics.getColumnStatistics().get(entry.getValue()));
-            outputSymbolStats.put(symbol, columnStatistics.map(statistics -> toSymbolStatistics(tableStatistics, statistics, session, symbolType)).orElse(UNKNOWN_STATS));
+            outputVariableStats.put(entry.getKey(), columnStatistics.map(statistics -> StatsUtil.toVariableStatsEstimate(tableStatistics, statistics)).orElse(VariableStatsEstimate.unknown()));
         }
 
         return Optional.of(PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(tableStatistics.getRowCount().getValue())
-                .addSymbolStatistics(outputSymbolStats)
+                .setTotalSize(tableStatistics.getTotalSize().getValue())
+                .addVariableStatistics(outputVariableStats)
                 .build());
-    }
-
-    private SymbolStatsEstimate toSymbolStatistics(TableStatistics tableStatistics, ColumnStatistics columnStatistics, Session session, Type type)
-    {
-        double nullsFraction = columnStatistics.getNullsFraction().getValue();
-        double nonNullRowsCount = tableStatistics.getRowCount().getValue() * (1.0 - nullsFraction);
-        return SymbolStatsEstimate.builder()
-                .setLowValue(asDouble(session, type, columnStatistics.getOnlyRangeColumnStatistics().getLowValue()).orElse(NEGATIVE_INFINITY))
-                .setHighValue(asDouble(session, type, columnStatistics.getOnlyRangeColumnStatistics().getHighValue()).orElse(POSITIVE_INFINITY))
-                .setNullsFraction(nullsFraction)
-                .setDistinctValuesCount(columnStatistics.getOnlyRangeColumnStatistics().getDistinctValuesCount().getValue())
-                .setAverageRowSize(columnStatistics.getOnlyRangeColumnStatistics().getDataSize().getValue() / nonNullRowsCount)
-                .build();
-    }
-
-    private OptionalDouble asDouble(Session session, Type type, Optional<Object> optionalValue)
-    {
-        return optionalValue
-                .map(value -> toStatsRepresentation(metadata, session, type, value))
-                .orElseGet(OptionalDouble::empty);
     }
 }

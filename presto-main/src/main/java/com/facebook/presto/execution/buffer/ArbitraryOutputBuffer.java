@@ -13,12 +13,14 @@
  */
 package com.facebook.presto.execution.buffer;
 
-import com.facebook.presto.OutputBuffers;
-import com.facebook.presto.OutputBuffers.OutputBufferId;
+import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.StateMachine;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.execution.buffer.ClientBuffer.PagesSupplier;
+import com.facebook.presto.execution.buffer.OutputBuffers.OutputBufferId;
+import com.facebook.presto.execution.buffer.SerializedPageReference.PagesReleasedListener;
 import com.facebook.presto.memory.context.LocalMemoryContext;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Sets;
@@ -39,20 +41,21 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
-import static com.facebook.presto.OutputBuffers.BufferType.ARBITRARY;
-import static com.facebook.presto.OutputBuffers.createInitialEmptyOutputBuffers;
 import static com.facebook.presto.execution.buffer.BufferState.FAILED;
 import static com.facebook.presto.execution.buffer.BufferState.FINISHED;
 import static com.facebook.presto.execution.buffer.BufferState.FLUSHING;
 import static com.facebook.presto.execution.buffer.BufferState.NO_MORE_BUFFERS;
 import static com.facebook.presto.execution.buffer.BufferState.NO_MORE_PAGES;
 import static com.facebook.presto.execution.buffer.BufferState.OPEN;
+import static com.facebook.presto.execution.buffer.OutputBuffers.BufferType.ARBITRARY;
+import static com.facebook.presto.execution.buffer.OutputBuffers.createInitialEmptyOutputBuffers;
+import static com.facebook.presto.execution.buffer.SerializedPageReference.dereferencePages;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
-import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
 /**
@@ -71,11 +74,16 @@ public class ArbitraryOutputBuffer
     @GuardedBy("this")
     private final ConcurrentMap<OutputBufferId, ClientBuffer> buffers = new ConcurrentHashMap<>();
 
+    //  The index of the first client buffer that should be polled
+    private final AtomicInteger nextClientBufferIndex = new AtomicInteger(0);
+
     private final StateMachine<BufferState> state;
     private final String taskInstanceId;
 
     private final AtomicLong totalPagesAdded = new AtomicLong();
     private final AtomicLong totalRowsAdded = new AtomicLong();
+
+    private final LifespanSerializedPageTracker pageTracker;
 
     public ArbitraryOutputBuffer(
             String taskInstanceId,
@@ -92,7 +100,8 @@ public class ArbitraryOutputBuffer
                 maxBufferSize.toBytes(),
                 requireNonNull(systemMemoryContextSupplier, "systemMemoryContextSupplier is null"),
                 requireNonNull(notificationExecutor, "notificationExecutor is null"));
-        this.masterBuffer = new MasterBuffer();
+        this.pageTracker = new LifespanSerializedPageTracker(memoryManager);
+        this.masterBuffer = new MasterBuffer(pageTracker);
     }
 
     @Override
@@ -178,6 +187,8 @@ public class ArbitraryOutputBuffer
             for (OutputBufferId outputBufferId : outputBuffers.getBuffers().keySet()) {
                 getBuffer(outputBufferId);
             }
+            // Reset resume from position
+            nextClientBufferIndex.set(0);
 
             // update state if no more buffers is set
             if (outputBuffers.isNoMoreBufferIds()) {
@@ -200,48 +211,71 @@ public class ArbitraryOutputBuffer
     }
 
     @Override
-    public void enqueue(List<SerializedPage> pages)
+    public void registerLifespanCompletionCallback(Consumer<Lifespan> callback)
+    {
+        pageTracker.registerLifespanCompletionCallback(callback);
+    }
+
+    @Override
+    public void enqueue(Lifespan lifespan, List<SerializedPage> pages)
     {
         checkState(!Thread.holdsLock(this), "Can not enqueue pages while holding a lock on this");
+        requireNonNull(lifespan, "lifespan is null");
         requireNonNull(pages, "page is null");
+        checkState(pageTracker.isLifespanCompletionCallbackRegistered(), "lifespanCompletionCallback must be set before enqueueing data");
 
         // ignore pages after "no more pages" is set
         // this can happen with a limit query
-        if (!state.get().canAddPages()) {
+        if (!state.get().canAddPages() || pageTracker.isNoMorePagesForLifespan(lifespan)) {
             return;
         }
 
+        ImmutableList.Builder<SerializedPageReference> references = ImmutableList.builderWithExpectedSize(pages.size());
+        long bytesAdded = 0;
+        long rowCount = 0;
+        for (SerializedPage page : pages) {
+            long retainedSize = page.getRetainedSizeInBytes();
+            bytesAdded += retainedSize;
+            rowCount += page.getPositionCount();
+            // create page reference counts with an initial single reference
+            references.add(new SerializedPageReference(page, 1, lifespan));
+        }
+        List<SerializedPageReference> serializedPageReferences = references.build();
+
         // reserve memory
-        long bytesAdded = pages.stream().mapToLong(SerializedPage::getRetainedSizeInBytes).sum();
         memoryManager.updateMemoryUsage(bytesAdded);
 
         // update stats
-        long rowCount = pages.stream().mapToLong(SerializedPage::getPositionCount).sum();
         totalRowsAdded.addAndGet(rowCount);
-        totalPagesAdded.addAndGet(pages.size());
-
-        // create page reference counts with an initial single reference
-        List<SerializedPageReference> serializedPageReferences = pages.stream()
-                .map(pageSplit -> new SerializedPageReference(pageSplit, 1, () -> memoryManager.updateMemoryUsage(-pageSplit.getRetainedSizeInBytes())))
-                .collect(toImmutableList());
+        totalPagesAdded.addAndGet(serializedPageReferences.size());
+        pageTracker.incrementLifespanPageCount(lifespan, serializedPageReferences.size());
 
         // add pages to the buffer (this will increase the reference count by one)
         masterBuffer.addPages(serializedPageReferences);
 
         // process any pending reads from the client buffers
-        for (ClientBuffer clientBuffer : safeGetBuffersSnapshot()) {
+        List<ClientBuffer> buffers = safeGetBuffersSnapshot();
+        if (buffers.isEmpty()) {
+            return;
+        }
+        // handle potential for racy update of next index and client buffers present
+        int index = nextClientBufferIndex.get() % buffers.size();
+        for (int i = 0; i < buffers.size(); i++) {
             if (masterBuffer.isEmpty()) {
+                // Resume from the current client buffer on the next iteration
+                nextClientBufferIndex.set(index);
                 break;
             }
-            clientBuffer.loadPagesIfNecessary(masterBuffer);
+            buffers.get(index).loadPagesIfNecessary(masterBuffer);
+            index = (index + 1) % buffers.size();
         }
     }
 
     @Override
-    public void enqueue(int partition, List<SerializedPage> pages)
+    public void enqueue(Lifespan lifespan, int partition, List<SerializedPage> pages)
     {
         checkState(partition == 0, "Expected partition number to be zero");
-        enqueue(pages);
+        enqueue(lifespan, pages);
     }
 
     @Override
@@ -322,6 +356,18 @@ public class ArbitraryOutputBuffer
     }
 
     @Override
+    public void setNoMorePagesForLifespan(Lifespan lifespan)
+    {
+        pageTracker.setNoMorePagesForLifespan(lifespan);
+    }
+
+    @Override
+    public boolean isFinishedForLifespan(Lifespan lifespan)
+    {
+        return pageTracker.isFinishedForLifespan(lifespan);
+    }
+
+    @Override
     public long getPeakMemoryUsage()
     {
         return memoryManager.getPeakMemoryUsage();
@@ -347,7 +393,7 @@ public class ArbitraryOutputBuffer
 
         // NOTE: buffers are allowed to be created before they are explicitly declared by setOutputBuffers
         // When no-more-buffers is set, we verify that all created buffers have been declared
-        buffer = new ClientBuffer(taskInstanceId, id);
+        buffer = new ClientBuffer(taskInstanceId, id, pageTracker);
 
         // buffer may have finished immediately before calling this method
         if (state.get() == FINISHED) {
@@ -358,7 +404,7 @@ public class ArbitraryOutputBuffer
         return buffer;
     }
 
-    private synchronized Collection<ClientBuffer> safeGetBuffersSnapshot()
+    private synchronized List<ClientBuffer> safeGetBuffersSnapshot()
     {
         return ImmutableList.copyOf(this.buffers.values());
     }
@@ -390,6 +436,8 @@ public class ArbitraryOutputBuffer
     private static class MasterBuffer
             implements PagesSupplier
     {
+        private final PagesReleasedListener onPagesReleased;
+
         @GuardedBy("this")
         private final LinkedList<SerializedPageReference> masterBuffer = new LinkedList<>();
 
@@ -397,6 +445,11 @@ public class ArbitraryOutputBuffer
         private boolean noMorePages;
 
         private final AtomicInteger bufferedPages = new AtomicInteger();
+
+        private MasterBuffer(PagesReleasedListener onPagesReleased)
+        {
+            this.onPagesReleased = requireNonNull(onPagesReleased, "onPagesReleased is null");
+        }
 
         public synchronized void addPages(List<SerializedPageReference> pages)
         {
@@ -458,7 +511,7 @@ public class ArbitraryOutputBuffer
             }
 
             // dereference outside of synchronized to avoid making a callback while holding a lock
-            pages.forEach(SerializedPageReference::dereferencePage);
+            dereferencePages(pages, onPagesReleased);
         }
 
         public int getBufferedPages()

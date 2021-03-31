@@ -13,17 +13,22 @@
  */
 package com.facebook.presto.tests;
 
+import com.facebook.airlift.testing.Closeables;
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.cost.StatsCalculator;
 import com.facebook.presto.metadata.AllNodes;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.server.testing.TestingPrestoServer;
-import com.facebook.presto.spi.Node;
+import com.facebook.presto.spi.ConnectorId;
 import com.facebook.presto.spi.Plugin;
+import com.facebook.presto.spi.eventlistener.EventListener;
+import com.facebook.presto.split.PageSourceManager;
+import com.facebook.presto.split.SplitManager;
 import com.facebook.presto.sql.parser.SqlParserOptions;
+import com.facebook.presto.sql.planner.ConnectorPlanOptimizerManager;
 import com.facebook.presto.sql.planner.NodePartitioningManager;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.QueryRunner;
@@ -31,11 +36,11 @@ import com.facebook.presto.testing.TestingAccessControlManager;
 import com.facebook.presto.transaction.TransactionManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.testing.Closeables;
 import org.intellij.lang.annotations.Language;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -72,7 +77,7 @@ public final class StandaloneQueryRunner
 
         refreshNodes();
 
-        server.getMetadata().addFunctions(AbstractTestQueries.CUSTOM_FUNCTIONS);
+        server.getMetadata().registerBuiltInFunctions(AbstractTestQueries.CUSTOM_FUNCTIONS);
 
         SessionPropertyManager sessionPropertyManager = server.getMetadata().getSessionPropertyManager();
         sessionPropertyManager.addSystemSessionProperties(TEST_SYSTEM_PROPERTIES);
@@ -135,15 +140,39 @@ public final class StandaloneQueryRunner
     }
 
     @Override
+    public SplitManager getSplitManager()
+    {
+        return server.getSplitManager();
+    }
+
+    @Override
+    public PageSourceManager getPageSourceManager()
+    {
+        return server.getPageSourceManager();
+    }
+
+    @Override
     public NodePartitioningManager getNodePartitioningManager()
     {
         return server.getNodePartitioningManager();
     }
 
     @Override
+    public ConnectorPlanOptimizerManager getPlanOptimizerManager()
+    {
+        return server.getPlanOptimizerManager();
+    }
+
+    @Override
     public StatsCalculator getStatsCalculator()
     {
         return server.getStatsCalculator();
+    }
+
+    @Override
+    public Optional<EventListener> getEventListener()
+    {
+        return server.getEventListener();
     }
 
     @Override
@@ -176,7 +205,7 @@ public final class StandaloneQueryRunner
 
     private void refreshNodes(ConnectorId connectorId)
     {
-        Set<Node> activeNodesWithConnector;
+        Set<InternalNode> activeNodesWithConnector;
 
         do {
             try {
@@ -206,6 +235,12 @@ public final class StandaloneQueryRunner
         ConnectorId connectorId = server.createCatalog(catalogName, connectorName, properties);
 
         refreshNodes(connectorId);
+    }
+
+    @Override
+    public void loadFunctionNamespaceManager(String functionNamespaceManagerName, String catalogName, Map<String, String> properties)
+    {
+        server.getMetadata().getFunctionAndTypeManager().loadFunctionNamespaceManager(functionNamespaceManagerName, catalogName, properties);
     }
 
     @Override

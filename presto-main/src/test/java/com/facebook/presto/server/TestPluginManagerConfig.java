@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.server;
 
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import io.airlift.resolver.ArtifactResolver;
 import org.testng.annotations.Test;
 
@@ -30,6 +30,7 @@ public class TestPluginManagerConfig
         ConfigAssertions.assertRecordedDefaults(ConfigAssertions.recordDefaults(PluginManagerConfig.class)
                 .setInstalledPluginsDir(new File("plugin"))
                 .setPlugins((String) null)
+                .setDisabledConnectors("")
                 .setMavenLocalRepository(ArtifactResolver.USER_LOCAL_REPO)
                 .setMavenRemoteRepository(ArtifactResolver.MAVEN_CENTRAL_URI));
     }
@@ -40,6 +41,7 @@ public class TestPluginManagerConfig
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("plugin.dir", "plugins-dir")
                 .put("plugin.bundles", "a,b,c")
+                .put("plugin.disabled-connectors", "scuba,prism")
                 .put("maven.repo.local", "local-repo")
                 .put("maven.repo.remote", "remote-a,remote-b")
                 .build();
@@ -47,6 +49,7 @@ public class TestPluginManagerConfig
         PluginManagerConfig expected = new PluginManagerConfig()
                 .setInstalledPluginsDir(new File("plugins-dir"))
                 .setPlugins(ImmutableList.of("a", "b", "c"))
+                .setDisabledConnectors("scuba,prism")
                 .setMavenLocalRepository("local-repo")
                 .setMavenRemoteRepository(ImmutableList.of("remote-a", "remote-b"));
 

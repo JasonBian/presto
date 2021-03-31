@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 
 import java.util.List;
 
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.type.ColorType.COLOR;
 import static com.facebook.presto.util.StructuralTestUtil.arrayBlockOf;
 
@@ -28,7 +28,7 @@ public class TestColorArrayType
 {
     public TestColorArrayType()
     {
-        super(new TypeRegistry().getType(parseTypeSignature("array(color)")), List.class, createTestBlock(new TypeRegistry().getType(parseTypeSignature("array(color)"))));
+        super(functionAndTypeManager.getType(parseTypeSignature("array(color)")), List.class, createTestBlock(functionAndTypeManager.getType(parseTypeSignature("array(color)"))));
     }
 
     public static Block createTestBlock(Type arrayType)

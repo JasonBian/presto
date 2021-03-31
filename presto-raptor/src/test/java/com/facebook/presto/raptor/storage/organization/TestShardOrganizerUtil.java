@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.raptor.storage.organization;
 
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.raptor.RaptorMetadata;
 import com.facebook.presto.raptor.metadata.ColumnInfo;
 import com.facebook.presto.raptor.metadata.ColumnStats;
@@ -24,8 +26,6 @@ import com.facebook.presto.raptor.metadata.Table;
 import com.facebook.presto.raptor.metadata.TableColumn;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Maps;
@@ -44,16 +44,17 @@ import java.util.OptionalInt;
 import java.util.Set;
 import java.util.UUID;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
 import static com.facebook.presto.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
 import static com.facebook.presto.raptor.metadata.SchemaDaoUtil.createTablesWithRetry;
 import static com.facebook.presto.raptor.metadata.TestDatabaseShardManager.createShardManager;
 import static com.facebook.presto.raptor.metadata.TestDatabaseShardManager.shardInfo;
 import static com.facebook.presto.raptor.storage.organization.ShardOrganizerUtil.getOrganizationEligibleShards;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.google.common.io.MoreFiles.deleteRecursively;
 import static com.google.common.io.RecursiveDeleteOption.ALLOW_INSECURE;
@@ -77,13 +78,14 @@ public class TestShardOrganizerUtil
     @BeforeMethod
     public void setup()
     {
+        FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
         dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime());
-        dbi.registerMapper(new TableColumn.Mapper(new TypeRegistry()));
+        dbi.registerMapper(new TableColumn.Mapper(functionAndTypeManager));
         dummyHandle = dbi.open();
         createTablesWithRetry(dbi);
         dataDir = Files.createTempDir();
 
-        metadata = new RaptorMetadata("raptor", dbi, createShardManager(dbi));
+        metadata = new RaptorMetadata("raptor", dbi, createShardManager(dbi), functionAndTypeManager);
 
         metadataDao = dbi.onDemand(MetadataDao.class);
         shardManager = createShardManager(dbi);
@@ -105,12 +107,13 @@ public class TestShardOrganizerUtil
 
         SchemaTableName tableName = new SchemaTableName("default", "test");
         metadata.createTable(SESSION, tableMetadataBuilder(tableName)
-                .column("orderkey", BIGINT)
-                .column("orderdate", DATE)
-                .column("orderstatus", createVarcharType(3))
-                .property("ordering", ImmutableList.of("orderstatus", "orderkey"))
-                .property("temporal_column", "orderdate")
-                .build(),
+                        .column("orderkey", BIGINT)
+                        .column("orderdate", DATE)
+                        .column("orderstatus", createVarcharType(3))
+                        .property("ordering", ImmutableList.of("orderstatus", "orderkey"))
+                        .property("temporal_column", "orderdate")
+                        .property("table_supports_delta_delete", false)
+                        .build(),
                 false);
         Table tableInfo = metadataDao.getTableInformation(tableName.getSchemaName(), tableName.getTableName());
         List<TableColumn> tableColumns = metadataDao.listTableColumns(tableInfo.getTableId());
@@ -160,7 +163,7 @@ public class TestShardOrganizerUtil
 
         long transactionId = shardManager.beginTransaction();
         shardManager.commitShards(transactionId, tableInfo.getTableId(), COLUMNS, shards, Optional.empty(), 0);
-        Set<ShardMetadata> shardMetadatas = shardManager.getNodeShards("node1");
+        Set<ShardMetadata> shardMetadatas = shardManager.getNodeShardsAndDeltas("node1");
 
         Long temporalColumnId = metadataDao.getTemporalColumnId(tableInfo.getTableId());
         TableColumn temporalColumn = metadataDao.getTableColumn(tableInfo.getTableId(), temporalColumnId);
@@ -226,6 +229,8 @@ public class TestShardOrganizerUtil
                     tableId,
                     OptionalInt.empty(),
                     shard.getShardUuid(),
+                    false,
+                    Optional.empty(),
                     shard.getRowCount(),
                     shard.getUncompressedSize(),
                     sortRange,

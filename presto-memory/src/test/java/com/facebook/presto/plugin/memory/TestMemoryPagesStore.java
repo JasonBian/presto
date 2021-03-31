@@ -13,14 +13,15 @@
  */
 package com.facebook.presto.plugin.memory;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.HostAddress;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.PageSinkContext;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.testing.TestingConnectorSession;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
@@ -28,7 +29,7 @@ import io.airlift.units.DataSize;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static java.lang.String.format;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
@@ -128,7 +129,8 @@ public class TestMemoryPagesStore
         ConnectorPageSink pageSink = pageSinkProvider.createPageSink(
                 MemoryTransactionHandle.INSTANCE,
                 SESSION,
-                createMemoryInsertTableHandle(tableId, activeTableIds));
+                createMemoryInsertTableHandle(tableId, activeTableIds),
+                PageSinkContext.defaultContext());
         pageSink.appendPage(page);
         pageSink.finish();
     }
@@ -138,7 +140,8 @@ public class TestMemoryPagesStore
         ConnectorPageSink pageSink = pageSinkProvider.createPageSink(
                 MemoryTransactionHandle.INSTANCE,
                 SESSION,
-                createMemoryOutputTableHandle(tableId, activeTableIds));
+                createMemoryOutputTableHandle(tableId, activeTableIds),
+                PageSinkContext.defaultContext());
         pageSink.finish();
     }
 

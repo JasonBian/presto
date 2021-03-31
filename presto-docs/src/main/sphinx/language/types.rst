@@ -88,8 +88,8 @@ Fixed-Precision
     .. note::
 
         For compatibility reasons decimal literals without explicit type specifier (e.g. ``1.2``)
-        are treated as the values of the ``DOUBLE`` type by default, but this is subject to change
-        in future releases. This behavior is controlled by:
+        are treated as values of the ``DOUBLE`` type by default up to version 0.198. 
+        After 0.198 they are parsed as DECIMAL.
 
           - System wide property: ``parse-decimal-literals-as-double``
           - Session wide property: ``parse_decimal_literals_as_double``
@@ -225,12 +225,90 @@ Network Address
 ``IPADDRESS``
 ^^^^^^^^^^^^^
 
-    An IP address that can represent either an IPv4 or IPv6 address. Internally,
-    the type is a pure IPv6 address. Support for IPv4 is handled using the
-    *IPv4-mapped IPv6 address* range (:rfc:`4291#section-2.5.5.2`).
+    An IP address that can represent either an IPv4 or IPv6 address.
+
+    Internally, the type is a pure IPv6 address. Support for IPv4 is handled
+    using the *IPv4-mapped IPv6 address* range (:rfc:`4291#section-2.5.5.2`).
     When creating an ``IPADDRESS``, IPv4 addresses will be mapped into that range.
+
     When formatting an ``IPADDRESS``, any address within the mapped range will
     be formatted as an IPv4 address. Other addresses will be formatted as IPv6
     using the canonical format defined in :rfc:`5952`.
 
     Examples: ``IPADDRESS '10.0.0.1'``, ``IPADDRESS '2001:db8::1'``
+
+.. _ipprefix_type:
+
+``IPPREFIX``
+^^^^^^^^^^^^
+
+    An IP routing prefix that can represent either an IPv4 or IPv6 address.
+
+    Internally, an address is a pure IPv6 address. Support for IPv4 is handled
+    using the *IPv4-mapped IPv6 address* range (:rfc:`4291#section-2.5.5.2`).
+    When creating an ``IPPREFIX``, IPv4 addresses will be mapped into that range.
+    Additionally, addresses will be reduced to the first address of a network.
+
+    ``IPPREFIX`` values will be formatted in CIDR notation, written as an IP
+    address, a slash ('/') character, and the bit-length of the prefix. Any
+    address within the IPv4-mapped IPv6 address range will be formatted as an
+    IPv4 address. Other addresses will be formatted as IPv6 using the canonical
+    format defined in :rfc:`5952`.
+
+    Examples: ``IPPREFIX '10.0.1.0/24'``, ``IPPREFIX '2001:db8::/48'``
+
+HyperLogLog
+-----------
+
+Calculating the approximate distinct count can be done much more cheaply than an exact count using the
+`HyperLogLog <https://en.wikipedia.org/wiki/HyperLogLog>`_ data sketch. See :doc:`/functions/hyperloglog`.
+
+.. _hyperloglog_type:
+
+``HyperLogLog``
+^^^^^^^^^^^^^^^
+
+    A HyperLogLog sketch allows efficient computation of :func:`approx_distinct`. It starts as a
+    sparse representation, switching to a dense representation when it becomes more efficient.
+
+.. _p4hyperloglog_type:
+
+``P4HyperLogLog``
+^^^^^^^^^^^^^^^^^
+
+    A P4HyperLogLog sketch is similar to :ref:`hyperloglog_type`, but it starts (and remains)
+    in the dense representation.
+
+KHyperLogLog
+------------
+
+.. _khyperloglog_type:
+
+``KHyperLogLog``
+^^^^^^^^^^^^^^^^
+
+    A KHyperLogLog is a data sketch that can be used to compactly represents the association of two
+    columns. See :doc:`/functions/khyperloglog`.
+
+Quantile Digest
+---------------
+
+.. _qdigest_type:
+
+``QDigest``
+^^^^^^^^^^^
+
+    A quantile digest (qdigest) is a summary structure which captures the approximate
+    distribution of data for a given input set, and can be queried to retrieve approximate
+    quantile values from the distribution.  The level of accuracy for a qdigest
+    is tunable, allowing for more precise results at the expense of space.
+
+    A qdigest can be used to give approximate answer to queries asking for what value
+    belongs at a certain quantile.  A useful property of qdigests is that they are
+    additive, meaning they can be merged together without losing precision.
+
+    A qdigest may be helpful whenever the partial results of ``approx_percentile``
+    can be reused.  For example, one may be interested in a daily reading of the 99th
+    percentile values that are read over the course of a week.  Instead of calculating
+    the past week of data with ``approx_percentile``, ``qdigest``\ s could be stored
+    daily, and quickly merged to retrieve the 99th percentile value.

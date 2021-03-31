@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.geospatial.serde;
 
+import com.facebook.presto.geospatial.GeometryType;
+import com.facebook.presto.spi.PrestoException;
 import io.airlift.slice.BasicSliceInput;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
@@ -27,11 +29,14 @@ import org.locationtech.jts.geom.LinearRing;
 import org.locationtech.jts.geom.MultiPoint;
 import org.locationtech.jts.geom.Point;
 import org.locationtech.jts.geom.Polygon;
+import org.locationtech.jts.geom.TopologyException;
 
 import java.util.ArrayList;
 import java.util.List;
 
-import static com.facebook.presto.geospatial.GeometryUtils.translateToAVNaN;
+import static com.facebook.presto.geospatial.GeometryType.getForJtsGeometryType;
+import static com.facebook.presto.geospatial.GeometryUtils.isEsriNaN;
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.airlift.slice.SizeOf.SIZE_OF_DOUBLE;
@@ -52,7 +57,12 @@ public class JtsGeometrySerde
         BasicSliceInput input = shape.getInput();
         verify(input.available() > 0);
         GeometrySerializationType type = GeometrySerializationType.getForCode(input.readByte());
-        return readGeometry(input, type);
+        try {
+            return readGeometry(input, type);
+        }
+        catch (TopologyException e) {
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, e.getMessage(), e);
+        }
     }
 
     private static Geometry readGeometry(BasicSliceInput input, GeometrySerializationType type)
@@ -75,17 +85,17 @@ public class JtsGeometrySerde
             case ENVELOPE:
                 return readEnvelope(input);
             default:
-                throw new UnsupportedOperationException("Unexpected type: " + type);
+                throw new IllegalArgumentException("Unsupported geometry type: " + type);
         }
     }
 
     private static Point readPoint(SliceInput input)
     {
-        Coordinate coordinates = readCoordinate(input);
-        if (isNaN(coordinates.x) || isNaN(coordinates.y)) {
+        Coordinate coordinate = readCoordinate(input);
+        if (isNaN(coordinate.x) || isNaN(coordinate.y)) {
             return GEOMETRY_FACTORY.createPoint();
         }
-        return GEOMETRY_FACTORY.createPoint(coordinates);
+        return GEOMETRY_FACTORY.createPoint(coordinate);
     }
 
     private static Geometry readMultiPoint(SliceInput input)
@@ -93,11 +103,7 @@ public class JtsGeometrySerde
         skipEsriType(input);
         skipEnvelope(input);
         int pointCount = input.readInt();
-        Point[] points = new Point[pointCount];
-        for (int i = 0; i < pointCount; i++) {
-            points[i] = readPoint(input);
-        }
-        return GEOMETRY_FACTORY.createMultiPoint(points);
+        return GEOMETRY_FACTORY.createMultiPointFromCoords(readCoordinates(input, pointCount));
     }
 
     private static Geometry readPolyline(SliceInput input, boolean multitype)
@@ -170,25 +176,26 @@ public class JtsGeometrySerde
         LinearRing shell = null;
         List<LinearRing> holes = new ArrayList<>();
         List<Polygon> polygons = new ArrayList<>();
-        for (int i = 0; i < partCount; i++) {
-            Coordinate[] coordinates = readCoordinates(input, partLengths[i]);
-            if (isClockwise(coordinates)) {
-                // next polygon has started
-                if (shell != null) {
-                    polygons.add(GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0])));
-                    holes.clear();
+        try {
+            for (int i = 0; i < partCount; i++) {
+                Coordinate[] coordinates = readCoordinates(input, partLengths[i]);
+                if (isClockwise(coordinates)) {
+                    // next polygon has started
+                    if (shell != null) {
+                        polygons.add(GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0])));
+                        holes.clear();
+                    }
+                    shell = GEOMETRY_FACTORY.createLinearRing(coordinates);
                 }
                 else {
-                    verify(holes.isEmpty(), "shell is null but holes found");
+                    holes.add(GEOMETRY_FACTORY.createLinearRing(coordinates));
                 }
-                shell = GEOMETRY_FACTORY.createLinearRing(coordinates);
             }
-            else {
-                verify(shell != null, "shell is null but hole found");
-                holes.add(GEOMETRY_FACTORY.createLinearRing(coordinates));
-            }
+            polygons.add(GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0])));
         }
-        polygons.add(GEOMETRY_FACTORY.createPolygon(shell, holes.toArray(new LinearRing[0])));
+        catch (IllegalArgumentException e) {
+            throw new TopologyException("Error constructing Polygon: " + e.getMessage());
+        }
 
         if (multitype) {
             return GEOMETRY_FACTORY.createMultiPolygon(polygons.toArray(new Polygon[0]));
@@ -215,6 +222,10 @@ public class JtsGeometrySerde
         double yMin = input.readDouble();
         double xMax = input.readDouble();
         double yMax = input.readDouble();
+
+        if (isEsriNaN(xMin) || isEsriNaN(yMin) || isEsriNaN(xMax) || isEsriNaN(yMax)) {
+            return GEOMETRY_FACTORY.createPolygon();
+        }
 
         Coordinate[] coordinates = new Coordinate[5];
         coordinates[0] = new Coordinate(xMin, yMin);
@@ -245,8 +256,6 @@ public class JtsGeometrySerde
 
     private static Coordinate[] readCoordinates(SliceInput input, int count)
     {
-        requireNonNull(input, "input is null");
-        verify(count > 0);
         Coordinate[] coordinates = new Coordinate[count];
         for (int i = 0; i < count; i++) {
             coordinates[i] = readCoordinate(input);
@@ -267,30 +276,31 @@ public class JtsGeometrySerde
 
     private static void writeGeometry(Geometry geometry, DynamicSliceOutput output)
     {
-        switch (geometry.getGeometryType()) {
-            case "Point":
+        GeometryType type = getForJtsGeometryType(geometry.getGeometryType());
+        switch (type) {
+            case POINT:
                 writePoint((Point) geometry, output);
                 break;
-            case "MultiPoint":
+            case MULTI_POINT:
                 writeMultiPoint((MultiPoint) geometry, output);
                 break;
-            case "LineString":
+            case LINE_STRING:
                 writePolyline(geometry, output, false);
                 break;
-            case "MultiLineString":
+            case MULTI_LINE_STRING:
                 writePolyline(geometry, output, true);
                 break;
-            case "Polygon":
+            case POLYGON:
                 writePolygon(geometry, output, false);
                 break;
-            case "MultiPolygon":
+            case MULTI_POLYGON:
                 writePolygon(geometry, output, true);
                 break;
-            case "GeometryCollection":
+            case GEOMETRY_COLLECTION:
                 writeGeometryCollection(geometry, output);
                 break;
             default:
-                throw new IllegalArgumentException("Unsupported geometry type : " + geometry.getGeometryType());
+                throw new IllegalArgumentException("Unsupported geometry type: " + type);
         }
     }
 
@@ -312,9 +322,7 @@ public class JtsGeometrySerde
         output.writeInt(EsriShapeType.MULTI_POINT.code);
         writeEnvelope(geometry, output);
         output.writeInt(geometry.getNumPoints());
-        for (Coordinate coordinate : geometry.getCoordinates()) {
-            writeCoordinate(coordinate, output);
-        }
+        writeCoordinates(geometry.getCoordinates(), output);
     }
 
     private static void writePolyline(Geometry geometry, SliceOutput output, boolean multitype)
@@ -427,8 +435,8 @@ public class JtsGeometrySerde
 
     private static void writeCoordinate(Coordinate coordinate, SliceOutput output)
     {
-        output.writeDouble(translateToAVNaN(coordinate.x));
-        output.writeDouble(translateToAVNaN(coordinate.y));
+        output.writeDouble(coordinate.x);
+        output.writeDouble(coordinate.y);
     }
 
     private static void writeCoordinates(Coordinate[] coordinates, SliceOutput output)

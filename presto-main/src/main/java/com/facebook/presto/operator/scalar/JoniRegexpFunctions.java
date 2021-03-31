@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.LiteralParameters;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.type.Constraint;
 import com.facebook.presto.type.JoniRegexpType;
 import io.airlift.joni.Matcher;
@@ -36,8 +36,8 @@ import io.airlift.slice.Slices;
 
 import java.nio.charset.StandardCharsets;
 
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static java.lang.Math.toIntExact;
 import static java.lang.String.format;
 
@@ -53,9 +53,17 @@ public final class JoniRegexpFunctions
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean regexpLike(@SqlType("varchar(x)") Slice source, @SqlType(JoniRegexpType.NAME) Regex pattern)
     {
-        Matcher m = pattern.matcher(source.getBytes());
-        int offset = m.search(0, source.length(), Option.DEFAULT);
-        return offset != -1;
+        Matcher matcher;
+        int offset;
+        if (source.hasByteArray()) {
+            offset = source.byteArrayOffset();
+            matcher = pattern.matcher(source.byteArray(), offset, offset + source.length());
+        }
+        else {
+            offset = 0;
+            matcher = pattern.matcher(source.getBytes());
+        }
+        return matcher.search(offset, offset + source.length(), Option.DEFAULT) != -1;
     }
 
     @Description("removes substrings matching a regular expression")

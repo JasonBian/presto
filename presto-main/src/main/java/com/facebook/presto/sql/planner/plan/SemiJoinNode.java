@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.sql.planner.plan;
 
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -21,6 +23,7 @@ import com.google.common.collect.ImmutableList;
 import javax.annotation.concurrent.Immutable;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -28,40 +31,43 @@ import static java.util.Objects.requireNonNull;
 
 @Immutable
 public class SemiJoinNode
-        extends PlanNode
+        extends AbstractJoinNode
 {
     private final PlanNode source;
     private final PlanNode filteringSource;
-    private final Symbol sourceJoinSymbol;
-    private final Symbol filteringSourceJoinSymbol;
-    private final Symbol semiJoinOutput;
-    private final Optional<Symbol> sourceHashSymbol;
-    private final Optional<Symbol> filteringSourceHashSymbol;
+    private final VariableReferenceExpression sourceJoinVariable;
+    private final VariableReferenceExpression filteringSourceJoinVariable;
+    private final VariableReferenceExpression semiJoinOutput;
+    private final Optional<VariableReferenceExpression> sourceHashVariable;
+    private final Optional<VariableReferenceExpression> filteringSourceHashVariable;
     private final Optional<DistributionType> distributionType;
+    private final Map<String, VariableReferenceExpression> dynamicFilters;
 
     @JsonCreator
     public SemiJoinNode(@JsonProperty("id") PlanNodeId id,
             @JsonProperty("source") PlanNode source,
             @JsonProperty("filteringSource") PlanNode filteringSource,
-            @JsonProperty("sourceJoinSymbol") Symbol sourceJoinSymbol,
-            @JsonProperty("filteringSourceJoinSymbol") Symbol filteringSourceJoinSymbol,
-            @JsonProperty("semiJoinOutput") Symbol semiJoinOutput,
-            @JsonProperty("sourceHashSymbol") Optional<Symbol> sourceHashSymbol,
-            @JsonProperty("filteringSourceHashSymbol") Optional<Symbol> filteringSourceHashSymbol,
-            @JsonProperty("distributionType") Optional<DistributionType> distributionType)
+            @JsonProperty("sourceJoinVariable") VariableReferenceExpression sourceJoinVariable,
+            @JsonProperty("filteringSourceJoinVariable") VariableReferenceExpression filteringSourceJoinVariable,
+            @JsonProperty("semiJoinOutput") VariableReferenceExpression semiJoinOutput,
+            @JsonProperty("sourceHashVariable") Optional<VariableReferenceExpression> sourceHashVariable,
+            @JsonProperty("filteringSourceHashVariable") Optional<VariableReferenceExpression> filteringSourceHashVariable,
+            @JsonProperty("distributionType") Optional<DistributionType> distributionType,
+            @JsonProperty("dynamicFilters") Map<String, VariableReferenceExpression> dynamicFilters)
     {
         super(id);
         this.source = requireNonNull(source, "source is null");
         this.filteringSource = requireNonNull(filteringSource, "filteringSource is null");
-        this.sourceJoinSymbol = requireNonNull(sourceJoinSymbol, "sourceJoinSymbol is null");
-        this.filteringSourceJoinSymbol = requireNonNull(filteringSourceJoinSymbol, "filteringSourceJoinSymbol is null");
+        this.sourceJoinVariable = requireNonNull(sourceJoinVariable, "sourceJoinVariable is null");
+        this.filteringSourceJoinVariable = requireNonNull(filteringSourceJoinVariable, "filteringSourceJoinVariable is null");
         this.semiJoinOutput = requireNonNull(semiJoinOutput, "semiJoinOutput is null");
-        this.sourceHashSymbol = requireNonNull(sourceHashSymbol, "sourceHashSymbol is null");
-        this.filteringSourceHashSymbol = requireNonNull(filteringSourceHashSymbol, "filteringSourceHashSymbol is null");
+        this.sourceHashVariable = requireNonNull(sourceHashVariable, "sourceHashVariable is null");
+        this.filteringSourceHashVariable = requireNonNull(filteringSourceHashVariable, "filteringSourceHashVariable is null");
         this.distributionType = requireNonNull(distributionType, "distributionType is null");
+        this.dynamicFilters = requireNonNull(dynamicFilters, "dynamicFilters is null");
 
-        checkArgument(source.getOutputSymbols().contains(sourceJoinSymbol), "Source does not contain join symbol");
-        checkArgument(filteringSource.getOutputSymbols().contains(filteringSourceJoinSymbol), "Filtering source does not contain filtering join symbol");
+        checkArgument(source.getOutputVariables().contains(sourceJoinVariable), "Source does not contain join symbol");
+        checkArgument(filteringSource.getOutputVariables().contains(filteringSourceJoinVariable), "Filtering source does not contain filtering join symbol");
     }
 
     public enum DistributionType
@@ -70,52 +76,71 @@ public class SemiJoinNode
         REPLICATED
     }
 
-    @JsonProperty("source")
+    @JsonProperty
     public PlanNode getSource()
     {
         return source;
     }
 
-    @JsonProperty("filteringSource")
+    @Override
+    public PlanNode getProbe()
+    {
+        return source;
+    }
+
+    @JsonProperty
     public PlanNode getFilteringSource()
     {
         return filteringSource;
     }
 
-    @JsonProperty("sourceJoinSymbol")
-    public Symbol getSourceJoinSymbol()
+    @Override
+    public PlanNode getBuild()
     {
-        return sourceJoinSymbol;
+        return filteringSource;
     }
 
-    @JsonProperty("filteringSourceJoinSymbol")
-    public Symbol getFilteringSourceJoinSymbol()
+    @JsonProperty
+    public VariableReferenceExpression getSourceJoinVariable()
     {
-        return filteringSourceJoinSymbol;
+        return sourceJoinVariable;
     }
 
-    @JsonProperty("semiJoinOutput")
-    public Symbol getSemiJoinOutput()
+    @JsonProperty
+    public VariableReferenceExpression getFilteringSourceJoinVariable()
+    {
+        return filteringSourceJoinVariable;
+    }
+
+    @JsonProperty
+    public VariableReferenceExpression getSemiJoinOutput()
     {
         return semiJoinOutput;
     }
 
-    @JsonProperty("sourceHashSymbol")
-    public Optional<Symbol> getSourceHashSymbol()
+    @JsonProperty
+    public Optional<VariableReferenceExpression> getSourceHashVariable()
     {
-        return sourceHashSymbol;
+        return sourceHashVariable;
     }
 
-    @JsonProperty("filteringSourceHashSymbol")
-    public Optional<Symbol> getFilteringSourceHashSymbol()
+    @JsonProperty
+    public Optional<VariableReferenceExpression> getFilteringSourceHashVariable()
     {
-        return filteringSourceHashSymbol;
+        return filteringSourceHashVariable;
     }
 
-    @JsonProperty("distributionType")
+    @JsonProperty
     public Optional<DistributionType> getDistributionType()
     {
         return distributionType;
+    }
+
+    @Override
+    @JsonProperty
+    public Map<String, VariableReferenceExpression> getDynamicFilters()
+    {
+        return dynamicFilters;
     }
 
     @Override
@@ -125,16 +150,16 @@ public class SemiJoinNode
     }
 
     @Override
-    public List<Symbol> getOutputSymbols()
+    public List<VariableReferenceExpression> getOutputVariables()
     {
-        return ImmutableList.<Symbol>builder()
-                .addAll(source.getOutputSymbols())
+        return ImmutableList.<VariableReferenceExpression>builder()
+                .addAll(source.getOutputVariables())
                 .add(semiJoinOutput)
                 .build();
     }
 
     @Override
-    public <R, C> R accept(PlanVisitor<R, C> visitor, C context)
+    public <R, C> R accept(InternalPlanVisitor<R, C> visitor, C context)
     {
         return visitor.visitSemiJoin(this, context);
     }
@@ -147,11 +172,27 @@ public class SemiJoinNode
                 getId(),
                 newChildren.get(0),
                 newChildren.get(1),
-                sourceJoinSymbol,
-                filteringSourceJoinSymbol,
+                sourceJoinVariable,
+                filteringSourceJoinVariable,
                 semiJoinOutput,
-                sourceHashSymbol,
-                filteringSourceHashSymbol,
-                distributionType);
+                sourceHashVariable,
+                filteringSourceHashVariable,
+                distributionType,
+                dynamicFilters);
+    }
+
+    public SemiJoinNode withDistributionType(DistributionType distributionType)
+    {
+        return new SemiJoinNode(
+                getId(),
+                source,
+                filteringSource,
+                sourceJoinVariable,
+                filteringSourceJoinVariable,
+                semiJoinOutput,
+                sourceHashVariable,
+                filteringSourceHashVariable,
+                Optional.of(distributionType),
+                dynamicFilters);
     }
 }

@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.operator.project;
 
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.LazyBlock;
-import com.facebook.presto.spi.block.LongArrayBlock;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.LazyBlock;
+import com.facebook.presto.common.block.LongArrayBlock;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.google.common.collect.ImmutableList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import it.unimi.dsi.fastutil.ints.IntArraySet;
@@ -187,7 +187,7 @@ public class TestDictionaryAwarePageFilter
 
         IntSet expectedSelectedPositions = new IntArraySet(block.getPositionCount());
         for (int position = 0; position < block.getPositionCount(); position++) {
-            if (isSelected(filterRange, block.getLong(position, 0))) {
+            if (isSelected(filterRange, block.getLong(position))) {
                 expectedSelectedPositions.add(position);
             }
         }
@@ -263,7 +263,7 @@ public class TestDictionaryAwarePageFilter
         }
 
         @Override
-        public SelectedPositions filter(ConnectorSession session, Page page)
+        public SelectedPositions filter(SqlFunctionProperties properties, Page page)
         {
             assertEquals(page.getChannelCount(), 1);
             Block block = page.getBlock(0);
@@ -271,7 +271,7 @@ public class TestDictionaryAwarePageFilter
             boolean sequential = true;
             IntArrayList selectedPositions = new IntArrayList();
             for (int position = 0; position < block.getPositionCount(); position++) {
-                long value = block.getLong(position, 0);
+                long value = block.getLong(position);
                 verifyPositive(value);
 
                 boolean selected = isSelected(filterRange, value);

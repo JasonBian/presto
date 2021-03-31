@@ -14,10 +14,10 @@
 package com.facebook.presto.plugin.geospatial.aggregation;
 
 import com.esri.core.geometry.ogc.OGCGeometry;
+import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.geospatial.GeometryType;
-import com.facebook.presto.geospatial.serde.GeometrySerde;
+import com.facebook.presto.geospatial.serde.EsriGeometrySerde;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.AggregationFunction;
 import com.facebook.presto.spi.function.AggregationState;
 import com.facebook.presto.spi.function.CombineFunction;
@@ -28,15 +28,8 @@ import com.facebook.presto.spi.function.SqlType;
 import com.google.common.base.Joiner;
 import io.airlift.slice.Slice;
 
-import java.util.EnumSet;
 import java.util.Set;
 
-import static com.facebook.presto.geospatial.GeometryType.LINE_STRING;
-import static com.facebook.presto.geospatial.GeometryType.MULTI_LINE_STRING;
-import static com.facebook.presto.geospatial.GeometryType.MULTI_POINT;
-import static com.facebook.presto.geospatial.GeometryType.MULTI_POLYGON;
-import static com.facebook.presto.geospatial.GeometryType.POINT;
-import static com.facebook.presto.geospatial.GeometryType.POLYGON;
 import static com.facebook.presto.plugin.geospatial.GeometryType.GEOMETRY;
 import static com.facebook.presto.plugin.geospatial.GeometryType.GEOMETRY_TYPE_NAME;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
@@ -51,20 +44,20 @@ import static java.lang.String.format;
 public class ConvexHullAggregation
 {
     private static final Joiner OR_JOINER = Joiner.on(" or ");
+
     private ConvexHullAggregation() {}
 
     @InputFunction
     public static void input(@AggregationState GeometryState state,
             @SqlType(GEOMETRY_TYPE_NAME) Slice input)
     {
-        OGCGeometry geometry = GeometrySerde.deserialize(input);
-        // There is a bug when the input is of GEOMETRY_COLLECTION. see https://github.com/Esri/geometry-api-java/issues/194
-        validateType("convex_hull_agg", geometry, EnumSet.of(POINT, MULTI_POINT, LINE_STRING, MULTI_LINE_STRING, POLYGON, MULTI_POLYGON));
+        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
         if (state.getGeometry() == null) {
-            state.setGeometry(geometry.convexHull());
+            state.setGeometry(geometry.convexHull(), 0);
         }
         else if (!geometry.isEmpty()) {
-            state.setGeometry(state.getGeometry().union(geometry).convexHull());
+            long previousMemorySize = state.getGeometry().estimateMemorySize();
+            state.setGeometry(state.getGeometry().union(geometry).convexHull(), previousMemorySize);
         }
     }
 
@@ -73,10 +66,11 @@ public class ConvexHullAggregation
             @AggregationState GeometryState otherState)
     {
         if (state.getGeometry() == null) {
-            state.setGeometry(otherState.getGeometry());
+            state.setGeometry(otherState.getGeometry(), 0);
         }
         else if (otherState.getGeometry() != null && !otherState.getGeometry().isEmpty()) {
-            state.setGeometry(state.getGeometry().union(otherState.getGeometry()).convexHull());
+            long previousMemorySize = state.getGeometry().estimateMemorySize();
+            state.setGeometry(state.getGeometry().union(otherState.getGeometry()).convexHull(), previousMemorySize);
         }
     }
 
@@ -87,7 +81,7 @@ public class ConvexHullAggregation
             out.appendNull();
         }
         else {
-            GEOMETRY.writeSlice(out, GeometrySerde.serialize(state.getGeometry()));
+            GEOMETRY.writeSlice(out, EsriGeometrySerde.serialize(state.getGeometry()));
         }
     }
 

@@ -13,6 +13,9 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.drift.annotations.ThriftConstructor;
+import com.facebook.drift.annotations.ThriftField;
+import com.facebook.drift.annotations.ThriftStruct;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
@@ -22,6 +25,8 @@ import java.net.UnknownHostException;
 import java.util.Objects;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+
+import static java.util.Objects.requireNonNull;
 
 /**
  * An immutable representation of a host and port.
@@ -54,6 +59,7 @@ import java.util.regex.Pattern;
  * @author Paul Marks
  * @since 10.0
  */
+@ThriftStruct
 public class HostAddress
 {
     /**
@@ -71,7 +77,8 @@ public class HostAddress
      */
     private final int port;
 
-    private HostAddress(String host, int port)
+    @ThriftConstructor
+    public HostAddress(String host, int port)
     {
         this.host = host;
         this.port = port;
@@ -84,6 +91,7 @@ public class HostAddress
      * <p>A successful parse does not imply any degree of sanity in this field.
      * For additional validation, see the {@link com.google.common.net.HostSpecifier} class.
      */
+    @ThriftField(value = 1, name = "host")
     public String getHostText()
     {
         return host;
@@ -104,6 +112,7 @@ public class HostAddress
      * @throws IllegalStateException if no port is defined.  You can use
      * {@link #withDefaultPort(int)} to prevent this from occurring.
      */
+    @ThriftField(2)
     public int getPort()
     {
         if (!hasPort()) {
@@ -158,9 +167,7 @@ public class HostAddress
     @JsonCreator
     public static HostAddress fromString(String hostPortString)
     {
-        if (hostPortString == null) {
-            throw new NullPointerException("hostPortString is null");
-        }
+        requireNonNull(hostPortString, "hostPortString is null");
         String host;
         String portString = null;
 

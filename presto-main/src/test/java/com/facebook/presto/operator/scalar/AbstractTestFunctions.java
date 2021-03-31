@@ -14,18 +14,19 @@
 package com.facebook.presto.operator.scalar;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.DecimalParseResult;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.SqlDecimal;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.metadata.FunctionListBuilder;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.SqlFunction;
 import com.facebook.presto.metadata.SqlScalarFunction;
 import com.facebook.presto.spi.ErrorCodeSupplier;
+import com.facebook.presto.spi.Plugin;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
-import com.facebook.presto.spi.function.OperatorType;
-import com.facebook.presto.spi.type.DecimalParseResult;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.SqlDecimal;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.function.SqlFunction;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.facebook.presto.sql.analyzer.SemanticErrorCode;
 import com.google.common.collect.ImmutableList;
@@ -38,12 +39,12 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
+import static com.facebook.airlift.testing.Closeables.closeAllRuntimeException;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
-import static com.facebook.presto.metadata.FunctionRegistry.mangleOperatorName;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static io.airlift.testing.Closeables.closeAllRuntimeException;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
 import static org.testng.Assert.assertEquals;
@@ -51,6 +52,8 @@ import static org.testng.Assert.fail;
 
 public abstract class AbstractTestFunctions
 {
+    private static final double DELTA = 1e-5;
+
     protected final Session session;
     private final FeaturesConfig config;
     protected FunctionAssertions functionAssertions;
@@ -94,9 +97,19 @@ public abstract class AbstractTestFunctions
         functionAssertions.assertFunction(projection, expectedType, expected);
     }
 
+    protected void assertFunctionWithError(String projection, Type expectedType, double expected)
+    {
+        assertFunctionWithError(projection, expectedType, expected, DELTA);
+    }
+
+    protected void assertFunctionWithError(String projection, Type expectedType, double expected, double delta)
+    {
+        functionAssertions.assertFunctionWithError(projection, expectedType, expected, delta);
+    }
+
     protected void assertOperator(OperatorType operator, String value, Type expectedType, Object expected)
     {
-        functionAssertions.assertFunction(format("\"%s\"(%s)", mangleOperatorName(operator), value), expectedType, expected);
+        functionAssertions.assertFunction(format("\"%s\"(%s)", operator.getFunctionName().getObjectName(), value), expectedType, expected);
     }
 
     protected void assertDecimalFunction(String statement, SqlDecimal expectedResult)
@@ -185,7 +198,7 @@ public abstract class AbstractTestFunctions
     protected void registerScalarFunction(SqlScalarFunction sqlScalarFunction)
     {
         Metadata metadata = functionAssertions.getMetadata();
-        metadata.getFunctionRegistry().addFunctions(ImmutableList.of(sqlScalarFunction));
+        metadata.getFunctionAndTypeManager().registerBuiltInFunctions(ImmutableList.of(sqlScalarFunction));
     }
 
     protected void registerScalar(Class<?> clazz)
@@ -194,7 +207,7 @@ public abstract class AbstractTestFunctions
         List<SqlFunction> functions = new FunctionListBuilder()
                 .scalars(clazz)
                 .getFunctions();
-        metadata.getFunctionRegistry().addFunctions(functions);
+        metadata.getFunctionAndTypeManager().registerBuiltInFunctions(functions);
     }
 
     protected void registerParametricScalar(Class<?> clazz)
@@ -203,7 +216,19 @@ public abstract class AbstractTestFunctions
         List<SqlFunction> functions = new FunctionListBuilder()
                 .scalar(clazz)
                 .getFunctions();
-        metadata.getFunctionRegistry().addFunctions(functions);
+        metadata.getFunctionAndTypeManager().registerBuiltInFunctions(functions);
+    }
+
+    protected void registerFunctions(Plugin plugin)
+    {
+        functionAssertions.getMetadata().registerBuiltInFunctions(extractFunctions(plugin.getFunctions()));
+    }
+
+    protected void registerTypes(Plugin plugin)
+    {
+        for (Type type : plugin.getTypes()) {
+            functionAssertions.getFunctionAndTypeManager().addType(type);
+        }
     }
 
     protected static SqlDecimal decimal(String decimalString)
@@ -222,7 +247,7 @@ public abstract class AbstractTestFunctions
     protected static SqlDecimal maxPrecisionDecimal(long value)
     {
         final String maxPrecisionFormat = "%0" + (Decimals.MAX_PRECISION + (value < 0 ? 1 : 0)) + "d";
-        return decimal(String.format(maxPrecisionFormat, value));
+        return decimal(format(maxPrecisionFormat, value));
     }
 
     // this help function should only be used when the map contains null value

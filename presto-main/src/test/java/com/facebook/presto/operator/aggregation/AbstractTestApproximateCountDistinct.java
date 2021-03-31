@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.base.Preconditions;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
@@ -34,8 +35,8 @@ import java.util.Random;
 import java.util.Set;
 import java.util.concurrent.ThreadLocalRandom;
 
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static io.airlift.testing.Assertions.assertLessThan;
+import static com.facebook.airlift.testing.Assertions.assertLessThan;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static org.testng.Assert.assertEquals;
 
 public abstract class AbstractTestApproximateCountDistinct
@@ -46,7 +47,7 @@ public abstract class AbstractTestApproximateCountDistinct
 
     public abstract Object randomValue();
 
-    protected static final MetadataManager metadata = MetadataManager.createTestMetadataManager();
+    protected static final FunctionAndTypeManager FUNCTION_AND_TYPE_MANAGER = MetadataManager.createTestMetadataManager().getFunctionAndTypeManager();
 
     protected int getUniqueValuesCount()
     {
@@ -127,7 +128,7 @@ public abstract class AbstractTestApproximateCountDistinct
         }
     }
 
-    private void assertCount(List<Object> values, double maxStandardError, long expectedCount)
+    protected void assertCount(List<?> values, double maxStandardError, long expectedCount)
     {
         if (!values.isEmpty()) {
             assertEquals(estimateGroupByCount(values, maxStandardError), expectedCount);
@@ -136,25 +137,25 @@ public abstract class AbstractTestApproximateCountDistinct
         assertEquals(estimateCountPartial(values, maxStandardError), expectedCount);
     }
 
-    private long estimateGroupByCount(List<Object> values, double maxStandardError)
+    private long estimateGroupByCount(List<?> values, double maxStandardError)
     {
         Object result = AggregationTestUtils.groupedAggregation(getAggregationFunction(), createPage(values, maxStandardError));
         return (long) result;
     }
 
-    private long estimateCount(List<Object> values, double maxStandardError)
+    private long estimateCount(List<?> values, double maxStandardError)
     {
         Object result = AggregationTestUtils.aggregation(getAggregationFunction(), createPage(values, maxStandardError));
         return (long) result;
     }
 
-    private long estimateCountPartial(List<Object> values, double maxStandardError)
+    private long estimateCountPartial(List<?> values, double maxStandardError)
     {
         Object result = AggregationTestUtils.partialAggregation(getAggregationFunction(), createPage(values, maxStandardError));
         return (long) result;
     }
 
-    private Page createPage(List<Object> values, double maxStandardError)
+    private Page createPage(List<?> values, double maxStandardError)
     {
         if (values.isEmpty()) {
             return new Page(0);
@@ -169,7 +170,7 @@ public abstract class AbstractTestApproximateCountDistinct
     /**
      * Produce a block with the given values in the last field.
      */
-    private static Block createBlock(Type type, List<Object> values)
+    private static Block createBlock(Type type, List<?> values)
     {
         BlockBuilder blockBuilder = type.createBlockBuilder(null, values.size());
 

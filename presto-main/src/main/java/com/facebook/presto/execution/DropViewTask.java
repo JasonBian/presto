@@ -14,8 +14,8 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.ViewDefinition;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.sql.analyzer.SemanticException;
@@ -54,7 +54,7 @@ public class DropViewTask
             return immediateFuture(null);
         }
 
-        accessControl.checkCanDropView(session.getRequiredTransactionId(), session.getIdentity(), name);
+        accessControl.checkCanDropView(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), name);
 
         metadata.dropView(session, name);
 

@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.kafka;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -100,7 +100,7 @@ public final class KafkaTopicFieldDescription
         return hidden;
     }
 
-    KafkaColumnHandle getColumnHandle(String connectorId, boolean keyDecoder, int index)
+    KafkaColumnHandle getColumnHandle(String connectorId, boolean keyCodec, int index)
     {
         return new KafkaColumnHandle(connectorId,
                 index,
@@ -109,7 +109,7 @@ public final class KafkaTopicFieldDescription
                 getMapping(),
                 getDataFormat(),
                 getFormatHint(),
-                keyDecoder,
+                keyCodec,
                 isHidden(),
                 false);
     }

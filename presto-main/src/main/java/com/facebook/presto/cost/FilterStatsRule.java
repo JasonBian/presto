@@ -14,25 +14,29 @@
 package com.facebook.presto.cost;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.cost.ComposableStatsCalculator.Rule;
 import com.facebook.presto.matching.Pattern;
+import com.facebook.presto.spi.plan.FilterNode;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.Lookup;
-import com.facebook.presto.sql.planner.plan.FilterNode;
 
 import java.util.Optional;
 
+import static com.facebook.presto.SystemSessionProperties.isDefaultFilterFactorEnabled;
+import static com.facebook.presto.cost.FilterStatsCalculator.UNKNOWN_FILTER_COEFFICIENT;
 import static com.facebook.presto.sql.planner.plan.Patterns.filter;
+import static com.facebook.presto.sql.relational.OriginalExpressionUtils.castToExpression;
+import static com.facebook.presto.sql.relational.OriginalExpressionUtils.isExpression;
 
 public class FilterStatsRule
-        implements Rule<FilterNode>
+        extends SimpleStatsRule<FilterNode>
 {
     private static final Pattern<FilterNode> PATTERN = filter();
 
     private final FilterStatsCalculator filterStatsCalculator;
 
-    public FilterStatsRule(FilterStatsCalculator filterStatsCalculator)
+    public FilterStatsRule(StatsNormalizer normalizer, FilterStatsCalculator filterStatsCalculator)
     {
+        super(normalizer);
         this.filterStatsCalculator = filterStatsCalculator;
     }
 
@@ -43,9 +47,19 @@ public class FilterStatsRule
     }
 
     @Override
-    public Optional<PlanNodeStatsEstimate> calculate(FilterNode node, StatsProvider statsProvider, Lookup lookup, Session session, TypeProvider types)
+    public Optional<PlanNodeStatsEstimate> doCalculate(FilterNode node, StatsProvider statsProvider, Lookup lookup, Session session, TypeProvider types)
     {
         PlanNodeStatsEstimate sourceStats = statsProvider.getStats(node.getSource());
-        return Optional.of(filterStatsCalculator.filterStats(sourceStats, node.getPredicate(), session, types));
+        PlanNodeStatsEstimate estimate;
+        if (isExpression(node.getPredicate())) {
+            estimate = filterStatsCalculator.filterStats(sourceStats, castToExpression(node.getPredicate()), session, types);
+        }
+        else {
+            estimate = filterStatsCalculator.filterStats(sourceStats, node.getPredicate(), session);
+        }
+        if (isDefaultFilterFactorEnabled(session) && estimate.isOutputRowCountUnknown()) {
+            estimate = sourceStats.mapOutputRowCount(sourceRowCount -> sourceStats.getOutputRowCount() * UNKNOWN_FILTER_COEFFICIENT);
+        }
+        return Optional.of(estimate);
     }
 }

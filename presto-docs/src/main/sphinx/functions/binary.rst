@@ -22,6 +22,21 @@ Binary Functions
     This function provides the same functionality as the
     SQL-standard concatenation operator (``||``).
 
+.. function:: substr(binary, start) -> varbinary
+    :noindex:
+
+    Returns the rest of ``binary`` from the starting position ``start``,
+    measured in bytes. Positions start with ``1``. A negative starting position
+    is interpreted as being relative to the end of the string.
+
+.. function:: substr(binary, start, length) -> varbinary
+    :noindex:
+
+    Returns a substring from ``binary`` of length ``length`` from the starting
+    position ``start``, measured in bytes. Positions start with ``1``. A
+    negative starting position is interpreted as being relative to the end of
+    the string.
+
 .. function:: to_base64(binary) -> varchar
 
     Encodes ``binary`` into a base64 string representation.
@@ -142,3 +157,8 @@ Binary Functions
 .. function:: hmac_sha512(binary, key) -> varbinary
 
     Computes HMAC with sha512 of ``binary`` with the given ``key``.
+
+.. function:: reverse(binary) -> varbinary
+    :noindex:
+
+    Returns ``binary`` with the bytes in reverse order.

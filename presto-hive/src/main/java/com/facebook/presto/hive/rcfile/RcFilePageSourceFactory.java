@@ -13,10 +13,16 @@
  */
 package com.facebook.presto.hive.rcfile;
 
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.EncryptionInformation;
 import com.facebook.presto.hive.FileFormatDataSourceStats;
 import com.facebook.presto.hive.HdfsEnvironment;
+import com.facebook.presto.hive.HiveBatchPageSourceFactory;
 import com.facebook.presto.hive.HiveColumnHandle;
-import com.facebook.presto.hive.HivePageSourceFactory;
+import com.facebook.presto.hive.HiveFileContext;
+import com.facebook.presto.hive.metastore.Storage;
 import com.facebook.presto.rcfile.AircompressorCodecFactory;
 import com.facebook.presto.rcfile.HadoopCodecFactory;
 import com.facebook.presto.rcfile.RcFileCorruptionException;
@@ -27,9 +33,7 @@ import com.facebook.presto.rcfile.text.TextRcFileEncoding;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.spi.SchemaTableName;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
@@ -37,7 +41,6 @@ import io.airlift.units.DataSize;
 import io.airlift.units.DataSize.Unit;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FSDataInputStream;
-import org.apache.hadoop.fs.FileSystem;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hive.serde2.columnar.ColumnarSerDe;
 import org.apache.hadoop.hive.serde2.columnar.LazyBinaryColumnarSerDe;
@@ -49,13 +52,15 @@ import java.io.FileNotFoundException;
 import java.io.IOException;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Properties;
 
+import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.AGGREGATED;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_BAD_DATA;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_CANNOT_OPEN_SPLIT;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_MISSING_DATA;
-import static com.facebook.presto.hive.HiveUtil.getDeserializerClassName;
+import static com.facebook.presto.hive.metastore.MetastoreUtil.getHiveSchema;
 import static com.facebook.presto.rcfile.text.TextRcFileEncoding.DEFAULT_NULL_SEQUENCE;
 import static com.facebook.presto.rcfile.text.TextRcFileEncoding.DEFAULT_SEPARATORS;
 import static com.google.common.base.Strings.nullToEmpty;
@@ -72,7 +77,7 @@ import static org.apache.hadoop.hive.serde2.lazy.LazySerDeParameters.SERIALIZATI
 import static org.apache.hadoop.hive.serde2.lazy.LazyUtils.getByte;
 
 public class RcFilePageSourceFactory
-        implements HivePageSourceFactory
+        implements HiveBatchPageSourceFactory
 {
     private static final int TEXT_LEGACY_NESTING_LEVELS = 8;
     private static final int TEXT_EXTENDED_NESTING_LEVELS = 29;
@@ -97,18 +102,27 @@ public class RcFilePageSourceFactory
             long start,
             long length,
             long fileSize,
-            Properties schema,
+            Storage storage,
+            SchemaTableName tableName,
+            Map<String, String> tableParameters,
             List<HiveColumnHandle> columns,
             TupleDomain<HiveColumnHandle> effectivePredicate,
-            DateTimeZone hiveStorageTimeZone)
+            DateTimeZone hiveStorageTimeZone,
+            HiveFileContext hiveFileContext,
+            Optional<EncryptionInformation> encryptionInformation)
     {
+        if (!columns.isEmpty() && columns.stream().allMatch(hiveColumnHandle -> hiveColumnHandle.getColumnType() == AGGREGATED)) {
+            throw new UnsupportedOperationException("Partial aggregation pushdown only supported for ORC/Parquet files. " +
+                    "Table " + tableName.toString() + " has file (" + path.toString() + ") of format " + storage.getStorageFormat().getOutputFormat() +
+                    ". Set session property hive.pushdown_partial_aggregations_into_scan=false and execute query again");
+        }
+
         RcFileEncoding rcFileEncoding;
-        String deserializerClassName = getDeserializerClassName(schema);
-        if (deserializerClassName.equals(LazyBinaryColumnarSerDe.class.getName())) {
+        if (LazyBinaryColumnarSerDe.class.getName().equals(storage.getStorageFormat().getSerDe())) {
             rcFileEncoding = new BinaryRcFileEncoding();
         }
-        else if (deserializerClassName.equals(ColumnarSerDe.class.getName())) {
-            rcFileEncoding = createTextVectorEncoding(schema, hiveStorageTimeZone);
+        else if (ColumnarSerDe.class.getName().equals(storage.getStorageFormat().getSerDe())) {
+            rcFileEncoding = createTextVectorEncoding(getHiveSchema(storage.getSerdeParameters(), tableParameters), hiveStorageTimeZone);
         }
         else {
             return Optional.empty();
@@ -120,8 +134,7 @@ public class RcFilePageSourceFactory
 
         FSDataInputStream inputStream;
         try {
-            FileSystem fileSystem = hdfsEnvironment.getFileSystem(session.getUser(), path, configuration);
-            inputStream = fileSystem.open(path);
+            inputStream = hdfsEnvironment.getFileSystem(session.getUser(), path, configuration).openFile(path, hiveFileContext);
         }
         catch (Exception e) {
             if (nullToEmpty(e.getMessage()).trim().equals("Filesystem closed") ||
@@ -146,11 +159,7 @@ public class RcFilePageSourceFactory
                     length,
                     new DataSize(8, Unit.MEGABYTE));
 
-            return Optional.of(new RcFilePageSource(
-                    rcFileReader,
-                    columns,
-                    hiveStorageTimeZone,
-                    typeManager));
+            return Optional.of(new RcFilePageSource(rcFileReader, columns, typeManager));
         }
         catch (Throwable e) {
             try {
@@ -191,7 +200,9 @@ public class RcFilePageSourceFactory
 
         // the first three separators are set by old-old properties
         separators[0] = getByte(schema.getProperty(FIELD_DELIM, schema.getProperty(SERIALIZATION_FORMAT)), DEFAULT_SEPARATORS[0]);
-        separators[1] = getByte(schema.getProperty(COLLECTION_DELIM), DEFAULT_SEPARATORS[1]);
+        // for map field collection delimiter, Hive 1.x uses "colelction.delim" but Hive 3.x uses "collection.delim"
+        // https://issues.apache.org/jira/browse/HIVE-16922
+        separators[1] = getByte(schema.getProperty(COLLECTION_DELIM, schema.getProperty("colelction.delim")), DEFAULT_SEPARATORS[1]);
         separators[2] = getByte(schema.getProperty(MAPKEY_DELIM), DEFAULT_SEPARATORS[2]);
 
         // null sequence

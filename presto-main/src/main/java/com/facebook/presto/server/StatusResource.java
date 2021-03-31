@@ -13,24 +13,29 @@
  */
 package com.facebook.presto.server;
 
+import com.facebook.airlift.node.NodeInfo;
 import com.facebook.presto.client.NodeVersion;
 import com.facebook.presto.memory.LocalMemoryManager;
 import com.sun.management.OperatingSystemMXBean;
-import io.airlift.node.NodeInfo;
 
+import javax.annotation.security.RolesAllowed;
 import javax.inject.Inject;
 import javax.ws.rs.GET;
+import javax.ws.rs.HEAD;
 import javax.ws.rs.Path;
 import javax.ws.rs.Produces;
+import javax.ws.rs.core.Response;
 
 import java.lang.management.ManagementFactory;
 import java.lang.management.MemoryMXBean;
 
+import static com.facebook.presto.server.security.RoleType.INTERNAL;
 import static io.airlift.units.Duration.nanosSince;
 import static java.util.Objects.requireNonNull;
 import static javax.ws.rs.core.MediaType.APPLICATION_JSON;
 
 @Path("/v1/status")
+@RolesAllowed(INTERNAL)
 public class StatusResource
 {
     private final NodeInfo nodeInfo;
@@ -59,6 +64,13 @@ public class StatusResource
             // we want the com.sun.management sub-interface of java.lang.management.OperatingSystemMXBean
             this.operatingSystemMXBean = (OperatingSystemMXBean) ManagementFactory.getOperatingSystemMXBean();
         }
+    }
+
+    @HEAD
+    @Produces(APPLICATION_JSON) // to match the GET route
+    public Response statusPing()
+    {
+        return Response.ok().build();
     }
 
     @GET

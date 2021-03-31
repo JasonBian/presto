@@ -13,19 +13,19 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.function.IsNull;
 import com.facebook.presto.spi.function.OperatorDependency;
 import com.facebook.presto.spi.function.ScalarOperator;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
 
 import java.lang.invoke.MethodHandle;
 
-import static com.facebook.presto.spi.function.OperatorType.INDETERMINATE;
-import static com.facebook.presto.spi.type.TypeUtils.readNativeValue;
+import static com.facebook.presto.common.function.OperatorType.INDETERMINATE;
+import static com.facebook.presto.common.type.TypeUtils.readNativeValue;
 import static com.facebook.presto.util.Failures.internalError;
 
 @ScalarOperator(INDETERMINATE)
@@ -37,7 +37,7 @@ public final class MapIndeterminateOperator
     @TypeParameter("V")
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean indeterminate(
-            @OperatorDependency(operator = INDETERMINATE, returnType = StandardTypes.BOOLEAN, argumentTypes = {"V"}) MethodHandle valueIndeterminateFunction,
+            @OperatorDependency(operator = INDETERMINATE, argumentTypes = {"V"}) MethodHandle valueIndeterminateFunction,
             @TypeParameter("K") Type keyType,
             @TypeParameter("V") Type valueType,
             @SqlType("map(K,V)") Block block,

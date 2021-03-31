@@ -15,11 +15,12 @@ package com.facebook.presto.execution.scheduler;
 
 import com.facebook.presto.execution.NodeTaskMap;
 import com.facebook.presto.execution.RemoteTask;
-import com.facebook.presto.spi.Node;
+import com.facebook.presto.metadata.InternalNode;
 
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -27,36 +28,90 @@ import static java.util.Objects.requireNonNull;
 public final class NodeAssignmentStats
 {
     private final NodeTaskMap nodeTaskMap;
-    private final Map<Node, Integer> assignmentCount = new HashMap<>();
-    private final Map<Node, Integer> splitCountByNode = new HashMap<>();
-    private final Map<String, Integer> queuedSplitCountByNode = new HashMap<>();
+    private final Map<InternalNode, Integer> nodeTotalSplitCount;
+    private final Map<String, PendingSplitInfo> stageQueuedSplitInfo;
 
     public NodeAssignmentStats(NodeTaskMap nodeTaskMap, NodeMap nodeMap, List<RemoteTask> existingTasks)
     {
         this.nodeTaskMap = requireNonNull(nodeTaskMap, "nodeTaskMap is null");
-
-        // pre-populate the assignment counts with zeros. This makes getOrDefault() faster
-        for (Node node : nodeMap.getNodesByHostAndPort().values()) {
-            assignmentCount.put(node, 0);
-        }
+        int nodeMapSize = requireNonNull(nodeMap, "nodeMap is null").getNodesByHostAndPort().size();
+        this.nodeTotalSplitCount = new HashMap<>(nodeMapSize);
+        this.stageQueuedSplitInfo = new HashMap<>(nodeMapSize);
 
         for (RemoteTask task : existingTasks) {
-            checkArgument(queuedSplitCountByNode.put(task.getNodeId(), task.getQueuedPartitionedSplitCount()) == null, "A single stage may not have multiple tasks running on the same node");
+            checkArgument(stageQueuedSplitInfo.put(task.getNodeId(), new PendingSplitInfo(task.getQueuedPartitionedSplitCount(), task.getUnacknowledgedPartitionedSplitCount())) == null, "A single stage may not have multiple tasks running on the same node");
+        }
+
+        // pre-populate the assignment counts with zeros
+        if (existingTasks.size() < nodeMapSize) {
+            Function<String, PendingSplitInfo> createEmptySplitInfo = (ignored) -> new PendingSplitInfo(0, 0);
+            for (InternalNode node : nodeMap.getNodesByHostAndPort().values()) {
+                stageQueuedSplitInfo.computeIfAbsent(node.getNodeIdentifier(), createEmptySplitInfo);
+            }
         }
     }
 
-    public int getTotalSplitCount(Node node)
+    public int getTotalSplitCount(InternalNode node)
     {
-        return assignmentCount.getOrDefault(node, 0) + splitCountByNode.computeIfAbsent(node, nodeTaskMap::getPartitionedSplitsOnNode);
+        int nodeTotalSplits = nodeTotalSplitCount.computeIfAbsent(node, nodeTaskMap::getPartitionedSplitsOnNode);
+        PendingSplitInfo stageInfo = stageQueuedSplitInfo.get(node.getNodeIdentifier());
+        return nodeTotalSplits + (stageInfo == null ? 0 : stageInfo.getAssignedSplitCount());
     }
 
-    public int getQueuedSplitCountForStage(Node node)
+    public int getQueuedSplitCountForStage(InternalNode node)
     {
-        return queuedSplitCountByNode.getOrDefault(node.getNodeIdentifier(), 0) + assignmentCount.getOrDefault(node, 0);
+        PendingSplitInfo stageInfo = stageQueuedSplitInfo.get(node.getNodeIdentifier());
+        return stageInfo == null ? 0 : stageInfo.getQueuedSplitCount();
     }
 
-    public void addAssignedSplit(Node node)
+    public int getUnacknowledgedSplitCountForStage(InternalNode node)
     {
-        assignmentCount.merge(node, 1, (x, y) -> x + y);
+        PendingSplitInfo stageInfo = stageQueuedSplitInfo.get(node.getNodeIdentifier());
+        return stageInfo == null ? 0 : stageInfo.getUnacknowledgedSplitCount();
+    }
+
+    public void addAssignedSplit(InternalNode node)
+    {
+        String nodeId = node.getNodeIdentifier();
+        // Avoids the extra per-invocation lambda allocation of computeIfAbsent since assigning a split to an existing task more common than creating a new task
+        PendingSplitInfo stageInfo = stageQueuedSplitInfo.get(nodeId);
+        if (stageInfo == null) {
+            stageInfo = new PendingSplitInfo(0, 0);
+            stageQueuedSplitInfo.put(nodeId, stageInfo);
+        }
+        stageInfo.addAssignedSplit();
+    }
+
+    private static final class PendingSplitInfo
+    {
+        private final int queuedSplitCount;
+        private final int unacknowledgedSplitCount;
+        private int assignedSplits;
+
+        private PendingSplitInfo(int queuedSplitCount, int unacknowledgedSplitCount)
+        {
+            this.queuedSplitCount = queuedSplitCount;
+            this.unacknowledgedSplitCount = unacknowledgedSplitCount;
+        }
+
+        public int getAssignedSplitCount()
+        {
+            return assignedSplits;
+        }
+
+        public int getQueuedSplitCount()
+        {
+            return queuedSplitCount + assignedSplits;
+        }
+
+        public int getUnacknowledgedSplitCount()
+        {
+            return unacknowledgedSplitCount + assignedSplits;
+        }
+
+        public void addAssignedSplit()
+        {
+            assignedSplits++;
+        }
     }
 }

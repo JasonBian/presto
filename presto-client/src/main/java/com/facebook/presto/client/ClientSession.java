@@ -13,7 +13,8 @@
  */
 package com.facebook.presto.client;
 
-import com.facebook.presto.spi.type.TimeZoneKey;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.spi.security.SelectedRole;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.airlift.units.Duration;
@@ -41,14 +42,17 @@ public class ClientSession
     private final String clientInfo;
     private final String catalog;
     private final String schema;
-    private final String path;
     private final TimeZoneKey timeZone;
     private final Locale locale;
     private final Map<String, String> resourceEstimates;
     private final Map<String, String> properties;
     private final Map<String, String> preparedStatements;
+    private final Map<String, SelectedRole> roles;
+    private final Map<String, String> extraCredentials;
     private final String transactionId;
     private final Duration clientRequestTimeout;
+    private final boolean compressionDisabled;
+    private final Map<String, String> sessionFunctions;
 
     public static Builder builder(ClientSession clientSession)
     {
@@ -71,14 +75,17 @@ public class ClientSession
             String clientInfo,
             String catalog,
             String schema,
-            String path,
             String timeZoneId,
             Locale locale,
             Map<String, String> resourceEstimates,
             Map<String, String> properties,
             Map<String, String> preparedStatements,
+            Map<String, SelectedRole> roles,
+            Map<String, String> extraCredentials,
             String transactionId,
-            Duration clientRequestTimeout)
+            Duration clientRequestTimeout,
+            boolean compressionDisabled,
+            Map<String, String> sessionFunctions)
     {
         this.server = requireNonNull(server, "server is null");
         this.user = user;
@@ -88,14 +95,17 @@ public class ClientSession
         this.clientInfo = clientInfo;
         this.catalog = catalog;
         this.schema = schema;
-        this.path = path;
         this.locale = locale;
         this.timeZone = TimeZoneKey.getTimeZoneKey(timeZoneId);
         this.transactionId = transactionId;
         this.resourceEstimates = ImmutableMap.copyOf(requireNonNull(resourceEstimates, "resourceEstimates is null"));
         this.properties = ImmutableMap.copyOf(requireNonNull(properties, "properties is null"));
         this.preparedStatements = ImmutableMap.copyOf(requireNonNull(preparedStatements, "preparedStatements is null"));
+        this.roles = ImmutableMap.copyOf(requireNonNull(roles, "roles is null"));
+        this.extraCredentials = ImmutableMap.copyOf(requireNonNull(extraCredentials, "extraCredentials is null"));
         this.clientRequestTimeout = clientRequestTimeout;
+        this.compressionDisabled = compressionDisabled;
+        this.sessionFunctions = ImmutableMap.copyOf(requireNonNull(sessionFunctions, "sessionFunctions is null"));
 
         for (String clientTag : clientTags) {
             checkArgument(!clientTag.contains(","), "client tag cannot contain ','");
@@ -115,6 +125,14 @@ public class ClientSession
             checkArgument(entry.getKey().indexOf('=') < 0, "Session property name must not contain '=': %s", entry.getKey());
             checkArgument(charsetEncoder.canEncode(entry.getKey()), "Session property name is not US_ASCII: %s", entry.getKey());
             checkArgument(charsetEncoder.canEncode(entry.getValue()), "Session property value is not US_ASCII: %s", entry.getValue());
+        }
+
+        // verify the extra credentials are valid
+        for (Entry<String, String> entry : extraCredentials.entrySet()) {
+            checkArgument(!entry.getKey().isEmpty(), "Credential name is empty");
+            checkArgument(entry.getKey().indexOf('=') < 0, "Credential name must not contain '=': %s", entry.getKey());
+            checkArgument(charsetEncoder.canEncode(entry.getKey()), "Credential name is not US_ASCII: %s", entry.getKey());
+            checkArgument(charsetEncoder.canEncode(entry.getValue()), "Credential value is not US_ASCII: %s", entry.getValue());
         }
     }
 
@@ -158,11 +176,6 @@ public class ClientSession
         return schema;
     }
 
-    public String getPath()
-    {
-        return path;
-    }
-
     public TimeZoneKey getTimeZone()
     {
         return timeZone;
@@ -188,6 +201,19 @@ public class ClientSession
         return preparedStatements;
     }
 
+    /**
+     * Returns the map of catalog name -> selected role
+     */
+    public Map<String, SelectedRole> getRoles()
+    {
+        return roles;
+    }
+
+    public Map<String, String> getExtraCredentials()
+    {
+        return extraCredentials;
+    }
+
     public String getTransactionId()
     {
         return transactionId;
@@ -203,6 +229,16 @@ public class ClientSession
         return clientRequestTimeout;
     }
 
+    public boolean isCompressionDisabled()
+    {
+        return compressionDisabled;
+    }
+
+    public Map<String, String> getSessionFunctions()
+    {
+        return sessionFunctions;
+    }
+
     @Override
     public String toString()
     {
@@ -213,7 +249,6 @@ public class ClientSession
                 .add("clientInfo", clientInfo)
                 .add("catalog", catalog)
                 .add("schema", schema)
-                .add("path", path)
                 .add("traceToken", traceToken.orElse(null))
                 .add("timeZone", timeZone)
                 .add("locale", locale)
@@ -233,14 +268,17 @@ public class ClientSession
         private String clientInfo;
         private String catalog;
         private String schema;
-        private String path;
         private TimeZoneKey timeZone;
         private Locale locale;
         private Map<String, String> resourceEstimates;
         private Map<String, String> properties;
         private Map<String, String> preparedStatements;
+        private Map<String, SelectedRole> roles;
+        private Map<String, String> credentials;
         private String transactionId;
         private Duration clientRequestTimeout;
+        private boolean compressionDisabled;
+        private Map<String, String> sessionFunctions;
 
         private Builder(ClientSession clientSession)
         {
@@ -253,14 +291,17 @@ public class ClientSession
             clientInfo = clientSession.getClientInfo();
             catalog = clientSession.getCatalog();
             schema = clientSession.getSchema();
-            path = clientSession.getPath();
             timeZone = clientSession.getTimeZone();
             locale = clientSession.getLocale();
             resourceEstimates = clientSession.getResourceEstimates();
             properties = clientSession.getProperties();
             preparedStatements = clientSession.getPreparedStatements();
+            roles = clientSession.getRoles();
+            credentials = clientSession.getExtraCredentials();
             transactionId = clientSession.getTransactionId();
             clientRequestTimeout = clientSession.getClientRequestTimeout();
+            compressionDisabled = clientSession.isCompressionDisabled();
+            sessionFunctions = clientSession.getSessionFunctions();
         }
 
         public Builder withCatalog(String catalog)
@@ -275,15 +316,21 @@ public class ClientSession
             return this;
         }
 
-        public Builder withPath(String path)
-        {
-            this.path = requireNonNull(path, "path is null");
-            return this;
-        }
-
         public Builder withProperties(Map<String, String> properties)
         {
             this.properties = requireNonNull(properties, "properties is null");
+            return this;
+        }
+
+        public Builder withRoles(Map<String, SelectedRole> roles)
+        {
+            this.roles = roles;
+            return this;
+        }
+
+        public Builder withCredentials(Map<String, String> credentials)
+        {
+            this.credentials = requireNonNull(credentials, "extraCredentials is null");
             return this;
         }
 
@@ -305,6 +352,18 @@ public class ClientSession
             return this;
         }
 
+        public Builder withCompressionDisabled(boolean compressionDisabled)
+        {
+            this.compressionDisabled = compressionDisabled;
+            return this;
+        }
+
+        public Builder withSessionFunctions(Map<String, String> sessionFunctions)
+        {
+            this.sessionFunctions = requireNonNull(sessionFunctions, "sessionFunctions is null");
+            return this;
+        }
+
         public ClientSession build()
         {
             return new ClientSession(
@@ -316,14 +375,17 @@ public class ClientSession
                     clientInfo,
                     catalog,
                     schema,
-                    path,
                     timeZone.getId(),
                     locale,
                     resourceEstimates,
                     properties,
                     preparedStatements,
+                    roles,
+                    credentials,
                     transactionId,
-                    clientRequestTimeout);
+                    clientRequestTimeout,
+                    compressionDisabled,
+                    sessionFunctions);
         }
     }
 }

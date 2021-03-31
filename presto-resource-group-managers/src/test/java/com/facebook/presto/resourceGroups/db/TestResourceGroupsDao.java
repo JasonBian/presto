@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.resourceGroups.db;
 
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.resourceGroups.ResourceGroupNameTemplate;
 import com.facebook.presto.resourceGroups.SelectorResourceEstimate;
 import com.facebook.presto.resourceGroups.SelectorResourceEstimate.Range;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import com.google.common.collect.ImmutableList;
-import io.airlift.json.JsonCodec;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
-import org.h2.jdbc.JdbcSQLException;
+import org.h2.jdbc.JdbcSQLIntegrityConstraintViolationException;
 import org.jdbi.v3.core.statement.UnableToExecuteStatementException;
 import org.testng.annotations.Test;
 
@@ -31,12 +31,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.regex.Pattern;
 
+import static com.facebook.airlift.json.JsonCodec.jsonCodec;
+import static com.facebook.airlift.json.JsonCodec.listJsonCodec;
 import static com.facebook.presto.spi.resourceGroups.QueryType.DELETE;
 import static com.facebook.presto.spi.resourceGroups.QueryType.EXPLAIN;
 import static com.facebook.presto.spi.resourceGroups.QueryType.INSERT;
 import static com.facebook.presto.spi.resourceGroups.QueryType.SELECT;
-import static io.airlift.json.JsonCodec.jsonCodec;
-import static io.airlift.json.JsonCodec.listJsonCodec;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNull;
 import static org.testng.Assert.assertTrue;
@@ -77,19 +77,19 @@ public class TestResourceGroupsDao
 
     private static void testResourceGroupInsert(H2ResourceGroupsDao dao, Map<Long, ResourceGroupSpecBuilder> map)
     {
-        dao.insertResourceGroup(1, "global", "100%", 100, 100, 100, null, null, null, null, null, null, null, null, ENVIRONMENT);
-        dao.insertResourceGroup(2, "bi", "50%", 50, 50, 50, null, null, null, null, null, null, null, 1L, ENVIRONMENT);
+        dao.insertResourceGroup(1, "global", "100%", 100, 100, 100, null, null, null, null, null, null, ENVIRONMENT);
+        dao.insertResourceGroup(2, "bi", "50%", 50, 50, 50, null, null, null, null, null, 1L, ENVIRONMENT);
         List<ResourceGroupSpecBuilder> records = dao.getResourceGroups(ENVIRONMENT);
         assertEquals(records.size(), 2);
-        map.put(1L, new ResourceGroupSpecBuilder(1, new ResourceGroupNameTemplate("global"), "100%", 100, Optional.of(100), 100, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), null));
-        map.put(2L, new ResourceGroupSpecBuilder(2, new ResourceGroupNameTemplate("bi"), "50%", 50, Optional.of(50), 50, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(1L)));
+        map.put(1L, new ResourceGroupSpecBuilder(1, new ResourceGroupNameTemplate("global"), "100%", 100, Optional.of(100), 100, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), null));
+        map.put(2L, new ResourceGroupSpecBuilder(2, new ResourceGroupNameTemplate("bi"), "50%", 50, Optional.of(50), 50, Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(1L)));
         compareResourceGroups(map, records);
     }
 
     private static void testResourceGroupUpdate(H2ResourceGroupsDao dao, Map<Long, ResourceGroupSpecBuilder> map)
     {
-        dao.updateResourceGroup(2, "bi", "40%", 40, 30, 30, null, null, true, null, null, null, null, 1L, ENVIRONMENT);
-        ResourceGroupSpecBuilder updated = new ResourceGroupSpecBuilder(2, new ResourceGroupNameTemplate("bi"), "40%", 40, Optional.of(30), 30, Optional.empty(), Optional.empty(), Optional.of(true), Optional.empty(), Optional.empty(), Optional.empty(), Optional.empty(), Optional.of(1L));
+        dao.updateResourceGroup(2, "bi", "40%", 40, 30, 30, null, null, true, null, null, 1L, ENVIRONMENT);
+        ResourceGroupSpecBuilder updated = new ResourceGroupSpecBuilder(2, new ResourceGroupNameTemplate("bi"), "40%", 40, Optional.of(30), 30, Optional.empty(), Optional.empty(), Optional.of(true), Optional.empty(), Optional.empty(), Optional.of(1L));
         map.put(2L, updated);
         compareResourceGroups(map, dao.getResourceGroups(ENVIRONMENT));
     }
@@ -146,10 +146,10 @@ public class TestResourceGroupsDao
                         Optional.empty(),
                         Optional.of(SELECTOR_RESOURCE_ESTIMATE)));
 
-        dao.insertResourceGroup(1, "admin", "100%", 100, 100, 100, null, null, null, null, null, null, null, null, ENVIRONMENT);
-        dao.insertResourceGroup(2, "ping_query", "50%", 50, 50, 50, null, null, null, null, null, null, null, 1L, ENVIRONMENT);
-        dao.insertResourceGroup(3, "config", "50%", 50, 50, 50, null, null, null, null, null, null, null, 1L, ENVIRONMENT);
-        dao.insertResourceGroup(4, "config", "50%", 50, 50, 50, null, null, null, null, null, null, null, 1L, ENVIRONMENT);
+        dao.insertResourceGroup(1, "admin", "100%", 100, 100, 100, null, null, null, null, null, null, ENVIRONMENT);
+        dao.insertResourceGroup(2, "ping_query", "50%", 50, 50, 50, null, null, null, null, null, 1L, ENVIRONMENT);
+        dao.insertResourceGroup(3, "config", "50%", 50, 50, 50, null, null, null, null, null, 1L, ENVIRONMENT);
+        dao.insertResourceGroup(4, "config", "50%", 50, 50, 50, null, null, null, null, null, 1L, ENVIRONMENT);
 
         dao.insertSelector(2, 1, "ping_user", ".*", null, null, null);
         dao.insertSelector(3, 2, "admin_user", ".*", EXPLAIN.name(), LIST_STRING_CODEC.toJson(ImmutableList.of("tag1", "tag2")), null);
@@ -244,14 +244,14 @@ public class TestResourceGroupsDao
             dao.insertResourceGroupsGlobalProperties("invalid_property", "1h");
         }
         catch (UnableToExecuteStatementException ex) {
-            assertTrue(ex.getCause() instanceof JdbcSQLException);
+            assertTrue(ex.getCause() instanceof JdbcSQLIntegrityConstraintViolationException);
             assertTrue(ex.getCause().getMessage().startsWith("Check constraint violation:"));
         }
         try {
             dao.updateResourceGroupsGlobalProperties("invalid_property_name");
         }
         catch (UnableToExecuteStatementException ex) {
-            assertTrue(ex.getCause() instanceof JdbcSQLException);
+            assertTrue(ex.getCause() instanceof JdbcSQLIntegrityConstraintViolationException);
             assertTrue(ex.getCause().getMessage().startsWith("Check constraint violation:"));
         }
     }

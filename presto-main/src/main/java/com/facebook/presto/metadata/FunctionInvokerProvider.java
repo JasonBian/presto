@@ -13,47 +13,48 @@
  */
 package com.facebook.presto.metadata;
 
-import com.facebook.presto.operator.scalar.ScalarFunctionImplementation;
-import com.facebook.presto.operator.scalar.ScalarFunctionImplementation.ArgumentProperty;
-import com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention;
-import com.facebook.presto.operator.scalar.ScalarFunctionImplementation.ScalarImplementationChoice;
-import com.facebook.presto.spi.InvocationConvention;
-import com.facebook.presto.spi.InvocationConvention.InvocationArgumentConvention;
-import com.facebook.presto.spi.InvocationConvention.InvocationReturnConvention;
+import com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation;
+import com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty;
+import com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention;
+import com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ScalarImplementationChoice;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.function.InvocationConvention;
+import com.facebook.presto.spi.function.InvocationConvention.InvocationArgumentConvention;
+import com.facebook.presto.spi.function.InvocationConvention.InvocationReturnConvention;
 import com.google.common.annotations.VisibleForTesting;
 
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.ArgumentType.FUNCTION_TYPE;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention.BLOCK_AND_POSITION;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention.USE_BOXED_TYPE;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention.USE_NULL_FLAG;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentType.FUNCTION_TYPE;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.BLOCK_AND_POSITION;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.USE_BOXED_TYPE;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.USE_NULL_FLAG;
 import static com.facebook.presto.spi.StandardErrorCode.FUNCTION_NOT_FOUND;
 import static com.google.common.base.Preconditions.checkState;
 import static java.lang.String.format;
 
 public class FunctionInvokerProvider
 {
-    private final FunctionRegistry functionRegistry;
+    private final FunctionAndTypeManager functionAndTypeManager;
 
-    public FunctionInvokerProvider(FunctionRegistry functionRegistry)
+    public FunctionInvokerProvider(FunctionAndTypeManager functionAndTypeManager)
     {
-        this.functionRegistry = functionRegistry;
+        this.functionAndTypeManager = functionAndTypeManager;
     }
 
-    public FunctionInvoker createFunctionInvoker(Signature signature, Optional<InvocationConvention> invocationConvention)
+    public FunctionInvoker createFunctionInvoker(FunctionHandle functionHandle, Optional<InvocationConvention> invocationConvention)
     {
-        ScalarFunctionImplementation scalarFunctionImplementation = functionRegistry.getScalarFunctionImplementation(signature);
-        for (ScalarImplementationChoice choice : scalarFunctionImplementation.getAllChoices()) {
-            if (checkChoice(choice.getArgumentProperties(), choice.isNullable(), choice.hasSession(), invocationConvention)) {
+        BuiltInScalarFunctionImplementation builtInScalarFunctionImplementation = functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionHandle);
+        for (ScalarImplementationChoice choice : builtInScalarFunctionImplementation.getAllChoices()) {
+            if (checkChoice(choice.getArgumentProperties(), choice.isNullable(), choice.hasProperties(), invocationConvention)) {
                 return new FunctionInvoker(choice.getMethodHandle());
             }
         }
         checkState(invocationConvention.isPresent());
-        throw new PrestoException(FUNCTION_NOT_FOUND, format("Dependent function implementation (%s) with convention (%s) is not available", signature, invocationConvention.toString()));
+        throw new PrestoException(FUNCTION_NOT_FOUND, format("Dependent function implementation (%s) with convention (%s) is not available", functionHandle, invocationConvention.toString()));
     }
 
     @VisibleForTesting
@@ -62,7 +63,6 @@ public class FunctionInvokerProvider
         for (int i = 0; i < definitionArgumentProperties.size(); i++) {
             InvocationArgumentConvention invocationArgumentConvention = invocationConvention.get().getArgumentConvention(i);
             NullConvention nullConvention = definitionArgumentProperties.get(i).getNullConvention();
-
             // return false because function types do not have a null convention
             if (definitionArgumentProperties.get(i).getArgumentType() == FUNCTION_TYPE) {
                 if (invocationArgumentConvention != InvocationArgumentConvention.FUNCTION) {

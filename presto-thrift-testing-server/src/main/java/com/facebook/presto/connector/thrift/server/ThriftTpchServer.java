@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.connector.thrift.server;
 
+import com.facebook.airlift.bootstrap.Bootstrap;
+import com.facebook.airlift.log.Logger;
+import com.facebook.drift.transport.netty.server.DriftNettyServerModule;
 import com.google.common.collect.ImmutableList;
 import com.google.inject.Module;
-import io.airlift.bootstrap.Bootstrap;
-import io.airlift.drift.transport.netty.server.DriftNettyServerModule;
-import io.airlift.log.Logger;
 
 import java.util.List;
 
@@ -38,7 +38,7 @@ public final class ThriftTpchServer
                         .add(new ThriftTpchServerModule())
                         .addAll(requireNonNull(extraModules, "extraModules is null"))
                         .build());
-        app.strictConfig().initialize();
+        app.initialize();
     }
 
     public static void main(String[] args)

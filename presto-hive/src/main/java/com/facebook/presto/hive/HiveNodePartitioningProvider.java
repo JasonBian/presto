@@ -13,42 +13,35 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.BucketFunction;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.Node;
-import com.facebook.presto.spi.NodeManager;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.connector.ConnectorBucketNodeMap;
 import com.facebook.presto.spi.connector.ConnectorNodePartitioningProvider;
 import com.facebook.presto.spi.connector.ConnectorPartitionHandle;
 import com.facebook.presto.spi.connector.ConnectorPartitioningHandle;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.type.Type;
-import com.google.common.collect.ImmutableMap;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 
-import javax.inject.Inject;
-
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Collections;
 import java.util.List;
-import java.util.Map;
 import java.util.function.ToIntFunction;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 
+import static com.facebook.presto.hive.HiveBucketFunction.createHiveCompatibleBucketFunction;
+import static com.facebook.presto.hive.HiveBucketFunction.createPrestoNativeBucketFunction;
+import static com.facebook.presto.hive.HiveSessionProperties.getNodeSelectionStrategy;
+import static com.facebook.presto.spi.StandardErrorCode.NODE_SELECTION_NOT_SUPPORTED;
+import static com.facebook.presto.spi.connector.ConnectorBucketNodeMap.createBucketNodeMap;
 import static com.google.common.collect.ImmutableList.toImmutableList;
-import static java.util.Objects.requireNonNull;
+import static java.lang.String.format;
 
 public class HiveNodePartitioningProvider
         implements ConnectorNodePartitioningProvider
 {
-    private final NodeManager nodeManager;
-
-    @Inject
-    public HiveNodePartitioningProvider(NodeManager nodeManager)
-    {
-        this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
-    }
-
     @Override
     public BucketFunction getBucketFunction(
             ConnectorTransactionHandle transactionHandle,
@@ -58,23 +51,32 @@ public class HiveNodePartitioningProvider
             int bucketCount)
     {
         HivePartitioningHandle handle = (HivePartitioningHandle) partitioningHandle;
-        List<HiveType> hiveTypes = handle.getHiveTypes();
-        return new HiveBucketFunction(bucketCount, hiveTypes);
+        BucketFunctionType bucketFunctionType = handle.getBucketFunctionType();
+        switch (bucketFunctionType) {
+            case HIVE_COMPATIBLE:
+                return createHiveCompatibleBucketFunction(bucketCount, handle.getHiveTypes().get());
+            case PRESTO_NATIVE:
+                return createPrestoNativeBucketFunction(bucketCount, handle.getTypes().get());
+            default:
+                throw new IllegalArgumentException("Unsupported bucket function type " + bucketFunctionType);
+        }
     }
 
     @Override
-    public Map<Integer, Node> getBucketToNode(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorPartitioningHandle partitioningHandle)
+    public ConnectorBucketNodeMap getBucketNodeMap(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorPartitioningHandle partitioningHandle, List<Node> sortedNodes)
     {
         HivePartitioningHandle handle = (HivePartitioningHandle) partitioningHandle;
-
-        List<Node> nodes = shuffle(nodeManager.getRequiredWorkerNodes());
-
+        NodeSelectionStrategy nodeSelectionStrategy = getNodeSelectionStrategy(session);
         int bucketCount = handle.getBucketCount();
-        ImmutableMap.Builder<Integer, Node> distribution = ImmutableMap.builder();
-        for (int i = 0; i < bucketCount; i++) {
-            distribution.put(i, nodes.get(i % nodes.size()));
+        switch (nodeSelectionStrategy) {
+            case HARD_AFFINITY:
+            case SOFT_AFFINITY:
+                return createBucketNodeMap(Stream.generate(() -> sortedNodes).flatMap(List::stream).limit(bucketCount).collect(toImmutableList()), nodeSelectionStrategy);
+            case NO_PREFERENCE:
+                return createBucketNodeMap(bucketCount);
+            default:
+                throw new PrestoException(NODE_SELECTION_NOT_SUPPORTED, format("Unsupported node selection strategy %s", nodeSelectionStrategy));
         }
-        return distribution.build();
     }
 
     @Override
@@ -83,7 +85,15 @@ public class HiveNodePartitioningProvider
             ConnectorSession session,
             ConnectorPartitioningHandle partitioningHandle)
     {
-        return value -> ((HiveSplit) value).getBucketNumber().getAsInt();
+        return value -> ((HiveSplit) value).getReadBucketNumber()
+                .orElseThrow(() -> new IllegalArgumentException("Bucket number not set in split"));
+    }
+
+    @Override
+    public int getBucketCount(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorPartitioningHandle partitioningHandle)
+    {
+        HivePartitioningHandle handle = (HivePartitioningHandle) partitioningHandle;
+        return handle.getBucketCount();
     }
 
     @Override
@@ -92,12 +102,5 @@ public class HiveNodePartitioningProvider
         HivePartitioningHandle handle = (HivePartitioningHandle) partitioningHandle;
         int bucketCount = handle.getBucketCount();
         return IntStream.range(0, bucketCount).mapToObj(HivePartitionHandle::new).collect(toImmutableList());
-    }
-
-    private static <T> List<T> shuffle(Collection<T> items)
-    {
-        List<T> list = new ArrayList<>(items);
-        Collections.shuffle(list);
-        return list;
     }
 }

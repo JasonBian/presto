@@ -14,26 +14,39 @@
 package com.facebook.presto.metadata;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.connector.ConnectorId;
-import com.facebook.presto.spi.CatalogSchemaName;
+import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.execution.QueryManager;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
+import com.facebook.presto.spi.ConnectorId;
+import com.facebook.presto.spi.ConnectorMaterializedViewDefinition;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.SystemTable;
-import com.facebook.presto.spi.block.BlockEncodingSerde;
+import com.facebook.presto.spi.TableHandle;
+import com.facebook.presto.spi.TableLayoutFilterCoverage;
+import com.facebook.presto.spi.api.Experimental;
+import com.facebook.presto.spi.connector.ConnectorCapabilities;
 import com.facebook.presto.spi.connector.ConnectorOutputMetadata;
-import com.facebook.presto.spi.predicate.TupleDomain;
+import com.facebook.presto.spi.connector.ConnectorPartitioningHandle;
+import com.facebook.presto.spi.function.SqlFunction;
 import com.facebook.presto.spi.security.GrantInfo;
+import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.spi.security.Privilege;
+import com.facebook.presto.spi.security.RoleGrant;
 import com.facebook.presto.spi.statistics.ComputedStatistics;
 import com.facebook.presto.spi.statistics.TableStatistics;
 import com.facebook.presto.spi.statistics.TableStatisticsMetadata;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.sql.tree.QualifiedName;
+import com.facebook.presto.sql.planner.PartitioningHandle;
+import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.slice.Slice;
 
 import java.util.Collection;
@@ -43,17 +56,17 @@ import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
 
+import static com.facebook.presto.spi.TableLayoutFilterCoverage.NOT_APPLICABLE;
+
 public interface Metadata
 {
     void verifyComparableOrderableContract();
 
     Type getType(TypeSignature signature);
 
-    boolean isAggregationFunction(QualifiedName name);
+    List<SqlFunction> listFunctions(Session session);
 
-    List<SqlFunction> listFunctions();
-
-    void addFunctions(List<? extends SqlFunction> functions);
+    void registerBuiltInFunctions(List<? extends SqlFunction> functions);
 
     boolean schemaExists(Session session, CatalogSchemaName schema);
 
@@ -68,11 +81,60 @@ public interface Metadata
 
     Optional<SystemTable> getSystemTable(Session session, QualifiedObjectName tableName);
 
-    List<TableLayoutResult> getLayouts(Session session, TableHandle tableHandle, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns);
+    Optional<TableHandle> getTableHandleForStatisticsCollection(Session session, QualifiedObjectName tableName, Map<String, Object> analyzeProperties);
 
-    TableLayout getLayout(Session session, TableLayoutHandle handle);
+    /**
+     * Returns a new table layout that satisfies the given constraint together with unenforced constraint.
+     */
+    @Experimental
+    TableLayoutResult getLayout(Session session, TableHandle tableHandle, Constraint<ColumnHandle> constraint, Optional<Set<ColumnHandle>> desiredColumns);
 
-    Optional<Object> getInfo(Session session, TableLayoutHandle handle);
+    /**
+     * Returns table's layout properties for a given table handle.
+     */
+    @Experimental
+    TableLayout getLayout(Session session, TableHandle handle);
+
+    /**
+     * Return a table handle whose partitioning is converted to the provided partitioning handle,
+     * but otherwise identical to the provided table layout handle.
+     * The provided table layout handle must be one that the connector can transparently convert to from
+     * the original partitioning handle associated with the provided table layout handle,
+     * as promised by {@link #getCommonPartitioning}.
+     */
+    TableHandle getAlternativeTableHandle(Session session, TableHandle tableHandle, PartitioningHandle partitioningHandle);
+
+    /**
+     * Experimental: if true, the engine will invoke getLayout otherwise, getLayout will not be called.
+     * If filter pushdown is required, use a ConnectorPlanOptimizer in the respective connector in order
+     * to push compute into it's TableScan.
+     */
+    @Deprecated
+    boolean isLegacyGetLayoutSupported(Session session, TableHandle tableHandle);
+
+    /**
+     * Return a partitioning handle which the connector can transparently convert both {@code left} and {@code right} into.
+     */
+    @Deprecated
+    Optional<PartitioningHandle> getCommonPartitioning(Session session, PartitioningHandle left, PartitioningHandle right);
+
+    /**
+     * Return whether {@code left} is a refined partitioning over {@code right}.
+     * See
+     * {@link com.facebook.presto.spi.connector.ConnectorMetadata#isRefinedPartitioningOver(ConnectorSession, ConnectorPartitioningHandle, ConnectorPartitioningHandle)}
+     * for details about refined partitioning.
+     * <p>
+     * Refined-over relation is reflexive.
+     */
+    @Experimental
+    boolean isRefinedPartitioningOver(Session session, PartitioningHandle a, PartitioningHandle b);
+
+    /**
+     * Provides partitioning handle for exchange.
+     */
+    PartitioningHandle getPartitioningHandleForExchange(Session session, String catalogName, int partitionCount, List<Type> partitionTypes);
+
+    Optional<Object> getInfo(Session session, TableHandle handle);
 
     /**
      * Return the metadata for the specified table handle.
@@ -82,9 +144,9 @@ public interface Metadata
     TableMetadata getTableMetadata(Session session, TableHandle tableHandle);
 
     /**
-     * Return statistics for specified table for given filtering contraint.
+     * Return statistics for specified table for given columns and filtering constraint.
      */
-    TableStatistics getTableStatistics(Session session, TableHandle tableHandle, Constraint<ColumnHandle> constraint);
+    TableStatistics getTableStatistics(Session session, TableHandle tableHandle, List<ColumnHandle> columnHandles, Constraint<ColumnHandle> constraint);
 
     /**
      * Get the names that match the specified table prefix (never null).
@@ -104,6 +166,11 @@ public interface Metadata
      * @throws RuntimeException if table or column handles are no longer valid
      */
     ColumnMetadata getColumnMetadata(Session session, TableHandle tableHandle, ColumnHandle columnHandle);
+
+    /**
+     * Returns a TupleDomain of constraints that is suitable for ExplainIO
+     */
+    TupleDomain<ColumnHandle> toExplainIOConstraints(Session session, TableHandle tableHandle, TupleDomain<ColumnHandle> constraints);
 
     /**
      * Gets the metadata for all columns that match the specified table prefix.
@@ -131,6 +198,14 @@ public interface Metadata
      * @throws PrestoException with {@code ALREADY_EXISTS} if the table already exists and {@param ignoreExisting} is not set
      */
     void createTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata, boolean ignoreExisting);
+
+    /**
+     * Creates a temporary table with optional partitioning requirements.
+     * Temporary table might have different default storage format, compression scheme, replication factor, etc,
+     * and gets automatically dropped when the transaction ends.
+     */
+    @Experimental
+    TableHandle createTemporaryTable(Session session, String catalogName, List<ColumnMetadata> columns, Optional<PartitioningMetadata> partitioningMetadata);
 
     /**
      * Rename the specified table.
@@ -161,6 +236,9 @@ public interface Metadata
 
     Optional<NewTableLayout> getNewTableLayout(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
 
+    @Experimental
+    Optional<NewTableLayout> getPreferredShuffleLayoutForNewTable(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
+
     /**
      * Begin the atomic creation of a table with data.
      */
@@ -173,10 +251,28 @@ public interface Metadata
 
     Optional<NewTableLayout> getInsertLayout(Session session, TableHandle target);
 
+    @Experimental
+    Optional<NewTableLayout> getPreferredShuffleLayoutForInsert(Session session, TableHandle target);
+
     /**
      * Describes statistics that must be collected during a write.
      */
+    TableStatisticsMetadata getStatisticsCollectionMetadataForWrite(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
+
+    /**
+     * Describe statistics that must be collected during a statistics collection
+     */
     TableStatisticsMetadata getStatisticsCollectionMetadata(Session session, String catalogName, ConnectorTableMetadata tableMetadata);
+
+    /**
+     * Begin statistics collection
+     */
+    AnalyzeTableHandle beginStatisticsCollection(Session session, TableHandle tableHandle);
+
+    /**
+     * Finish statistics collection
+     */
+    void finishStatisticsCollection(Session session, AnalyzeTableHandle tableHandle, Collection<ComputedStatistics> computedStatistics);
 
     /**
      * Start a SELECT/UPDATE/INSERT/DELETE query
@@ -207,14 +303,14 @@ public interface Metadata
     /**
      * @return whether delete without table scan is supported
      */
-    boolean supportsMetadataDelete(Session session, TableHandle tableHandle, TableLayoutHandle tableLayoutHandle);
+    boolean supportsMetadataDelete(Session session, TableHandle tableHandle);
 
     /**
      * Delete the provide table layout
      *
      * @return number of rows deleted, or empty for unknown
      */
-    OptionalLong metadataDelete(Session session, TableHandle tableHandle, TableLayoutHandle tableLayoutHandle);
+    OptionalLong metadataDelete(Session session, TableHandle tableHandle);
 
     /**
      * Begin delete query
@@ -256,7 +352,7 @@ public interface Metadata
     /**
      * Creates the specified view with the specified view definition.
      */
-    void createView(Session session, QualifiedObjectName viewName, String viewData, boolean replace);
+    void createView(Session session, String catalogName, ConnectorTableMetadata viewMetadata, String viewData, boolean replace);
 
     /**
      * Drops the specified view.
@@ -264,30 +360,103 @@ public interface Metadata
     void dropView(Session session, QualifiedObjectName viewName);
 
     /**
+     * Returns the materialized view definition for the specified materialized view name.
+     */
+    Optional<ConnectorMaterializedViewDefinition> getMaterializedView(Session session, QualifiedObjectName viewName);
+
+    /**
+     * Creates the specified materialized view with the specified view definition.
+     */
+    void createMaterializedView(Session session, String catalogName, ConnectorTableMetadata viewMetadata, ConnectorMaterializedViewDefinition viewDefinition, boolean ignoreExisting);
+
+    /**
+     * Drops the specified materialized view.
+     */
+    void dropMaterializedView(Session session, QualifiedObjectName viewName);
+
+    /**
      * Try to locate a table index that can lookup results by indexableColumns and provide the requested outputColumns.
      */
     Optional<ResolvedIndex> resolveIndex(Session session, TableHandle tableHandle, Set<ColumnHandle> indexableColumns, Set<ColumnHandle> outputColumns, TupleDomain<ColumnHandle> tupleDomain);
 
     /**
+     * Creates the specified role in the specified catalog.
+     *
+     * @param grantor represents the principal specified by WITH ADMIN statement
+     */
+    void createRole(Session session, String role, Optional<PrestoPrincipal> grantor, String catalog);
+
+    /**
+     * Drops the specified role in the specified catalog.
+     */
+    void dropRole(Session session, String role, String catalog);
+
+    /**
+     * List available roles in specified catalog.
+     */
+    Set<String> listRoles(Session session, String catalog);
+
+    /**
+     * List roles grants in the specified catalog for a given principal, not recursively.
+     */
+    Set<RoleGrant> listRoleGrants(Session session, String catalog, PrestoPrincipal principal);
+
+    /**
+     * Grants the specified roles to the specified grantees in the specified catalog
+     *
+     * @param grantor represents the principal specified by GRANTED BY statement
+     */
+    void grantRoles(Session session, Set<String> roles, Set<PrestoPrincipal> grantees, boolean withAdminOption, Optional<PrestoPrincipal> grantor, String catalog);
+
+    /**
+     * Revokes the specified roles from the specified grantees in the specified catalog
+     *
+     * @param grantor represents the principal specified by GRANTED BY statement
+     */
+    void revokeRoles(Session session, Set<String> roles, Set<PrestoPrincipal> grantees, boolean adminOptionFor, Optional<PrestoPrincipal> grantor, String catalog);
+
+    /**
+     * List applicable roles, including the transitive grants, for the specified principal
+     */
+    Set<RoleGrant> listApplicableRoles(Session session, PrestoPrincipal principal, String catalog);
+
+    /**
+     * List applicable roles, including the transitive grants, in given session
+     */
+    Set<String> listEnabledRoles(Session session, String catalog);
+
+    /**
      * Grants the specified privilege to the specified user on the specified table
      */
-    void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, String grantee, boolean grantOption);
+    void grantTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, PrestoPrincipal grantee, boolean grantOption);
 
     /**
      * Revokes the specified privilege on the specified table from the specified user
      */
-    void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, String grantee, boolean grantOption);
+    void revokeTablePrivileges(Session session, QualifiedObjectName tableName, Set<Privilege> privileges, PrestoPrincipal grantee, boolean grantOption);
 
     /**
-     * Gets the privileges for the specified table available to the given grantee
+     * Gets the privileges for the specified table available to the given grantee considering the selected session role
      */
     List<GrantInfo> listTablePrivileges(Session session, QualifiedTablePrefix prefix);
 
-    FunctionRegistry getFunctionRegistry();
+    /**
+     * Commits page sink for table creation.
+     */
+    @Experimental
+    ListenableFuture<Void> commitPageSinkAsync(Session session, OutputTableHandle tableHandle, Collection<Slice> fragments);
+
+    /**
+     * Commits page sink for table insertion.
+     */
+    @Experimental
+    ListenableFuture<Void> commitPageSinkAsync(Session session, InsertTableHandle tableHandle, Collection<Slice> fragments);
+
+    MetadataUpdates getMetadataUpdateResults(Session session, QueryManager queryManager, MetadataUpdates metadataUpdates, QueryId queryId);
+
+    FunctionAndTypeManager getFunctionAndTypeManager();
 
     ProcedureRegistry getProcedureRegistry();
-
-    TypeManager getTypeManager();
 
     BlockEncodingSerde getBlockEncodingSerde();
 
@@ -298,4 +467,18 @@ public interface Metadata
     TablePropertyManager getTablePropertyManager();
 
     ColumnPropertyManager getColumnPropertyManager();
+
+    AnalyzePropertyManager getAnalyzePropertyManager();
+
+    Set<ConnectorCapabilities> getConnectorCapabilities(Session session, ConnectorId catalogName);
+
+    /**
+     * Check if there is filter coverage of the specified partitioning keys
+     *
+     * @return NOT_APPLICABLE if partitioning is unsupported, not applicable, or the partitioning key is not relevant, NONE or COVERED otherwise
+     */
+    default TableLayoutFilterCoverage getTableLayoutFilterCoverage(Session session, TableHandle tableHandle, Set<String> relevantPartitionColumn)
+    {
+        return NOT_APPLICABLE;
+    }
 }

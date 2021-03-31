@@ -13,47 +13,65 @@
  */
 package com.facebook.presto.execution;
 
-import com.facebook.presto.Session;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.execution.QueryPreparer.PreparedQuery;
+import com.facebook.presto.execution.QueryTracker.TrackedQuery;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.memory.VersionedMemoryPoolId;
-import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.server.BasicQueryInfo;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.resourceGroups.QueryType;
 import com.facebook.presto.sql.planner.Plan;
-import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.Statement;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.ImmutableSet;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.ListenableFuture;
+import io.airlift.units.DataSize;
+import io.airlift.units.Duration;
 
 import java.net.URI;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 import java.util.function.Consumer;
 
 import static java.util.Objects.requireNonNull;
 
 public interface QueryExecution
-        extends ManagedQueryExecution
+        extends TrackedQuery
 {
-    QueryId getQueryId();
-
     QueryState getState();
 
     ListenableFuture<QueryState> getStateChange(QueryState currentState);
 
-    void addOutputInfoListener(Consumer<QueryOutputInfo> listener);
+    void addStateChangeListener(StateChangeListener<QueryState> stateChangeListener);
 
-    Optional<ResourceGroupId> getResourceGroup();
+    void addOutputInfoListener(Consumer<QueryOutputInfo> listener);
 
     Plan getQueryPlan();
 
+    BasicQueryInfo getBasicQueryInfo();
+
     QueryInfo getQueryInfo();
+
+    String getSlug();
+
+    Duration getTotalCpuTime();
+
+    DataSize getRawInputDataSize();
+
+    DataSize getOutputDataSize();
+
+    int getRunningTaskCount();
+
+    DataSize getUserMemoryReservation();
+
+    DataSize getTotalMemoryReservation();
 
     VersionedMemoryPoolId getMemoryPool();
 
     void setMemoryPool(VersionedMemoryPoolId poolId);
+
+    void start();
 
     void cancelQuery();
 
@@ -61,16 +79,21 @@ public interface QueryExecution
 
     void recordHeartbeat();
 
-    // XXX: This should be removed when the client protocol is improved, so that we don't need to hold onto so much query history
-    void pruneInfo();
-
-    void addStateChangeListener(StateChangeListener<QueryState> stateChangeListener);
-
+    /**
+     * Add a listener for the final query info.  This notification is guaranteed to be fired only once.
+     * Listener is always notified asynchronously using a dedicated notification thread pool so, care should
+     * be taken to avoid leaking {@code this} when adding a listener in a constructor.
+     */
     void addFinalQueryInfoListener(StateChangeListener<QueryInfo> stateChangeListener);
 
     interface QueryExecutionFactory<T extends QueryExecution>
     {
-        T createQueryExecution(QueryId queryId, String query, Session session, Statement statement, List<Expression> parameters);
+        T createQueryExecution(
+                PreparedQuery preparedQuery,
+                QueryStateMachine stateMachine,
+                String slug,
+                WarningCollector warningCollector,
+                Optional<QueryType> queryType);
     }
 
     /**
@@ -83,14 +106,14 @@ public interface QueryExecution
     {
         private final List<String> columnNames;
         private final List<Type> columnTypes;
-        private final Set<URI> bufferLocations;
+        private final Map<URI, TaskId> bufferLocations;
         private final boolean noMoreBufferLocations;
 
-        public QueryOutputInfo(List<String> columnNames, List<Type> columnTypes, Set<URI> bufferLocations, boolean noMoreBufferLocations)
+        public QueryOutputInfo(List<String> columnNames, List<Type> columnTypes, Map<URI, TaskId> bufferLocations, boolean noMoreBufferLocations)
         {
             this.columnNames = ImmutableList.copyOf(requireNonNull(columnNames, "columnNames is null"));
             this.columnTypes = ImmutableList.copyOf(requireNonNull(columnTypes, "columnTypes is null"));
-            this.bufferLocations = ImmutableSet.copyOf(requireNonNull(bufferLocations, "bufferLocations is null"));
+            this.bufferLocations = ImmutableMap.copyOf(requireNonNull(bufferLocations, "bufferLocations is null"));
             this.noMoreBufferLocations = noMoreBufferLocations;
         }
 
@@ -104,7 +127,7 @@ public interface QueryExecution
             return columnTypes;
         }
 
-        public Set<URI> getBufferLocations()
+        public Map<URI, TaskId> getBufferLocations()
         {
             return bufferLocations;
         }

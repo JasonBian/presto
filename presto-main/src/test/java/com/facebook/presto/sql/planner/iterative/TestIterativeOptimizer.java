@@ -17,11 +17,11 @@ import com.facebook.presto.Session;
 import com.facebook.presto.matching.Captures;
 import com.facebook.presto.matching.Pattern;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.ProjectNode;
 import com.facebook.presto.sql.planner.RuleStatsRecorder;
 import com.facebook.presto.sql.planner.optimizations.PlanOptimizer;
-import com.facebook.presto.sql.planner.plan.Assignments;
-import com.facebook.presto.sql.planner.plan.PlanNode;
-import com.facebook.presto.sql.planner.plan.ProjectNode;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.tpch.TpchConnectorFactory;
 import com.google.common.collect.ImmutableList;
@@ -32,6 +32,7 @@ import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import static com.facebook.presto.spi.StandardErrorCode.OPTIMIZER_TIMEOUT;
+import static com.facebook.presto.sql.planner.plan.AssignmentUtils.identityAssignmentsAsSymbolReferences;
 import static com.facebook.presto.sql.planner.plan.Patterns.project;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static org.testng.Assert.assertEquals;
@@ -78,7 +79,7 @@ public class TestIterativeOptimizer
 
         try {
             queryRunner.inTransaction(transactionSession -> {
-                queryRunner.createPlan(transactionSession, "SELECT * FROM nation", ImmutableList.of(optimizer));
+                queryRunner.createPlan(transactionSession, "SELECT * FROM nation", ImmutableList.of(optimizer), WarningCollector.NOOP);
                 fail("The optimizer should not converge");
                 return null;
             });
@@ -106,13 +107,13 @@ public class TestIterativeOptimizer
             if (isIdentityProjection(project)) {
                 return Result.ofPlanNode(project.getSource());
             }
-            PlanNode projectNode = new ProjectNode(context.getIdAllocator().getNextId(), project, Assignments.identity(project.getOutputSymbols()));
+            PlanNode projectNode = new ProjectNode(context.getIdAllocator().getNextId(), project, identityAssignmentsAsSymbolReferences(project.getOutputVariables()));
             return Result.ofPlanNode(projectNode);
         }
 
         private static boolean isIdentityProjection(ProjectNode project)
         {
-            return ImmutableSet.copyOf(project.getOutputSymbols()).equals(ImmutableSet.copyOf(project.getSource().getOutputSymbols()));
+            return ImmutableSet.copyOf(project.getOutputVariables()).equals(ImmutableSet.copyOf(project.getSource().getOutputVariables()));
         }
     }
 }

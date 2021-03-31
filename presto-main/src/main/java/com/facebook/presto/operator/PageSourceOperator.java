@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.io.Closeable;
@@ -22,7 +22,7 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.concurrent.CompletableFuture;
 
-import static io.airlift.concurrent.MoreFutures.toListenableFuture;
+import static com.facebook.airlift.concurrent.MoreFutures.toListenableFuture;
 import static java.util.Objects.requireNonNull;
 
 public class PageSourceOperator
@@ -92,9 +92,13 @@ public class PageSourceOperator
         // update operator stats
         long endCompletedBytes = pageSource.getCompletedBytes();
         long endReadTimeNanos = pageSource.getReadTimeNanos();
-        operatorContext.recordGeneratedInput(endCompletedBytes - completedBytes, page.getPositionCount(), endReadTimeNanos - readTimeNanos);
+        operatorContext.recordRawInputWithTiming(endCompletedBytes - completedBytes, page.getPositionCount(), endReadTimeNanos - readTimeNanos);
+        operatorContext.recordProcessedInput(page.getSizeInBytes(), page.getPositionCount());
         completedBytes = endCompletedBytes;
         readTimeNanos = endReadTimeNanos;
+
+        // assure the page is in memory before handing to another operator
+        page = page.getLoadedPage();
 
         return page;
     }

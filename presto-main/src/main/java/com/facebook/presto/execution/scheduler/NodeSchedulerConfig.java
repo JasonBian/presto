@@ -13,9 +13,10 @@
  */
 package com.facebook.presto.execution.scheduler;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.DefunctConfig;
-import io.airlift.configuration.LegacyConfig;
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.DefunctConfig;
+import com.facebook.airlift.configuration.LegacyConfig;
 
 import javax.validation.constraints.Min;
 import javax.validation.constraints.NotNull;
@@ -34,6 +35,7 @@ public class NodeSchedulerConfig
     private boolean includeCoordinator = true;
     private int maxSplitsPerNode = 100;
     private int maxPendingSplitsPerTask = 10;
+    private int maxUnacknowledgedSplitsPerTask = 500;
     private String networkTopology = NetworkTopologyType.LEGACY;
 
     @NotNull
@@ -96,6 +98,20 @@ public class NodeSchedulerConfig
     public NodeSchedulerConfig setMaxSplitsPerNode(int maxSplitsPerNode)
     {
         this.maxSplitsPerNode = maxSplitsPerNode;
+        return this;
+    }
+
+    @Min(1)
+    public int getMaxUnacknowledgedSplitsPerTask()
+    {
+        return maxUnacknowledgedSplitsPerTask;
+    }
+
+    @Config("node-scheduler.max-unacknowledged-splits-per-task")
+    @ConfigDescription("Maximum number of leaf splits not yet delivered to a given task")
+    public NodeSchedulerConfig setMaxUnacknowledgedSplitsPerTask(int maxUnacknowledgedSplitsPerTask)
+    {
+        this.maxUnacknowledgedSplitsPerTask = maxUnacknowledgedSplitsPerTask;
         return this;
     }
 }

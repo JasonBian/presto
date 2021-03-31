@@ -13,11 +13,12 @@
  */
 package com.facebook.presto;
 
+import com.facebook.presto.array.AdaptiveLongBigArray;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.PagesIndex;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PageSorter;
-import com.facebook.presto.spi.block.SortOrder;
-import com.facebook.presto.spi.type.Type;
 
 import javax.inject.Inject;
 
@@ -45,7 +46,14 @@ public class PagesIndexPageSorter
         pages.forEach(pagesIndex::addPage);
         pagesIndex.sort(sortChannels, sortOrders);
 
-        return pagesIndex.getValueAddresses().toLongArray(null);
+        int positionCount = pagesIndex.getPositionCount();
+        AdaptiveLongBigArray valueAddresses = pagesIndex.getValueAddresses();
+        long[] result = new long[positionCount];
+        for (int i = 0; i < positionCount; i++) {
+            result[i] = valueAddresses.get(i);
+        }
+
+        return result;
     }
 
     @Override

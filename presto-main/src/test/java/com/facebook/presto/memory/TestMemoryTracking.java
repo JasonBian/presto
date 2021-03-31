@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.memory;
 
+import com.facebook.airlift.stats.TestingGcMonitor;
 import com.facebook.presto.ExceededMemoryLimitException;
 import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.execution.TaskStateMachine;
@@ -28,23 +29,21 @@ import com.facebook.presto.operator.TaskContext;
 import com.facebook.presto.operator.TaskStats;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.memory.MemoryPoolId;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spiller.SpillSpaceTracker;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
-import io.airlift.stats.TestingGcMonitor;
 import io.airlift.units.DataSize;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.BeforeMethod;
 import org.testng.annotations.Test;
 
-import java.util.OptionalInt;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static java.lang.String.format;
 import static java.util.concurrent.Executors.newCachedThreadPool;
@@ -59,12 +58,13 @@ public class TestMemoryTracking
 {
     private static final DataSize queryMaxMemory = new DataSize(1, GIGABYTE);
     private static final DataSize queryMaxTotalMemory = new DataSize(1, GIGABYTE);
+    private static final DataSize queryMaxRevocableMemory = new DataSize(2, GIGABYTE);
     private static final DataSize memoryPoolSize = new DataSize(1, GIGABYTE);
     private static final DataSize maxSpillSize = new DataSize(1, GIGABYTE);
     private static final DataSize queryMaxSpillSize = new DataSize(1, GIGABYTE);
     private static final SpillSpaceTracker spillSpaceTracker = new SpillSpaceTracker(maxSpillSize);
 
-    private DefaultQueryContext queryContext;
+    private QueryContext queryContext;
     private TaskContext taskContext;
     private PipelineContext pipelineContext;
     private DriverContext driverContext;
@@ -97,10 +97,12 @@ public class TestMemoryTracking
     public void setUpTest()
     {
         memoryPool = new MemoryPool(new MemoryPoolId("test"), memoryPoolSize);
-        queryContext = new DefaultQueryContext(
+        queryContext = new QueryContext(
                 new QueryId("test_query"),
                 queryMaxMemory,
                 queryMaxTotalMemory,
+                queryMaxMemory,
+                queryMaxRevocableMemory,
                 memoryPool,
                 new TestingGcMonitor(),
                 notificationExecutor,
@@ -108,12 +110,14 @@ public class TestMemoryTracking
                 queryMaxSpillSize,
                 spillSpaceTracker);
         taskContext = queryContext.addTaskContext(
-                new TaskStateMachine(new TaskId("query", 0, 0), notificationExecutor),
+                new TaskStateMachine(new TaskId("query", 0, 0, 0), notificationExecutor),
                 testSessionBuilder().build(),
                 true,
                 true,
-                OptionalInt.empty());
-        pipelineContext = taskContext.addPipelineContext(0, true, true);
+                true,
+                true,
+                false);
+        pipelineContext = taskContext.addPipelineContext(0, true, true, false);
         driverContext = pipelineContext.addDriverContext();
         operatorContext = driverContext.addOperatorContext(1, new PlanNodeId("a"), "test-operator");
     }
@@ -155,7 +159,24 @@ public class TestMemoryTracking
             fail("allocation should hit the per-node total memory limit");
         }
         catch (ExceededMemoryLimitException e) {
-            assertEquals(e.getMessage(), format("Query exceeded per-node total memory limit of %s", queryMaxTotalMemory));
+            assertEquals(e.getMessage(), format("Query exceeded per-node total memory limit of %1$s [Allocated: %1$s, Delta: 1B, Top Consumers: {test=%1$s}]", queryMaxTotalMemory));
+        }
+    }
+
+    @Test
+    public void testLocalRevocableMemoryLimitExceeded()
+    {
+        LocalMemoryContext revocableMemoryContext = operatorContext.localRevocableMemoryContext();
+        revocableMemoryContext.setBytes(100);
+        assertOperatorMemoryAllocations(operatorContext.getOperatorMemoryContext(), 0, 0, 100);
+        revocableMemoryContext.setBytes(queryMaxRevocableMemory.toBytes());
+        assertOperatorMemoryAllocations(operatorContext.getOperatorMemoryContext(), 0, 0, queryMaxRevocableMemory.toBytes());
+        try {
+            revocableMemoryContext.setBytes(queryMaxRevocableMemory.toBytes() + 1);
+            fail("allocation should hit the per-node revocable memory limit");
+        }
+        catch (ExceededMemoryLimitException e) {
+            assertEquals(e.getMessage(), format("Query exceeded per-node revocable memory limit of %1$s [Allocated: %1$s, Delta: 1B]", queryMaxRevocableMemory));
         }
     }
 
@@ -177,7 +198,7 @@ public class TestMemoryTracking
                 pipelineLocalAllocation + taskLocalAllocation,
                 0,
                 taskLocalAllocation);
-        assertEquals(pipelineContext.getPipelineStats().getSystemMemoryReservation().toBytes(),
+        assertEquals(pipelineContext.getPipelineStats().getSystemMemoryReservationInBytes(),
                 pipelineLocalAllocation,
                 "task level allocations should not be visible at the pipeline level");
         pipelineLocalSystemMemoryContext.setBytes(pipelineLocalSystemMemoryContext.getBytes() - pipelineLocalAllocation);
@@ -329,6 +350,16 @@ public class TestMemoryTracking
     }
 
     @Test
+    public void testTrySetZeroBytesFullPool()
+    {
+        LocalMemoryContext localMemoryContext = operatorContext.localUserMemoryContext();
+        // fill up the pool
+        memoryPool.reserve(new QueryId("test_query"), "test", memoryPool.getFreeBytes());
+        // try to reserve 0 bytes in the full pool
+        assertTrue(localMemoryContext.trySetBytes(localMemoryContext.getBytes()));
+    }
+
+    @Test
     public void testDestroy()
     {
         LocalMemoryContext newLocalSystemMemoryContext = operatorContext.newLocalSystemMemoryContext("test");
@@ -354,18 +385,18 @@ public class TestMemoryTracking
     {
         assertEquals(operatorStats.getUserMemoryReservation().toBytes(), expectedUserMemory);
         assertEquals(driverStats.getUserMemoryReservation().toBytes(), expectedUserMemory);
-        assertEquals(pipelineStats.getUserMemoryReservation().toBytes(), expectedUserMemory);
-        assertEquals(taskStats.getUserMemoryReservation().toBytes(), expectedUserMemory);
+        assertEquals(pipelineStats.getUserMemoryReservationInBytes(), expectedUserMemory);
+        assertEquals(taskStats.getUserMemoryReservationInBytes(), expectedUserMemory);
 
         assertEquals(operatorStats.getSystemMemoryReservation().toBytes(), expectedSystemMemory);
         assertEquals(driverStats.getSystemMemoryReservation().toBytes(), expectedSystemMemory);
-        assertEquals(pipelineStats.getSystemMemoryReservation().toBytes(), expectedSystemMemory);
-        assertEquals(taskStats.getSystemMemoryReservation().toBytes(), expectedSystemMemory);
+        assertEquals(pipelineStats.getSystemMemoryReservationInBytes(), expectedSystemMemory);
+        assertEquals(taskStats.getSystemMemoryReservationInBytes(), expectedSystemMemory);
 
         assertEquals(operatorStats.getRevocableMemoryReservation().toBytes(), expectedRevocableMemory);
         assertEquals(driverStats.getRevocableMemoryReservation().toBytes(), expectedRevocableMemory);
-        assertEquals(pipelineStats.getRevocableMemoryReservation().toBytes(), expectedRevocableMemory);
-        assertEquals(taskStats.getRevocableMemoryReservation().toBytes(), expectedRevocableMemory);
+        assertEquals(pipelineStats.getRevocableMemoryReservationInBytes(), expectedRevocableMemory);
+        assertEquals(taskStats.getRevocableMemoryReservationInBytes(), expectedRevocableMemory);
     }
 
     private void assertAllocationFails(Consumer<Void> allocationFunction, String expectedPattern)

@@ -16,17 +16,17 @@ package com.facebook.presto.type;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.function.OperatorType.INDETERMINATE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.DIVISION_BY_ZERO;
-import static com.facebook.presto.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
-import static com.facebook.presto.spi.function.OperatorType.INDETERMINATE;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_LITERAL;
 import static java.lang.String.format;
 
 public class TestSmallintOperators
@@ -37,7 +37,7 @@ public class TestSmallintOperators
     {
         assertFunction("SMALLINT'37'", SMALLINT, (short) 37);
         assertFunction("SMALLINT'17'", SMALLINT, (short) 17);
-        assertInvalidCast("SMALLINT'" + ((long) Short.MAX_VALUE + 1L) + "'");
+        assertInvalidFunction("SMALLINT'" + ((long) Short.MAX_VALUE + 1L) + "'", INVALID_LITERAL);
     }
 
     @Test
@@ -52,7 +52,7 @@ public class TestSmallintOperators
     {
         assertFunction("SMALLINT'-37'", SMALLINT, (short) -37);
         assertFunction("SMALLINT'-17'", SMALLINT, (short) -17);
-        assertInvalidFunction("SMALLINT'-" + Short.MIN_VALUE + "'", INVALID_CAST_ARGUMENT);
+        assertInvalidFunction("SMALLINT'-" + Short.MIN_VALUE + "'", INVALID_LITERAL);
     }
 
     @Test

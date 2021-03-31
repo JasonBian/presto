@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.sql.planner.iterative;
 
-import com.facebook.presto.cost.PlanNodeCostEstimate;
+import com.facebook.presto.cost.PlanCostEstimate;
 import com.facebook.presto.cost.PlanNodeStatsEstimate;
-import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
-import com.facebook.presto.sql.planner.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
 import com.google.common.collect.HashMultiset;
 import com.google.common.collect.Multiset;
 
@@ -114,11 +114,11 @@ public class Memo
     {
         PlanNode old = getGroup(group).membership;
 
-        checkArgument(new HashSet<>(old.getOutputSymbols()).equals(new HashSet<>(node.getOutputSymbols())),
+        checkArgument(new HashSet<>(old.getOutputVariables()).equals(new HashSet<>(node.getOutputVariables())),
                 "%s: transformed expression doesn't produce same outputs: %s vs %s",
                 reason,
-                old.getOutputSymbols(),
-                node.getOutputSymbols());
+                old.getOutputVariables(),
+                node.getOutputVariables());
 
         if (node instanceof GroupReference) {
             node = getNode(((GroupReference) node).getGroupId());
@@ -138,7 +138,7 @@ public class Memo
     private void evictStatisticsAndCost(int group)
     {
         getGroup(group).stats = null;
-        getGroup(group).cumulativeCost = null;
+        getGroup(group).cost = null;
         for (int parentGroup : getGroup(group).incomingReferences.elementSet()) {
             if (parentGroup != ROOT_GROUP_REF) {
                 evictStatisticsAndCost(parentGroup);
@@ -160,14 +160,14 @@ public class Memo
         group.stats = requireNonNull(stats, "stats is null");
     }
 
-    public Optional<PlanNodeCostEstimate> getCumulativeCost(int group)
+    public Optional<PlanCostEstimate> getCost(int group)
     {
-        return Optional.ofNullable(getGroup(group).cumulativeCost);
+        return Optional.ofNullable(getGroup(group).cost);
     }
 
-    public void storeCumulativeCost(int group, PlanNodeCostEstimate cost)
+    public void storeCost(int group, PlanCostEstimate cost)
     {
-        getGroup(group).cumulativeCost = requireNonNull(cost, "cost is null");
+        getGroup(group).cost = requireNonNull(cost, "cost is null");
     }
 
     private void incrementReferenceCounts(PlanNode fromNode, int fromGroup)
@@ -215,7 +215,7 @@ public class Memo
                         .map(child -> new GroupReference(
                                 idAllocator.getNextId(),
                                 insertRecursive(child),
-                                child.getOutputSymbols()))
+                                child.getOutputVariables()))
                         .collect(Collectors.toList()));
     }
 
@@ -256,7 +256,7 @@ public class Memo
         @Nullable
         private PlanNodeStatsEstimate stats;
         @Nullable
-        private PlanNodeCostEstimate cumulativeCost;
+        private PlanCostEstimate cost;
 
         private Group(PlanNode member)
         {

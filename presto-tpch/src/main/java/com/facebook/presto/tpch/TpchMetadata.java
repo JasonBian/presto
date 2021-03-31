@@ -13,6 +13,12 @@
  */
 package com.facebook.presto.tpch;
 
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorSession;
@@ -27,16 +33,13 @@ import com.facebook.presto.spi.LocalProperty;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.SortingProperty;
-import com.facebook.presto.spi.block.SortOrder;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.facebook.presto.spi.statistics.ColumnStatistics;
+import com.facebook.presto.spi.statistics.ComputedStatistics;
+import com.facebook.presto.spi.statistics.DoubleRange;
 import com.facebook.presto.spi.statistics.Estimate;
 import com.facebook.presto.spi.statistics.TableStatistics;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.spi.statistics.TableStatisticsMetadata;
 import com.facebook.presto.tpch.statistics.ColumnStatisticsData;
 import com.facebook.presto.tpch.statistics.StatisticsEstimator;
 import com.facebook.presto.tpch.statistics.TableStatisticsData;
@@ -60,19 +63,23 @@ import io.airlift.tpch.TpchEntity;
 import io.airlift.tpch.TpchTable;
 
 import java.time.LocalDate;
+import java.util.Collection;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
+import static com.facebook.presto.spi.statistics.TableStatisticType.ROW_COUNT;
 import static com.facebook.presto.tpch.util.PredicateUtils.convertToPredicate;
 import static com.facebook.presto.tpch.util.PredicateUtils.filterOutColumnFromPredicate;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Maps.asMap;
 import static io.airlift.tpch.OrderColumn.ORDER_STATUS;
@@ -168,7 +175,13 @@ public class TpchMetadata
             return null;
         }
 
-        return new TpchTableHandle(connectorId, tableName.getTableName(), scaleFactor);
+        return new TpchTableHandle(tableName.getTableName(), scaleFactor);
+    }
+
+    @Override
+    public ConnectorTableHandle getTableHandleForStatisticsCollection(ConnectorSession session, SchemaTableName tableName, Map<String, Object> analyzeProperties)
+    {
+        return getTableHandle(session, tableName);
     }
 
     @Override
@@ -180,7 +193,7 @@ public class TpchMetadata
     {
         TpchTableHandle tableHandle = (TpchTableHandle) table;
 
-        Optional<ConnectorTablePartitioning> nodePartition = Optional.empty();
+        Optional<ConnectorTablePartitioning> tablePartitioning = Optional.empty();
         Optional<Set<ColumnHandle>> partitioningColumns = Optional.empty();
         List<LocalProperty<ColumnHandle>> localProperties = ImmutableList.of();
 
@@ -190,7 +203,7 @@ public class TpchMetadata
         if (tableHandle.getTableName().equals(TpchTable.ORDERS.getTableName())) {
             if (partitioningEnabled) {
                 ColumnHandle orderKeyColumn = columns.get(columnNaming.getName(OrderColumn.ORDER_KEY));
-                nodePartition = Optional.of(new ConnectorTablePartitioning(
+                tablePartitioning = Optional.of(new ConnectorTablePartitioning(
                         new TpchPartitioningHandle(
                                 TpchTable.ORDERS.getTableName(),
                                 calculateTotalRows(OrderGenerator.SCALE_BASE, tableHandle.getScaleFactor())),
@@ -217,7 +230,7 @@ public class TpchMetadata
         else if (tableHandle.getTableName().equals(TpchTable.LINE_ITEM.getTableName())) {
             if (partitioningEnabled) {
                 ColumnHandle orderKeyColumn = columns.get(columnNaming.getName(LineItemColumn.ORDER_KEY));
-                nodePartition = Optional.of(new ConnectorTablePartitioning(
+                tablePartitioning = Optional.of(new ConnectorTablePartitioning(
                         new TpchPartitioningHandle(
                                 TpchTable.ORDERS.getTableName(),
                                 calculateTotalRows(OrderGenerator.SCALE_BASE, tableHandle.getScaleFactor())),
@@ -233,7 +246,7 @@ public class TpchMetadata
                 new TpchTableLayoutHandle(tableHandle, predicate),
                 Optional.empty(),
                 predicate, // TODO: conditionally return well-known properties (e.g., orderkey > 0, etc)
-                nodePartition,
+                tablePartitioning,
                 partitioningColumns,
                 Optional.empty(),
                 localProperties);
@@ -275,7 +288,7 @@ public class TpchMetadata
     {
         ImmutableList.Builder<ColumnMetadata> columns = ImmutableList.builder();
         for (TpchColumn<? extends TpchEntity> column : tpchTable.getColumns()) {
-            columns.add(new ColumnMetadata(columnNaming.getName(column), getPrestoType(column)));
+            columns.add(new ColumnMetadata(columnNaming.getName(column), getPrestoType(column), false, null, null, false, emptyMap()));
         }
         columns.add(new ColumnMetadata(ROW_NUMBER_COLUMN_NAME, BIGINT, null, true));
 
@@ -309,7 +322,7 @@ public class TpchMetadata
     }
 
     @Override
-    public TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Constraint<ColumnHandle> constraint)
+    public TableStatistics getTableStatistics(ConnectorSession session, ConnectorTableHandle tableHandle, Optional<ConnectorTableLayoutHandle> tableLayoutHandle, List<ColumnHandle> columnHandles, Constraint<ColumnHandle> constraint)
     {
         TpchTableHandle tpchTableHandle = (TpchTableHandle) tableHandle;
         String tableName = tpchTableHandle.getTableName();
@@ -320,10 +333,9 @@ public class TpchMetadata
         }
         Optional<TableStatisticsData> optionalTableStatisticsData = statisticsEstimator.estimateStats(tpchTable, columnValuesRestrictions, tpchTableHandle.getScaleFactor());
 
-        Map<String, ColumnHandle> columnHandles = getColumnHandles(session, tpchTableHandle);
         return optionalTableStatisticsData
                 .map(tableStatisticsData -> toTableStatistics(optionalTableStatisticsData.get(), tpchTableHandle, columnHandles))
-                .orElse(TableStatistics.EMPTY_STATISTICS);
+                .orElse(TableStatistics.empty());
     }
 
     private Map<TpchColumn<?>, List<Object>> getColumnValuesRestrictions(TpchTable<?> tpchTable, Constraint<ColumnHandle> constraint)
@@ -359,51 +371,76 @@ public class TpchMetadata
         }
     }
 
-    private TableStatistics toTableStatistics(TableStatisticsData tableStatisticsData, TpchTableHandle tpchTableHandle, Map<String, ColumnHandle> columnHandles)
-    {
-        TableStatistics.Builder builder = TableStatistics.builder()
-                .setRowCount(new Estimate(tableStatisticsData.getRowCount()));
-        tableStatisticsData.getColumns().forEach((columnName, stats) -> {
-            TpchColumnHandle columnHandle = (TpchColumnHandle) getColumnHandle(tpchTableHandle, columnHandles, columnName);
-            builder.setColumnStatistics(columnHandle, toColumnStatistics(stats, columnHandle.getType()));
-        });
-        return builder.build();
-    }
-
-    private ColumnHandle getColumnHandle(TpchTableHandle tpchTableHandle, Map<String, ColumnHandle> columnHandles, String columnName)
+    private TableStatistics toTableStatistics(TableStatisticsData tableStatisticsData, TpchTableHandle tpchTableHandle, List<ColumnHandle> columnHandles)
     {
         TpchTable<?> table = TpchTable.getTable(tpchTableHandle.getTableName());
-        return columnHandles.get(columnNaming.getName(table.getColumn(columnName)));
+
+        Map<String, TpchColumnHandle> columnHandleByName = columnHandles.stream()
+                .map(TpchColumnHandle.class::cast)
+                .collect(toImmutableMap(TpchColumnHandle::getColumnName, Function.identity()));
+
+        TableStatistics.Builder builder = TableStatistics.builder()
+                .setRowCount(Estimate.of(tableStatisticsData.getRowCount()));
+        tableStatisticsData.getColumns().forEach((columnName, stats) -> {
+            TpchColumnHandle columnHandle = columnHandleByName.get(columnNaming.getName(table.getColumn(columnName)));
+            if (columnHandle != null) {
+                builder.setColumnStatistics(columnHandle, toColumnStatistics(stats, columnHandle.getType()));
+            }
+        });
+        return builder.build();
     }
 
     private ColumnStatistics toColumnStatistics(ColumnStatisticsData stats, Type columnType)
     {
         return ColumnStatistics.builder()
-                .addRange(rangeBuilder -> rangeBuilder
-                        .setDistinctValuesCount(stats.getDistinctValuesCount().map(Estimate::new).orElse(Estimate.unknownValue()))
-                        .setDataSize(stats.getDataSize().map(Estimate::new).orElse(Estimate.unknownValue()))
-                        .setLowValue(stats.getMin().map(value -> toPrestoValue(value, columnType)))
-                        .setHighValue(stats.getMax().map(value -> toPrestoValue(value, columnType)))
-                        .setFraction(new Estimate((1))))
-                .setNullsFraction(Estimate.zeroValue())
+                .setNullsFraction(Estimate.zero())
+                .setDistinctValuesCount(stats.getDistinctValuesCount().map(Estimate::of).orElse(Estimate.unknown()))
+                .setDataSize(stats.getDataSize().map(Estimate::of).orElse(Estimate.unknown()))
+                .setRange(toRange(stats.getMin(), stats.getMax(), columnType))
                 .build();
     }
 
-    private Object toPrestoValue(Object tpchValue, Type columnType)
+    private static Optional<DoubleRange> toRange(Optional<Object> min, Optional<Object> max, Type columnType)
     {
         if (columnType instanceof VarcharType) {
-            return Slices.utf8Slice((String) tpchValue);
+            return Optional.empty();
         }
-        if (tpchValue instanceof String && columnType.equals(DATE)) {
-            return LocalDate.parse((CharSequence) tpchValue).toEpochDay();
+        if (!min.isPresent() || !max.isPresent()) {
+            return Optional.empty();
+        }
+        return Optional.of(new DoubleRange(toDouble(min.get(), columnType), toDouble(max.get(), columnType)));
+    }
+
+    private static double toDouble(Object value, Type columnType)
+    {
+        if (value instanceof String && columnType.equals(DATE)) {
+            return LocalDate.parse((CharSequence) value).toEpochDay();
         }
         if (columnType.equals(BIGINT) || columnType.equals(INTEGER) || columnType.equals(DATE)) {
-            return ((Number) tpchValue).longValue();
+            return ((Number) value).longValue();
         }
         if (columnType.equals(DOUBLE)) {
-            return ((Number) tpchValue).doubleValue();
+            return ((Number) value).doubleValue();
         }
         throw new IllegalArgumentException("unsupported column type " + columnType);
+    }
+
+    @Override
+    public TableStatisticsMetadata getStatisticsCollectionMetadata(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        return new TableStatisticsMetadata(ImmutableSet.of(), ImmutableSet.of(ROW_COUNT), ImmutableList.of());
+    }
+
+    @Override
+    public ConnectorTableHandle beginStatisticsCollection(ConnectorSession session, ConnectorTableHandle tableHandle)
+    {
+        return (TpchTableHandle) tableHandle;
+    }
+
+    @Override
+    public void finishStatisticsCollection(ConnectorSession session, ConnectorTableHandle tableHandle, Collection<ComputedStatistics> computedStatistics)
+    {
+        // do nothing
     }
 
     @VisibleForTesting

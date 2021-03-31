@@ -14,15 +14,16 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.execution.QueryPreparer.PreparedQuery;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.memory.VersionedMemoryPoolId;
 import com.facebook.presto.metadata.Metadata;
 import com.facebook.presto.metadata.MetadataManager;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.server.BasicQueryInfo;
-import com.facebook.presto.spi.ErrorCode;
 import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.resourceGroups.QueryType;
 import com.facebook.presto.sql.planner.Plan;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.Statement;
@@ -32,15 +33,14 @@ import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
+import org.joda.time.DateTime;
 
 import javax.annotation.Nullable;
 import javax.inject.Inject;
 
-import java.net.URI;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 
 import static com.google.common.base.Preconditions.checkArgument;
@@ -55,6 +55,7 @@ public class DataDefinitionExecution<T extends Statement>
 {
     private final DataDefinitionTask<T> task;
     private final T statement;
+    private final String slug;
     private final TransactionManager transactionManager;
     private final Metadata metadata;
     private final AccessControl accessControl;
@@ -64,6 +65,7 @@ public class DataDefinitionExecution<T extends Statement>
     private DataDefinitionExecution(
             DataDefinitionTask<T> task,
             T statement,
+            String slug,
             TransactionManager transactionManager,
             Metadata metadata,
             AccessControl accessControl,
@@ -72,11 +74,18 @@ public class DataDefinitionExecution<T extends Statement>
     {
         this.task = requireNonNull(task, "task is null");
         this.statement = requireNonNull(statement, "statement is null");
+        this.slug = requireNonNull(slug, "slug is null");
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.metadata = requireNonNull(metadata, "metadata is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.stateMachine = requireNonNull(stateMachine, "stateMachine is null");
         this.parameters = parameters;
+    }
+
+    @Override
+    public String getSlug()
+    {
+        return slug;
     }
 
     @Override
@@ -98,12 +107,6 @@ public class DataDefinitionExecution<T extends Statement>
     }
 
     @Override
-    public Optional<ErrorCode> getErrorCode()
-    {
-        return Optional.ofNullable(getQueryInfo().getFailureInfo()).map(ExecutionFailureInfo::getErrorCode);
-    }
-
-    @Override
     public DataSize getUserMemoryReservation()
     {
         return new DataSize(0, BYTE);
@@ -116,15 +119,59 @@ public class DataDefinitionExecution<T extends Statement>
     }
 
     @Override
+    public DateTime getCreateTime()
+    {
+        return stateMachine.getCreateTime();
+    }
+
+    @Override
+    public Optional<DateTime> getExecutionStartTime()
+    {
+        return stateMachine.getExecutionStartTime();
+    }
+
+    @Override
+    public DateTime getLastHeartbeat()
+    {
+        return stateMachine.getLastHeartbeat();
+    }
+
+    @Override
+    public Optional<DateTime> getEndTime()
+    {
+        return stateMachine.getEndTime();
+    }
+
+    @Override
     public Duration getTotalCpuTime()
     {
         return new Duration(0, NANOSECONDS);
     }
 
     @Override
+    public DataSize getRawInputDataSize()
+    {
+        return DataSize.succinctBytes(0);
+    }
+
+    @Override
+    public DataSize getOutputDataSize()
+    {
+        return DataSize.succinctBytes(0);
+    }
+
+    @Override
     public BasicQueryInfo getBasicQueryInfo()
     {
-        return new BasicQueryInfo(getQueryInfo());
+        return stateMachine.getFinalQueryInfo()
+                .map(BasicQueryInfo::new)
+                .orElseGet(() -> stateMachine.getBasicQueryInfo(Optional.empty()));
+    }
+
+    @Override
+    public int getRunningTaskCount()
+    {
+        return stateMachine.getCurrentRunningTaskCount();
     }
 
     @Override
@@ -187,6 +234,7 @@ public class DataDefinitionExecution<T extends Statement>
     public void fail(Throwable cause)
     {
         stateMachine.transitionToFailed(cause);
+        stateMachine.updateQueryInfo(Optional.empty());
     }
 
     @Override
@@ -228,11 +276,7 @@ public class DataDefinitionExecution<T extends Statement>
     @Override
     public QueryInfo getQueryInfo()
     {
-        Optional<QueryInfo> finalQueryInfo = stateMachine.getFinalQueryInfo();
-        if (finalQueryInfo.isPresent()) {
-            return finalQueryInfo.get();
-        }
-        return stateMachine.updateQueryInfo(Optional.empty());
+        return stateMachine.getFinalQueryInfo().orElseGet(() -> stateMachine.updateQueryInfo(Optional.empty()));
     }
 
     @Override
@@ -247,18 +291,6 @@ public class DataDefinitionExecution<T extends Statement>
         return stateMachine.getQueryState();
     }
 
-    @Override
-    public Optional<ResourceGroupId> getResourceGroup()
-    {
-        return stateMachine.getResourceGroup();
-    }
-
-    @Override
-    public void setResourceGroup(ResourceGroupId resourceGroupId)
-    {
-        stateMachine.setResourceGroup(resourceGroupId);
-    }
-
     public List<Expression> getParameters()
     {
         return parameters;
@@ -267,59 +299,47 @@ public class DataDefinitionExecution<T extends Statement>
     public static class DataDefinitionExecutionFactory
             implements QueryExecutionFactory<DataDefinitionExecution<?>>
     {
-        private final LocationFactory locationFactory;
         private final TransactionManager transactionManager;
         private final Metadata metadata;
         private final AccessControl accessControl;
-        private final ExecutorService executor;
         private final Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks;
 
         @Inject
         public DataDefinitionExecutionFactory(
-                LocationFactory locationFactory,
                 TransactionManager transactionManager,
                 MetadataManager metadata,
                 AccessControl accessControl,
-                @ForQueryExecution ExecutorService executor,
                 Map<Class<? extends Statement>, DataDefinitionTask<?>> tasks)
         {
-            this.locationFactory = requireNonNull(locationFactory, "locationFactory is null");
             this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
             this.metadata = requireNonNull(metadata, "metadata is null");
             this.accessControl = requireNonNull(accessControl, "accessControl is null");
-            this.executor = requireNonNull(executor, "executor is null");
             this.tasks = requireNonNull(tasks, "tasks is null");
-        }
-
-        public String explain(Statement statement, List<Expression> parameters)
-        {
-            DataDefinitionTask<Statement> task = getTask(statement);
-            checkArgument(task != null, "no task for statement: %s", statement.getClass().getSimpleName());
-            return task.explain(statement, parameters);
         }
 
         @Override
         public DataDefinitionExecution<?> createQueryExecution(
-                QueryId queryId,
-                String query,
-                Session session,
-                Statement statement,
-                List<Expression> parameters)
+                PreparedQuery preparedQuery,
+                QueryStateMachine stateMachine,
+                String slug,
+                WarningCollector warningCollector,
+                Optional<QueryType> queryType)
         {
-            URI self = locationFactory.createQueryLocation(queryId);
-
-            DataDefinitionTask<Statement> task = getTask(statement);
-            checkArgument(task != null, "no task for statement: %s", statement.getClass().getSimpleName());
-
-            QueryStateMachine stateMachine = QueryStateMachine.begin(queryId, query, session, self, task.isTransactionControl(), transactionManager, accessControl, executor, metadata);
-            stateMachine.setUpdateType(task.getName());
-            return new DataDefinitionExecution<>(task, statement, transactionManager, metadata, accessControl, stateMachine, parameters);
+            return createDataDefinitionExecution(preparedQuery.getStatement(), preparedQuery.getParameters(), stateMachine, slug);
         }
 
-        @SuppressWarnings("unchecked")
-        private <T extends Statement> DataDefinitionTask<T> getTask(T statement)
+        private <T extends Statement> DataDefinitionExecution<T> createDataDefinitionExecution(
+                T statement,
+                List<Expression> parameters,
+                QueryStateMachine stateMachine,
+                String slug)
         {
-            return (DataDefinitionTask<T>) tasks.get(statement.getClass());
+            @SuppressWarnings("unchecked")
+            DataDefinitionTask<T> task = (DataDefinitionTask<T>) tasks.get(statement.getClass());
+            checkArgument(task != null, "no task for statement: %s", statement.getClass().getSimpleName());
+
+            stateMachine.setUpdateType(task.getName());
+            return new DataDefinitionExecution<>(task, statement, slug, transactionManager, metadata, accessControl, stateMachine, parameters);
         }
     }
 }

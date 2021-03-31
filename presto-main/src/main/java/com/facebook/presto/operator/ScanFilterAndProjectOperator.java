@@ -13,25 +13,29 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.LazyBlock;
+import com.facebook.presto.common.block.LazyBlockLoader;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.metadata.Split;
 import com.facebook.presto.operator.project.CursorProcessor;
 import com.facebook.presto.operator.project.CursorProcessorOutput;
 import com.facebook.presto.operator.project.MergingPageOutput;
 import com.facebook.presto.operator.project.PageProcessor;
-import com.facebook.presto.operator.project.PageProcessorOutput;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.RecordPageSource;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.spi.UpdatablePageSource;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.split.EmptySplit;
 import com.facebook.presto.split.EmptySplitPageSource;
 import com.facebook.presto.split.PageSourceProvider;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
@@ -40,13 +44,15 @@ import io.airlift.units.DataSize;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
 
+import static com.facebook.airlift.concurrent.MoreFutures.toListenableFuture;
+import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.google.common.base.Preconditions.checkState;
-import static io.airlift.concurrent.MoreFutures.toListenableFuture;
 import static java.util.Objects.requireNonNull;
 
 public class ScanFilterAndProjectOperator
@@ -55,13 +61,16 @@ public class ScanFilterAndProjectOperator
     private final OperatorContext operatorContext;
     private final PlanNodeId planNodeId;
     private final PageSourceProvider pageSourceProvider;
+    private final TableHandle table;
     private final List<ColumnHandle> columns;
     private final PageBuilder pageBuilder;
     private final CursorProcessor cursorProcessor;
     private final PageProcessor pageProcessor;
     private final LocalMemoryContext pageSourceMemoryContext;
-    private final LocalMemoryContext pageBuilderMemoryContext;
+    private final LocalMemoryContext pageProcessorMemoryContext;
+    private final LocalMemoryContext outputMemoryContext;
     private final SettableFuture<?> blocked = SettableFuture.create();
+    private final Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier;
     private final MergingPageOutput mergingOutput;
 
     private RecordCursor cursor;
@@ -72,6 +81,7 @@ public class ScanFilterAndProjectOperator
     private boolean finishing;
 
     private long completedBytes;
+    private long completedPositions;
     private long readTimeNanos;
 
     protected ScanFilterAndProjectOperator(
@@ -80,8 +90,10 @@ public class ScanFilterAndProjectOperator
             PageSourceProvider pageSourceProvider,
             CursorProcessor cursorProcessor,
             PageProcessor pageProcessor,
+            TableHandle table,
             Iterable<ColumnHandle> columns,
             Iterable<Type> types,
+            Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier,
             MergingPageOutput mergingOutput)
     {
         this.cursorProcessor = requireNonNull(cursorProcessor, "cursorProcessor is null");
@@ -89,9 +101,12 @@ public class ScanFilterAndProjectOperator
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         this.planNodeId = requireNonNull(sourceId, "sourceId is null");
         this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
+        this.table = requireNonNull(table, "table is null");
         this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
         this.pageSourceMemoryContext = operatorContext.newLocalSystemMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
-        this.pageBuilderMemoryContext = operatorContext.newLocalSystemMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
+        this.pageProcessorMemoryContext = newSimpleAggregatedMemoryContext().newLocalMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
+        this.outputMemoryContext = operatorContext.newLocalSystemMemoryContext(ScanFilterAndProjectOperator.class.getSimpleName());
+        this.dynamicFilterSupplier = requireNonNull(dynamicFilterSupplier, "dynamicFilterSupplier is null");
         this.mergingOutput = requireNonNull(mergingOutput, "mergingOutput is null");
 
         this.pageBuilder = new PageBuilder(ImmutableList.copyOf(requireNonNull(types, "types is null")));
@@ -213,7 +228,7 @@ public class ScanFilterAndProjectOperator
         }
 
         if (!finishing && pageSource == null && cursor == null) {
-            ConnectorPageSource source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, columns);
+            ConnectorPageSource source = pageSourceProvider.createPageSource(operatorContext.getSession(), split, dynamicFilterSupplier.map(table::withDynamicFilter).orElse(table), columns);
             if (source instanceof RecordPageSource) {
                 cursor = ((RecordPageSource) source).getCursor();
             }
@@ -234,14 +249,10 @@ public class ScanFilterAndProjectOperator
     {
         DriverYieldSignal yieldSignal = operatorContext.getDriverContext().getYieldSignal();
         if (!finishing && !yieldSignal.isSet()) {
-            CursorProcessorOutput output = cursorProcessor.process(operatorContext.getSession().toConnectorSession(), yieldSignal, cursor, pageBuilder);
+            CursorProcessorOutput output = cursorProcessor.process(operatorContext.getSession().getSqlFunctionProperties(), yieldSignal, cursor, pageBuilder);
             pageSourceMemoryContext.setBytes(cursor.getSystemMemoryUsage());
 
-            long bytesProcessed = cursor.getCompletedBytes() - completedBytes;
-            long elapsedNanos = cursor.getReadTimeNanos() - readTimeNanos;
-            operatorContext.recordGeneratedInput(bytesProcessed, output.getProcessedRows(), elapsedNanos);
-            completedBytes = cursor.getCompletedBytes();
-            readTimeNanos = cursor.getReadTimeNanos();
+            recordCursorInputStats(output.getProcessedRows());
             if (output.isNoMoreRows()) {
                 finishing = true;
                 mergingOutput.finish();
@@ -254,7 +265,7 @@ public class ScanFilterAndProjectOperator
             page = pageBuilder.build();
             pageBuilder.reset();
         }
-        pageBuilderMemoryContext.setBytes(pageBuilder.getRetainedSizeInBytes());
+        outputMemoryContext.setBytes(pageBuilder.getRetainedSizeInBytes());
         return page;
     }
 
@@ -269,13 +280,9 @@ public class ScanFilterAndProjectOperator
 
             if (page != null) {
                 // update operator stats
-                long endCompletedBytes = pageSource.getCompletedBytes();
-                long endReadTimeNanos = pageSource.getReadTimeNanos();
-                operatorContext.recordGeneratedInput(endCompletedBytes - completedBytes, page.getPositionCount(), endReadTimeNanos - readTimeNanos);
-                completedBytes = endCompletedBytes;
-                readTimeNanos = endReadTimeNanos;
+                page = recordProcessedInput(page);
 
-                PageProcessorOutput output = pageProcessor.process(operatorContext.getSession().toConnectorSession(), yieldSignal, page);
+                Iterator<Optional<Page>> output = pageProcessor.process(operatorContext.getSession().getSqlFunctionProperties(), yieldSignal, pageProcessorMemoryContext, page);
                 mergingOutput.addInput(output);
             }
 
@@ -285,8 +292,89 @@ public class ScanFilterAndProjectOperator
         }
 
         Page result = mergingOutput.getOutput();
-        pageBuilderMemoryContext.setBytes(mergingOutput.getRetainedSizeInBytes());
+        outputMemoryContext.setBytes(mergingOutput.getRetainedSizeInBytes() + pageProcessorMemoryContext.getBytes());
         return result;
+    }
+
+    private final class RecordingLazyBlockLoader
+            implements LazyBlockLoader<LazyBlock>
+    {
+        private LazyBlock delegateLazyBlock;
+
+        private RecordingLazyBlockLoader(LazyBlock delegateLazyBlock)
+        {
+            this.delegateLazyBlock = requireNonNull(delegateLazyBlock, "delegateLazyBlock is null");
+        }
+
+        @Override
+        public void load(LazyBlock block)
+        {
+            checkState(delegateLazyBlock != null, "delegateLazyBlock already loaded");
+            Block loadedBlock = delegateLazyBlock.getLoadedBlock();
+            delegateLazyBlock = null;
+            // Position count already recorded for lazy blocks, input bytes are not
+            recordInputStats();
+            block.setBlock(loadedBlock);
+        }
+    }
+
+    private void recordCursorInputStats(long positionCount)
+    {
+        checkState(cursor != null, "cursor is null");
+        long endCompletedBytes = cursor.getCompletedBytes();
+        long endReadTimeNanos = cursor.getReadTimeNanos();
+        long inputBytes = endCompletedBytes - completedBytes;
+        operatorContext.recordProcessedInput(inputBytes, positionCount);
+        operatorContext.recordRawInputWithTiming(inputBytes, positionCount, endReadTimeNanos - readTimeNanos);
+        completedBytes = endCompletedBytes;
+        readTimeNanos = endReadTimeNanos;
+    }
+
+    private void recordInputStats()
+    {
+        checkState(pageSource != null, "pageSource is null");
+        long endCompletedBytes = pageSource.getCompletedBytes();
+        long endCompletedPositions = pageSource.getCompletedPositions();
+        long endReadTimeNanos = pageSource.getReadTimeNanos();
+        long inputBytes = endCompletedBytes - completedBytes;
+        long positionCount = endCompletedPositions - completedPositions;
+        operatorContext.recordProcessedInput(inputBytes, positionCount);
+        operatorContext.recordRawInputWithTiming(inputBytes, positionCount, endReadTimeNanos - readTimeNanos);
+        completedBytes = endCompletedBytes;
+        completedPositions = endCompletedPositions;
+        readTimeNanos = endReadTimeNanos;
+    }
+
+    private Page recordProcessedInput(Page page)
+    {
+        long blockSizeSum = 0L;
+        Block[] blocks = null;
+        for (int i = 0; i < page.getChannelCount(); ++i) {
+            Block block = page.getBlock(i);
+            // account processed bytes from lazy blocks only when they are loaded
+            if (block instanceof LazyBlock && !((LazyBlock) block).isLoaded()) {
+                if (blocks == null) {
+                    blocks = copyOfPageBlocks(page);
+                }
+                blocks[i] = new LazyBlock(page.getPositionCount(), new RecordingLazyBlockLoader((LazyBlock) block));
+            }
+            else {
+                blockSizeSum += block.getSizeInBytes();
+            }
+        }
+        // stats update
+        recordInputStats();
+
+        return (blocks == null) ? page : new Page(page.getPositionCount(), blocks);
+    }
+
+    private static Block[] copyOfPageBlocks(Page page)
+    {
+        Block[] blocks = new Block[page.getChannelCount()];
+        for (int i = 0; i < blocks.length; i++) {
+            blocks[i] = page.getBlock(i);
+        }
+        return blocks;
     }
 
     public static class ScanFilterAndProjectOperatorFactory
@@ -298,8 +386,10 @@ public class ScanFilterAndProjectOperator
         private final Supplier<PageProcessor> pageProcessor;
         private final PlanNodeId sourceId;
         private final PageSourceProvider pageSourceProvider;
+        private final TableHandle table;
         private final List<ColumnHandle> columns;
         private final List<Type> types;
+        private final Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier;
         private final DataSize minOutputPageSize;
         private final int minOutputPageRowCount;
         private boolean closed;
@@ -311,8 +401,10 @@ public class ScanFilterAndProjectOperator
                 PageSourceProvider pageSourceProvider,
                 Supplier<CursorProcessor> cursorProcessor,
                 Supplier<PageProcessor> pageProcessor,
+                TableHandle table,
                 Iterable<ColumnHandle> columns,
                 List<Type> types,
+                Optional<Supplier<TupleDomain<ColumnHandle>>> dynamicFilterSupplier,
                 DataSize minOutputPageSize,
                 int minOutputPageRowCount)
         {
@@ -322,8 +414,10 @@ public class ScanFilterAndProjectOperator
             this.pageProcessor = requireNonNull(pageProcessor, "pageProcessor is null");
             this.sourceId = requireNonNull(sourceId, "sourceId is null");
             this.pageSourceProvider = requireNonNull(pageSourceProvider, "pageSourceProvider is null");
+            this.table = requireNonNull(table, "table is null");
             this.columns = ImmutableList.copyOf(requireNonNull(columns, "columns is null"));
             this.types = requireNonNull(types, "types is null");
+            this.dynamicFilterSupplier = requireNonNull(dynamicFilterSupplier, "dynamicFilterSupplier is null");
             this.minOutputPageSize = requireNonNull(minOutputPageSize, "minOutputPageSize is null");
             this.minOutputPageRowCount = minOutputPageRowCount;
         }
@@ -345,8 +439,10 @@ public class ScanFilterAndProjectOperator
                     pageSourceProvider,
                     cursorProcessor.get(),
                     pageProcessor.get(),
+                    table,
                     columns,
                     types,
+                    dynamicFilterSupplier,
                     new MergingPageOutput(types, minOutputPageSize.toBytes(), minOutputPageRowCount));
         }
 

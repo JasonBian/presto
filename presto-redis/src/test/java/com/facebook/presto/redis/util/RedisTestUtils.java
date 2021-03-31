@@ -13,7 +13,8 @@
  */
 package com.facebook.presto.redis.util;
 
-import com.facebook.presto.metadata.QualifiedObjectName;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.redis.RedisPlugin;
 import com.facebook.presto.redis.RedisTableDescription;
 import com.facebook.presto.spi.SchemaTableName;
@@ -22,7 +23,6 @@ import com.facebook.presto.tests.TestingPrestoClient;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.io.ByteStreams;
-import io.airlift.json.JsonCodec;
 
 import java.io.IOException;
 import java.io.InputStream;

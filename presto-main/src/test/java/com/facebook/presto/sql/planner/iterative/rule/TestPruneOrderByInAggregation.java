@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.sql.planner.iterative.rule;
 
-import com.facebook.presto.metadata.FunctionRegistry;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.iterative.rule.test.BaseRuleTest;
 import com.facebook.presto.sql.planner.iterative.rule.test.PlanBuilder;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
 import com.facebook.presto.sql.tree.SortItem;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -27,23 +27,23 @@ import org.testng.annotations.Test;
 import java.util.List;
 import java.util.Optional;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.plan.AggregationNode.Step.SINGLE;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.aggregation;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.functionCall;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.singleGroupingSet;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.sort;
 import static com.facebook.presto.sql.planner.assertions.PlanMatchPattern.values;
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Step.SINGLE;
 
 public class TestPruneOrderByInAggregation
         extends BaseRuleTest
 {
-    private static final FunctionRegistry functionRegistry = MetadataManager.createTestMetadataManager().getFunctionRegistry();
+    private static final FunctionAndTypeManager FUNCTION_MANAGER = MetadataManager.createTestMetadataManager().getFunctionAndTypeManager();
 
     @Test
     public void testBasics()
     {
-        tester().assertThat(new PruneOrderByInAggregation(functionRegistry))
+        tester().assertThat(new PruneOrderByInAggregation(FUNCTION_MANAGER))
                 .on(this::buildAggregation)
                 .matches(
                         aggregation(
@@ -62,18 +62,18 @@ public class TestPruneOrderByInAggregation
 
     private AggregationNode buildAggregation(PlanBuilder planBuilder)
     {
-        Symbol avg = planBuilder.symbol("avg");
-        Symbol arrayAgg = planBuilder.symbol("array_agg");
-        Symbol input = planBuilder.symbol("input");
-        Symbol key = planBuilder.symbol("key");
-        Symbol keyHash = planBuilder.symbol("keyHash");
-        Symbol mask = planBuilder.symbol("mask");
-        List<Symbol> sourceSymbols = ImmutableList.of(input, key, keyHash, mask);
+        VariableReferenceExpression avg = planBuilder.variable("avg");
+        VariableReferenceExpression arrayAgg = planBuilder.variable("array_agg");
+        VariableReferenceExpression input = planBuilder.variable("input");
+        VariableReferenceExpression key = planBuilder.variable("key");
+        VariableReferenceExpression keyHash = planBuilder.variable("keyHash");
+        VariableReferenceExpression mask = planBuilder.variable("mask");
+        List<VariableReferenceExpression> sourceVariables = ImmutableList.of(input, key, keyHash, mask);
         return planBuilder.aggregation(aggregationBuilder -> aggregationBuilder
                 .singleGroupingSet(key)
                 .addAggregation(avg, planBuilder.expression("avg(input order by input)"), ImmutableList.of(BIGINT), mask)
                 .addAggregation(arrayAgg, planBuilder.expression("array_agg(input order by input)"), ImmutableList.of(BIGINT), mask)
-                .hashSymbol(keyHash)
-                .source(planBuilder.values(sourceSymbols, ImmutableList.of())));
+                .hashVariable(keyHash)
+                .source(planBuilder.values(sourceVariables, ImmutableList.of())));
     }
 }

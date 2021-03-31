@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.cost;
 
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import org.testng.annotations.Test;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static java.lang.Double.POSITIVE_INFINITY;
 
 public class TestOutputNodeStats
@@ -28,17 +28,17 @@ public class TestOutputNodeStats
     {
         PlanNodeStatsEstimate stats = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(100)
-                .addSymbolStatistics(
-                        new Symbol("a"),
-                        SymbolStatsEstimate.builder()
+                .addVariableStatistics(
+                        new VariableReferenceExpression("a", BIGINT),
+                        VariableStatsEstimate.builder()
                                 .setNullsFraction(0.3)
                                 .setLowValue(1)
                                 .setHighValue(30)
                                 .setDistinctValuesCount(20)
                                 .build())
-                .addSymbolStatistics(
-                        new Symbol("b"),
-                        SymbolStatsEstimate.builder()
+                .addVariableStatistics(
+                        new VariableReferenceExpression("b", DOUBLE),
+                        VariableStatsEstimate.builder()
                                 .setNullsFraction(0.6)
                                 .setLowValue(13.5)
                                 .setHighValue(POSITIVE_INFINITY)
@@ -48,8 +48,8 @@ public class TestOutputNodeStats
 
         tester().assertStatsFor(pb -> pb
                 .output(outputBuilder -> {
-                    Symbol a = pb.symbol("a", BIGINT);
-                    Symbol b = pb.symbol("b", DOUBLE);
+                    VariableReferenceExpression a = pb.variable("a", BIGINT);
+                    VariableReferenceExpression b = pb.variable("b", DOUBLE);
                     outputBuilder
                             .source(pb.values(a, b))
                             .column(a, "a1")

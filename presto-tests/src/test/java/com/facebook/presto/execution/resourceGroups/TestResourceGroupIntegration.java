@@ -23,8 +23,8 @@ import org.testng.annotations.Test;
 
 import java.util.List;
 
+import static com.facebook.airlift.testing.Assertions.assertLessThan;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
-import static io.airlift.testing.Assertions.assertLessThan;
 import static io.airlift.units.Duration.nanosSince;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.testng.Assert.assertEquals;
@@ -77,7 +77,7 @@ public class TestResourceGroupIntegration
         long startTime = System.nanoTime();
         while (true) {
             SECONDS.sleep(1);
-            ResourceGroupInfo global = getResourceGroupManager(queryRunner).getResourceGroupInfo(new ResourceGroupId("global"));
+            ResourceGroupInfo global = getResourceGroupManager(queryRunner).getResourceGroupInfo(new ResourceGroupId("global"), true, true, true);
             if (global.getSoftMemoryLimit().toBytes() > 0) {
                 break;
             }

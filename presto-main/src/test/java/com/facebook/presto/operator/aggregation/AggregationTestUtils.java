@@ -14,11 +14,12 @@
 package com.facebook.presto.operator.aggregation;
 
 import com.facebook.presto.block.BlockAssertions;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
 import com.facebook.presto.operator.GroupByIdBlock;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
+import com.facebook.presto.operator.UpdateMemory;
 import com.google.common.primitives.Ints;
 import org.apache.commons.math3.util.Precision;
 
@@ -28,8 +29,8 @@ import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.fail;
 
@@ -121,7 +122,7 @@ public final class AggregationTestUtils
         }
     }
 
-    private static void assertFunctionEquals(BiFunction<Object, Object, Boolean> isEqual, String testDescription, Object expectedValue, Object actualValue)
+    private static void assertFunctionEquals(BiFunction<Object, Object, Boolean> isEqual, String testDescription, Object actualValue, Object expectedValue)
     {
         if (!isEqual.apply(actualValue, expectedValue)) {
             StringBuilder sb = new StringBuilder();
@@ -166,6 +167,11 @@ public final class AggregationTestUtils
         return maskedPages;
     }
 
+    public static Object aggregation(InternalAggregationFunction function, Block... blocks)
+    {
+        return aggregation(function, new Page(blocks));
+    }
+
     public static Object aggregation(InternalAggregationFunction function, Page... pages)
     {
         // execute with args in positions: arg0, arg1, arg2
@@ -186,7 +192,7 @@ public final class AggregationTestUtils
 
     private static Object aggregation(InternalAggregationFunction function, int[] args, Optional<Integer> maskChannel, Page... pages)
     {
-        Accumulator aggregation = function.bind(Ints.asList(args), maskChannel).createAccumulator();
+        Accumulator aggregation = function.bind(Ints.asList(args), maskChannel).createAccumulator(UpdateMemory.NOOP);
         for (Page page : pages) {
             if (page.getPositionCount() > 0) {
                 aggregation.addInput(page);
@@ -221,13 +227,13 @@ public final class AggregationTestUtils
         Accumulator finalAggregation = factory.createIntermediateAccumulator();
 
         // Test handling of empty intermediate blocks
-        Accumulator emptyAggregation = factory.createAccumulator();
+        Accumulator emptyAggregation = factory.createAccumulator(UpdateMemory.NOOP);
         Block emptyBlock = getIntermediateBlock(emptyAggregation);
 
         finalAggregation.addIntermediate(emptyBlock);
 
         for (Page page : pages) {
-            Accumulator partialAggregation = factory.createAccumulator();
+            Accumulator partialAggregation = factory.createAccumulator(UpdateMemory.NOOP);
             if (page.getPositionCount() > 0) {
                 partialAggregation.addInput(page);
             }
@@ -266,7 +272,7 @@ public final class AggregationTestUtils
 
     public static Object groupedAggregation(InternalAggregationFunction function, int[] args, Page... pages)
     {
-        GroupedAccumulator groupedAggregation = function.bind(Ints.asList(args), Optional.empty()).createGroupedAccumulator();
+        GroupedAccumulator groupedAggregation = function.bind(Ints.asList(args), Optional.empty()).createGroupedAccumulator(UpdateMemory.NOOP);
         for (Page page : pages) {
             groupedAggregation.addInput(createGroupByIdBlock(0, page.getPositionCount()), page);
         }
@@ -302,16 +308,16 @@ public final class AggregationTestUtils
     public static Object groupedPartialAggregation(InternalAggregationFunction function, int[] args, Page... pages)
     {
         AccumulatorFactory factory = function.bind(Ints.asList(args), Optional.empty());
-        GroupedAccumulator finalAggregation = factory.createGroupedIntermediateAccumulator();
+        GroupedAccumulator finalAggregation = factory.createGroupedIntermediateAccumulator(UpdateMemory.NOOP);
 
         // Add an empty block to test the handling of empty intermediates
-        GroupedAccumulator emptyAggregation = factory.createGroupedAccumulator();
+        GroupedAccumulator emptyAggregation = factory.createGroupedAccumulator(UpdateMemory.NOOP);
         Block emptyBlock = getIntermediateBlock(emptyAggregation);
 
         finalAggregation.addIntermediate(createGroupByIdBlock(0, emptyBlock.getPositionCount()), emptyBlock);
 
         for (Page page : pages) {
-            GroupedAccumulator partialAggregation = factory.createGroupedAccumulator();
+            GroupedAccumulator partialAggregation = factory.createGroupedAccumulator(UpdateMemory.NOOP);
             partialAggregation.addInput(createGroupByIdBlock(0, page.getPositionCount()), page);
             Block partialBlock = getIntermediateBlock(partialAggregation);
             finalAggregation.addIntermediate(createGroupByIdBlock(0, partialBlock.getPositionCount()), partialBlock);

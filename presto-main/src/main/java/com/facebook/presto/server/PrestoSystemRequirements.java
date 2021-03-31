@@ -31,7 +31,7 @@ import java.util.OptionalLong;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.management.ManagementFactory.OPERATING_SYSTEM_MXBEAN_NAME;
 
-final class PrestoSystemRequirements
+public final class PrestoSystemRequirements
 {
     private static final int MIN_FILE_DESCRIPTORS = 4096;
     private static final int RECOMMENDED_FILE_DESCRIPTORS = 8192;
@@ -40,7 +40,6 @@ final class PrestoSystemRequirements
 
     public static void verifyJvmRequirements()
     {
-        verifyJvmVendor();
         verifyJavaVersion();
         verify64BitJvm();
         verifyOsArchitecture();
@@ -48,14 +47,6 @@ final class PrestoSystemRequirements
         verifyUsingG1Gc();
         verifyFileDescriptor();
         verifySlice();
-    }
-
-    private static void verifyJvmVendor()
-    {
-        String vendor = StandardSystemProperty.JAVA_VENDOR.value();
-        if (!"Oracle Corporation".equals(vendor)) {
-            failRequirement("Presto requires an Oracle or OpenJDK JVM (found %s)", vendor);
-        }
     }
 
     private static void verify64BitJvm()
@@ -178,7 +169,7 @@ final class PrestoSystemRequirements
     public static void verifySystemTimeIsReasonable()
     {
         int currentYear = DateTime.now().year().get();
-        if (currentYear < 2015) {
+        if (currentYear < 2019) {
             failRequirement("Presto requires the system time to be current (found year %s)", currentYear);
         }
     }

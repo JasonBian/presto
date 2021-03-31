@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.raptor.storage;
 
-import io.airlift.stats.CounterStat;
-import io.airlift.stats.DistributionStat;
+import com.facebook.airlift.stats.CounterStat;
+import com.facebook.airlift.stats.DistributionStat;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import org.weakref.jmx.Managed;
@@ -65,7 +65,7 @@ public class ShardRecoveryStats
 
     public void addShardRecoveryDataRate(DataSize rate, DataSize size, Duration duration)
     {
-        shardRecoveryBytesPerSecond.add(Math.round(rate.toBytes()));
+        shardRecoveryBytesPerSecond.add(rate.toBytes());
         shardRecoveryShardSizeBytes.add(size.toBytes());
         shardRecoveryTimeInMilliSeconds.add(duration.toMillis());
     }

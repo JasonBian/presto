@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.proxy;
 
-import io.airlift.security.pem.PemReader;
+import com.facebook.airlift.security.pem.PemReader;
 import io.jsonwebtoken.JwtBuilder;
 import io.jsonwebtoken.Jwts;
 import io.jsonwebtoken.SignatureAlgorithm;
@@ -43,7 +43,7 @@ public class JsonWebTokenHandler
     private final Optional<String> jwtAudience;
 
     @Inject
-    public JsonWebTokenHandler(ProxyConfig config)
+    public JsonWebTokenHandler(JwtHandlerConfig config)
     {
         this.jwtSigner = setupJwtSigner(config.getJwtKeyFile(), config.getJwtKeyFilePassword());
         this.jwtKeyId = Optional.ofNullable(config.getJwtKeyId());

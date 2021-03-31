@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.util;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.SortOrder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.context.AggregatedMemoryContext;
 import com.facebook.presto.operator.DriverYieldSignal;
 import com.facebook.presto.operator.PageWithPositionComparator;
 import com.facebook.presto.operator.SimplePageWithPositionComparator;
 import com.facebook.presto.operator.WorkProcessor;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.SortOrder;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.testing.MaterializedResult;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
@@ -29,15 +29,15 @@ import java.util.List;
 
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
 import static com.facebook.presto.SessionTestUtils.TEST_SESSION;
+import static com.facebook.presto.common.block.SortOrder.ASC_NULLS_FIRST;
+import static com.facebook.presto.common.block.SortOrder.DESC_NULLS_FIRST;
+import static com.facebook.presto.common.block.SortOrder.DESC_NULLS_LAST;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.operator.OperatorAssertion.toMaterializedResult;
-import static com.facebook.presto.spi.block.SortOrder.ASC_NULLS_FIRST;
-import static com.facebook.presto.spi.block.SortOrder.DESC_NULLS_FIRST;
-import static com.facebook.presto.spi.block.SortOrder.DESC_NULLS_LAST;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.MaterializedResult.resultBuilder;
 import static com.facebook.presto.testing.assertions.Assert.assertEquals;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -351,6 +351,29 @@ public class TestMergeSortedPages
         assertEquals(toMaterializedResult(TEST_SESSION, types, ImmutableList.of(page)), expected);
 
         // merge source finished
+        assertTrue(mergedPages.process());
+        assertTrue(mergedPages.isFinished());
+    }
+
+    @Test
+    public void testMergeSortYieldingProgresses()
+            throws Exception
+    {
+        DriverYieldSignal yieldSignal = new DriverYieldSignal();
+        yieldSignal.forceYieldForTesting();
+        List<Type> types = ImmutableList.of(INTEGER);
+        WorkProcessor<Page> mergedPages = MergeSortedPages.mergeSortedPages(
+                ImmutableList.of(WorkProcessor.fromIterable(rowPagesBuilder(types).build())),
+                new SimplePageWithPositionComparator(types, ImmutableList.of(0), ImmutableList.of(DESC_NULLS_LAST)),
+                ImmutableList.of(0),
+                types,
+                (pageBuilder, pageWithPosition) -> pageBuilder.isFull(),
+                false,
+                newSimpleAggregatedMemoryContext().newAggregatedMemoryContext(),
+                yieldSignal);
+        // yield signal is on
+        assertFalse(mergedPages.process());
+        // processor finishes computations (yield signal is still on, but previous process() call yielded)
         assertTrue(mergedPages.process());
         assertTrue(mergedPages.isFinished());
     }

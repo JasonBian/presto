@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.server;
 
+import com.facebook.airlift.configuration.testing.ConfigAssertions;
 import com.google.common.collect.ImmutableMap;
-import io.airlift.configuration.testing.ConfigAssertions;
 import io.airlift.units.Duration;
 import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
-import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static com.facebook.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
 import static java.util.concurrent.TimeUnit.MINUTES;
 
 public class TestServerConfig
@@ -35,7 +35,10 @@ public class TestServerConfig
                 .setDataSources(null)
                 .setIncludeExceptionInResponse(true)
                 .setGracePeriod(new Duration(2, MINUTES))
-                .setEnhancedErrorReporting(true));
+                .setEnhancedErrorReporting(true)
+                .setQueryResultsCompressionEnabled(true)
+                .setResourceManagerEnabled(false)
+                .setResourceManager(false));
     }
 
     @Test
@@ -48,6 +51,9 @@ public class TestServerConfig
                 .put("http.include-exception-in-response", "false")
                 .put("shutdown.grace-period", "5m")
                 .put("sql.parser.enhanced-error-reporting", "false")
+                .put("query-results.compression-enabled", "false")
+                .put("resource-manager-enabled", "true")
+                .put("resource-manager", "true")
                 .build();
 
         ServerConfig expected = new ServerConfig()
@@ -56,7 +62,10 @@ public class TestServerConfig
                 .setDataSources("jmx")
                 .setIncludeExceptionInResponse(false)
                 .setGracePeriod(new Duration(5, MINUTES))
-                .setEnhancedErrorReporting(false);
+                .setEnhancedErrorReporting(false)
+                .setQueryResultsCompressionEnabled(false)
+                .setResourceManagerEnabled(true)
+                .setResourceManager(true);
 
         assertFullMapping(properties, expected);
     }

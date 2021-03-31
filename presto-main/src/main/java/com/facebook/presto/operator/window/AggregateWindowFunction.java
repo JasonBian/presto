@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.operator.window;
 
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.operator.UpdateMemory;
 import com.facebook.presto.operator.aggregation.Accumulator;
 import com.facebook.presto.operator.aggregation.AccumulatorFactory;
 import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.spi.function.Signature;
 import com.facebook.presto.spi.function.WindowFunction;
 import com.facebook.presto.spi.function.WindowIndex;
 import com.google.common.collect.ImmutableList;
@@ -82,7 +83,10 @@ public class AggregateWindowFunction
     private void resetAccumulator()
     {
         if (currentStart >= 0) {
-            accumulator = accumulatorFactory.createAccumulator();
+            // updateMemory callback is used by distinct and ordering accumulators
+            // since window functions do not support distinct and ordering accumulators
+            // it is ok not to provide the memory reservation callback
+            accumulator = accumulatorFactory.createAccumulator(UpdateMemory.NOOP);
             currentStart = -1;
             currentEnd = -1;
         }
@@ -94,7 +98,7 @@ public class AggregateWindowFunction
         return new AbstractWindowFunctionSupplier(signature, null)
         {
             @Override
-            protected WindowFunction newWindowFunction(List<Integer> inputs)
+            protected WindowFunction newWindowFunction(List<Integer> inputs, boolean ignoreNulls)
             {
                 return new AggregateWindowFunction(function, inputs);
             }

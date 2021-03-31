@@ -14,8 +14,8 @@
 package com.facebook.presto.sql.planner.optimizations;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.spi.plan.AggregationNode;
 import com.facebook.presto.sql.planner.assertions.BasePlanTest;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
 import org.testng.annotations.Test;
 
@@ -39,7 +39,7 @@ public class TestForceSingleNodeOutput
         // force gather
         assertPlanWithSession("SELECT * FROM orders", singleNodeOutput(true), false,
                 output(
-                        exchange(ExchangeNode.Scope.REMOTE, ExchangeNode.Type.GATHER,
+                        exchange(ExchangeNode.Scope.REMOTE_STREAMING, ExchangeNode.Type.GATHER,
                                 tableScan("orders"))));
     }
 
@@ -54,7 +54,7 @@ public class TestForceSingleNodeOutput
         // force gather
         assertPlanWithSession("SELECT orderkey, count(*) FROM orders GROUP BY orderkey", singleNodeOutput(true), false,
                 output(
-                        exchange(ExchangeNode.Scope.REMOTE, ExchangeNode.Type.GATHER,
+                        exchange(ExchangeNode.Scope.REMOTE_STREAMING, ExchangeNode.Type.GATHER,
                                 node(AggregationNode.class,
                                         tableScan("orders")))));
     }
@@ -65,13 +65,13 @@ public class TestForceSingleNodeOutput
         // don't force gather
         assertPlanWithSession("SELECT orderkey FROM orders ORDER BY orderkey", singleNodeOutput(false), false,
                 output(
-                        exchange(ExchangeNode.Scope.REMOTE, ExchangeNode.Type.GATHER,
+                        exchange(ExchangeNode.Scope.REMOTE_STREAMING, ExchangeNode.Type.GATHER,
                                 anyTree(
                                         tableScan("orders")))));
         // force gather, same result
         assertPlanWithSession("SELECT orderkey FROM orders ORDER BY orderkey", singleNodeOutput(true), false,
                 output(
-                        exchange(ExchangeNode.Scope.REMOTE, ExchangeNode.Type.GATHER,
+                        exchange(ExchangeNode.Scope.REMOTE_STREAMING, ExchangeNode.Type.GATHER,
                                 anyTree(
                                         tableScan("orders")))));
     }

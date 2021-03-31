@@ -73,6 +73,18 @@ Mathematical Functions
     The mean and value v must be real values and the standard deviation must be a real
     and positive value.
 
+.. function:: inverse_beta_cdf(a, b, p) -> double
+
+    Compute the inverse of the Beta cdf with given a, b parameters for the cumulative
+    probability (p): P(N < n). The a, b parameters must be positive real values.
+    The probability p must lie on the interval [0, 1].
+
+.. function:: beta_cdf(a, b, v) -> double
+
+    Compute the Beta cdf with given a, b parameters:  P(N < v; a, b).
+    The a, b parameters must be positive real numbers and value v must be a real value.
+    The value v must lie on the interval [0, 1].
+
 .. function:: ln(x) -> double
 
     Returns the natural logarithm of ``x``.
@@ -150,6 +162,16 @@ Mathematical Functions
 .. function:: truncate(x) -> double
 
     Returns ``x`` rounded to integer by dropping digits after decimal point.
+
+.. function:: truncate(x, n) -> double
+
+    Returns ``x`` truncated to ``n`` decimal places.
+    ``n`` can be negative to truncate ``n`` digits left of the decimal point. 
+
+    Example:
+    ``truncate(REAL '12.333', -1)`` -> result is 10.0
+    ``truncate(REAL '12.333', 0)``  -> result is 12.0
+    ``truncate(REAL '12.333', 1)``  -> result is 12.3
 
 .. function:: width_bucket(x, bound1, bound2, n) -> bigint
 

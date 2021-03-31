@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.tests.jdbc;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.jdbc.PrestoConnection;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import io.airlift.log.Logger;
 import io.prestodb.tempto.ProductTest;
 import io.prestodb.tempto.Requirement;
 import io.prestodb.tempto.RequirementsProvider;
@@ -142,7 +142,7 @@ public class JdbcTests
             ((PrestoConnection) connection()).setTimeZoneId(timeZoneId);
             assertConnectionTimezone(connection(), timeZoneId);
         }
-        else if (usingTeradataJdbcDriver(connection())) {
+        else {
             String prestoJdbcURLTestTimeZone;
             String testTimeZone = "TimeZoneID=" + timeZoneId + ";";
             if (prestoJdbcURL.contains("TimeZoneID=")) {
@@ -153,9 +153,6 @@ public class JdbcTests
             }
             Connection testConnection = DriverManager.getConnection(prestoJdbcURLTestTimeZone, prestoJdbcUser, prestoJdbcPassword);
             assertConnectionTimezone(testConnection, timeZoneId);
-        }
-        else {
-            LOGGER.warn("shouldSetTimezone() only applies to PrestoJdbcDriver");
         }
     }
 

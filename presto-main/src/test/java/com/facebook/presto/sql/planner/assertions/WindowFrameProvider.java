@@ -13,30 +13,32 @@
  */
 package com.facebook.presto.sql.planner.assertions;
 
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.plan.WindowNode;
+import com.facebook.presto.sql.planner.plan.WindowNode.Frame.BoundType;
+import com.facebook.presto.sql.planner.plan.WindowNode.Frame.WindowType;
 import com.facebook.presto.sql.tree.Expression;
-import com.facebook.presto.sql.tree.FrameBound;
-import com.facebook.presto.sql.tree.WindowFrame;
 
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public class WindowFrameProvider
         implements ExpectedValueProvider<WindowNode.Frame>
 {
-    private final WindowFrame.Type type;
-    private final FrameBound.Type startType;
+    private final WindowType type;
+    private final BoundType startType;
     private final Optional<SymbolAlias> startValue;
-    private final FrameBound.Type endType;
+    private final BoundType endType;
     private final Optional<SymbolAlias> endValue;
 
     WindowFrameProvider(
-            WindowFrame.Type type,
-            FrameBound.Type startType,
+            WindowType type,
+            BoundType startType,
             Optional<SymbolAlias> startValue,
-            FrameBound.Type endType,
+            BoundType endType,
             Optional<SymbolAlias> endValue)
     {
         this.type = requireNonNull(type, "type is null");
@@ -57,11 +59,11 @@ public class WindowFrameProvider
         return new WindowNode.Frame(
                 type,
                 startType,
-                startValue.map(alias -> alias.toSymbol(aliases)),
+                startValue.map(alias -> new VariableReferenceExpression(alias.toSymbol(aliases).getName(), BIGINT)),
                 endType,
-                endValue.map(alias -> alias.toSymbol(aliases)),
-                originalStartValue,
-                originalEndValue);
+                endValue.map(alias -> new VariableReferenceExpression(alias.toSymbol(aliases).getName(), BIGINT)),
+                originalStartValue.map(Expression::toString),
+                originalEndValue.map(Expression::toString));
     }
 
     @Override

@@ -13,26 +13,26 @@
  */
 package com.facebook.presto.type;
 
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.SqlTimeWithTimeZone;
+import com.facebook.presto.common.type.SqlTimestampWithTimeZone;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.SqlTimeWithTimeZone;
-import com.facebook.presto.spi.type.SqlTimestampWithTimeZone;
-import com.facebook.presto.spi.type.TimeZoneKey;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.Test;
 
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKey;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKeyForOffset;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKey;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKeyForOffset;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.testing.DateTimeTestingUtils.sqlTimeOf;
 import static com.facebook.presto.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
@@ -43,7 +43,7 @@ public abstract class TestDateTimeOperatorsBase
         extends AbstractTestFunctions
 {
     protected static final TimeZoneKey TIME_ZONE_KEY = getTimeZoneKey("Europe/Berlin");
-    protected static final DateTimeZone TIME_ZONE = getDateTimeZone(TIME_ZONE_KEY);
+    protected static final DateTimeZone DATE_TIME_ZONE = getDateTimeZone(TIME_ZONE_KEY);
     protected static final DateTimeZone WEIRD_TIME_ZONE = DateTimeZone.forOffsetHoursMinutes(5, 9);
     protected static final TimeZoneKey WEIRD_TIME_ZONE_KEY = getTimeZoneKeyForOffset(5 * 60 + 9);
 
@@ -122,28 +122,28 @@ public abstract class TestDateTimeOperatorsBase
     {
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321' + INTERVAL '3' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2001, 1, 22, 6, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2001, 1, 22, 6, 4, 5, 321, session));
         assertFunction("INTERVAL '3' hour + TIMESTAMP '2001-1-22 03:04:05.321'",
                 TIMESTAMP,
-                sqlTimestampOf(2001, 1, 22, 6, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2001, 1, 22, 6, 4, 5, 321, session));
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321' + INTERVAL '3' day",
                 TIMESTAMP,
-                sqlTimestampOf(2001, 1, 25, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2001, 1, 25, 3, 4, 5, 321, session));
         assertFunction("INTERVAL '3' day + TIMESTAMP '2001-1-22 03:04:05.321'",
                 TIMESTAMP,
-                sqlTimestampOf(2001, 1, 25, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2001, 1, 25, 3, 4, 5, 321, session));
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321' + INTERVAL '3' month",
                 TIMESTAMP,
-                sqlTimestampOf(2001, 4, 22, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2001, 4, 22, 3, 4, 5, 321, session));
         assertFunction("INTERVAL '3' month + TIMESTAMP '2001-1-22 03:04:05.321'",
                 TIMESTAMP,
-                sqlTimestampOf(2001, 4, 22, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2001, 4, 22, 3, 4, 5, 321, session));
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321' + INTERVAL '3' year",
                 TIMESTAMP,
-                sqlTimestampOf(2004, 1, 22, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2004, 1, 22, 3, 4, 5, 321, session));
         assertFunction("INTERVAL '3' year + TIMESTAMP '2001-1-22 03:04:05.321'",
                 TIMESTAMP,
-                sqlTimestampOf(2004, 1, 22, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2004, 1, 22, 3, 4, 5, 321, session));
 
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321 +05:09' + INTERVAL '3' hour",
                 TIMESTAMP_WITH_TIME_ZONE,
@@ -211,13 +211,13 @@ public abstract class TestDateTimeOperatorsBase
     {
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321' - INTERVAL '3' day",
                 TIMESTAMP,
-                sqlTimestampOf(2001, 1, 19, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2001, 1, 19, 3, 4, 5, 321, session));
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321 +05:09' - INTERVAL '3' day",
                 TIMESTAMP_WITH_TIME_ZONE,
                 new SqlTimestampWithTimeZone(new DateTime(2001, 1, 19, 3, 4, 5, 321, WEIRD_TIME_ZONE).getMillis(), WEIRD_TIME_ZONE_KEY));
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321' - INTERVAL '3' month",
                 TIMESTAMP,
-                sqlTimestampOf(2000, 10, 22, 3, 4, 5, 321, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2000, 10, 22, 3, 4, 5, 321, session));
         assertFunction("TIMESTAMP '2001-1-22 03:04:05.321 +05:09' - INTERVAL '3' month",
                 TIMESTAMP_WITH_TIME_ZONE,
                 new SqlTimestampWithTimeZone(new DateTime(2000, 10, 22, 3, 4, 5, 321, WEIRD_TIME_ZONE).getMillis(), WEIRD_TIME_ZONE_KEY));

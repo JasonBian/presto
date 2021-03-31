@@ -13,22 +13,22 @@
  */
 package com.facebook.presto.connector.thrift.server;
 
-import com.facebook.presto.connector.thrift.api.PrestoThriftBlock;
-import com.facebook.presto.connector.thrift.api.PrestoThriftId;
-import com.facebook.presto.connector.thrift.api.PrestoThriftNullableToken;
-import com.facebook.presto.connector.thrift.api.PrestoThriftPageResult;
-import com.facebook.presto.connector.thrift.api.PrestoThriftSchemaTableName;
-import com.facebook.presto.connector.thrift.api.PrestoThriftServiceException;
-import com.facebook.presto.connector.thrift.api.PrestoThriftSplit;
-import com.facebook.presto.connector.thrift.api.PrestoThriftSplitBatch;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ConnectorPageSource;
 import com.facebook.presto.spi.RecordPageSource;
 import com.facebook.presto.spi.RecordSet;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.split.MappedRecordSet;
 import com.facebook.presto.tests.tpch.TpchIndexedData;
 import com.facebook.presto.tests.tpch.TpchIndexedData.IndexedTable;
 import com.facebook.presto.tests.tpch.TpchScaledTable;
+import com.facebook.presto.thrift.api.connector.PrestoThriftId;
+import com.facebook.presto.thrift.api.connector.PrestoThriftNullableToken;
+import com.facebook.presto.thrift.api.connector.PrestoThriftPageResult;
+import com.facebook.presto.thrift.api.connector.PrestoThriftSchemaTableName;
+import com.facebook.presto.thrift.api.connector.PrestoThriftServiceException;
+import com.facebook.presto.thrift.api.connector.PrestoThriftSplit;
+import com.facebook.presto.thrift.api.connector.PrestoThriftSplitBatch;
+import com.facebook.presto.thrift.api.datatypes.PrestoThriftBlock;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 
@@ -97,7 +97,7 @@ public class ThriftIndexedTpchService
                 ImmutableSet.copyOf(splitInfo.getLookupColumnNames()))
                 .orElseThrow(() -> new IllegalArgumentException(String.format("No such index: %s%s", splitInfo.getTableName(), splitInfo.getLookupColumnNames())));
         List<Type> lookupColumnTypes = types(splitInfo.getTableName(), splitInfo.getLookupColumnNames());
-        RecordSet keyRecordSet = new ListBasedRecordSet(splitInfo.getKeys(), lookupColumnTypes);
+        RecordSet keyRecordSet = new MappedRecordSet(new ListBasedRecordSet(splitInfo.getKeys(), lookupColumnTypes), computeRemap(splitInfo.getLookupColumnNames(), indexedTable.getKeyColumns()));
         RecordSet outputRecordSet = lookupIndexKeys(keyRecordSet, indexedTable, outputColumnNames);
         return new RecordPageSource(outputRecordSet);
     }

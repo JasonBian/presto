@@ -14,12 +14,12 @@
 
 package com.facebook.presto.block;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.ByteArrayBlock;
-import com.facebook.presto.spi.block.RowBlockBuilder;
-import com.facebook.presto.spi.block.SingleRowBlock;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.ByteArrayBlock;
+import com.facebook.presto.common.block.RowBlockBuilder;
+import com.facebook.presto.common.block.SingleRowBlock;
+import com.facebook.presto.common.type.Type;
 import com.google.common.collect.ImmutableList;
 import it.unimi.dsi.fastutil.ints.IntArrayList;
 import org.testng.annotations.Test;
@@ -28,13 +28,20 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.stream.IntStream;
 
-import static com.facebook.presto.spi.block.RowBlock.fromFieldBlocks;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.block.BlockAssertions.createLongDictionaryBlock;
+import static com.facebook.presto.block.BlockAssertions.createRLEBlock;
+import static com.facebook.presto.block.BlockAssertions.createRandomDictionaryBlock;
+import static com.facebook.presto.block.BlockAssertions.createRandomLongsBlock;
+import static com.facebook.presto.block.BlockAssertions.createRleBlockWithRandomValue;
+import static com.facebook.presto.common.block.RowBlock.fromFieldBlocks;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static java.lang.String.format;
 import static java.util.Objects.requireNonNull;
+import static org.assertj.core.api.Fail.fail;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
@@ -49,14 +56,14 @@ public class TestRowBlock
         List<Object>[] testRows = generateTestRows(fieldTypes, 100);
 
         testWith(fieldTypes, testRows);
-        testWith(fieldTypes, (List<Object>[]) alternatingNullValues(testRows));
+        testWith(fieldTypes, alternatingNullValues(testRows));
     }
 
     @Test
     public void testEstimatedDataSizeForStats()
     {
         List<Type> fieldTypes = ImmutableList.of(VARCHAR, BIGINT);
-        List<Object>[] expectedValues = (List<Object>[]) alternatingNullValues(generateTestRows(fieldTypes, 100));
+        List<Object>[] expectedValues = alternatingNullValues(generateTestRows(fieldTypes, 100));
         BlockBuilder blockBuilder = createBlockBuilderWithValues(fieldTypes, expectedValues);
         Block block = blockBuilder.build();
         assertEquals(block.getPositionCount(), expectedValues.length);
@@ -88,13 +95,53 @@ public class TestRowBlock
         Block incompactFiledBlock2 = new ByteArrayBlock(5, Optional.empty(), createExpectedValue(6).getBytes());
         boolean[] rowIsNull = {false, true, false, false, false, false};
 
-        assertCompact(fromFieldBlocks(new boolean[0], new Block[] {emptyBlock, emptyBlock}));
-        assertCompact(fromFieldBlocks(rowIsNull, new Block[] {compactFieldBlock1, compactFieldBlock2}));
+        assertCompact(fromFieldBlocks(0, Optional.empty(), new Block[] {emptyBlock, emptyBlock}));
+        assertCompact(fromFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), new Block[] {compactFieldBlock1, compactFieldBlock2}));
         // TODO: add test case for a sliced RowBlock
 
         // underlying field blocks are not compact
-        testIncompactBlock(fromFieldBlocks(rowIsNull, new Block[] {incompactFiledBlock1, incompactFiledBlock2}));
-        testIncompactBlock(fromFieldBlocks(rowIsNull, new Block[] {incompactFiledBlock1, incompactFiledBlock2}));
+        testIncompactBlock(fromFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), new Block[] {incompactFiledBlock1, incompactFiledBlock2}));
+        testIncompactBlock(fromFieldBlocks(rowIsNull.length, Optional.of(rowIsNull), new Block[] {incompactFiledBlock1, incompactFiledBlock2}));
+    }
+
+    @Test
+    public void testLogicalSizeInBytes()
+    {
+        int positionCount = 100;
+        int[] offsets = IntStream.rangeClosed(0, positionCount).toArray();
+        boolean[] nulls = new boolean[positionCount];
+
+        // Row(LongArrayBlock, LongArrayBlock)
+        Block fieldBlock11 = createRandomLongsBlock(positionCount, 0);
+        Block fieldBlock12 = createRandomLongsBlock(positionCount, 0);
+        Block rowOfLongAndLong = fromFieldBlocks(positionCount, Optional.of(nulls), new Block[] {fieldBlock11, fieldBlock12});
+        assertEquals(rowOfLongAndLong.getLogicalSizeInBytes(), 2300);
+
+        // Row(RLE(LongArrayBlock), RLE(LongArrayBlock))
+        Block fieldBlock21 = createRLEBlock(1, positionCount);
+        Block fieldBlock22 = createRLEBlock(2, positionCount);
+        Block rowOfRleOfLongAndRleOfLong = fromFieldBlocks(positionCount, Optional.of(nulls), new Block[] {fieldBlock21, fieldBlock22});
+        assertEquals(rowOfRleOfLongAndRleOfLong.getLogicalSizeInBytes(), 2300);
+
+        // Row(RLE(LongArrayBlock), RLE(Row(LongArrayBlock, LongArrayBlock)))
+        Block fieldBlock31 = createRLEBlock(1, positionCount);
+        Block fieldBlock32 = createRleBlockWithRandomValue(fromFieldBlocks(positionCount, Optional.of(nulls), new Block[] {createRandomLongsBlock(positionCount, 0),
+                createRandomLongsBlock(positionCount, 0)}), positionCount); //createRleBlockWithRandomValue(fromElementBlock(positionCount, Optional.of(nulls), arrayOffsets, createRandomLongsBlock(positionCount * 2, 0)), positionCount);
+        Block rowOfRleOfLongAndRleOfRowOfLongAndLong = fromFieldBlocks(positionCount, Optional.of(nulls), new Block[] {fieldBlock31, fieldBlock32});
+        assertEquals(rowOfRleOfLongAndRleOfRowOfLongAndLong.getLogicalSizeInBytes(), 3700);
+
+        // Row(Dictionary(LongArrayBlock), Dictionary(LongArrayBlock))
+        Block fieldBlock41 = createLongDictionaryBlock(0, positionCount);
+        Block fieldBlock42 = createLongDictionaryBlock(0, positionCount);
+        Block rowOfDictionaryOfLongAndDictionaryOfLong = fromFieldBlocks(positionCount, Optional.of(nulls), new Block[] {fieldBlock41, fieldBlock42});
+        assertEquals(rowOfDictionaryOfLongAndDictionaryOfLong.getLogicalSizeInBytes(), 2300);
+
+        // Row(Dictionary(LongArrayBlock), Dictionary(Row(LongArrayBlock, LongArrayBlock)))
+        Block fieldBlock51 = createLongDictionaryBlock(1, positionCount);
+        Block fieldBlock52 = createRandomDictionaryBlock(fromFieldBlocks(positionCount, Optional.of(nulls), new Block[] {createRandomLongsBlock(positionCount, 0),
+                createRandomLongsBlock(positionCount, 0)}), positionCount, false); //createRleBlockWithRandomValue(fromElementBlock(positionCount, Optional.of(nulls), arrayOffsets, createRandomLongsBlock(positionCount * 2, 0)), positionCount);
+        Block rowOfDictionaryOfLongAndDictionaryOfRowOfLongAndLong = fromFieldBlocks(positionCount, Optional.of(nulls), new Block[] {fieldBlock51, fieldBlock52});
+        assertEquals(rowOfDictionaryOfLongAndDictionaryOfRowOfLongAndLong.getLogicalSizeInBytes(), 3700);
     }
 
     private void testWith(List<Type> fieldTypes, List<Object>[] expectedValues)
@@ -142,13 +189,23 @@ public class TestRowBlock
     }
 
     @Override
-    protected <T> void assertPositionValue(Block block, int position, T expectedValue)
+    protected <T> void assertCheckedPositionValue(Block block, int position, T expectedValue)
     {
         if (expectedValue instanceof List) {
             assertValue(block, position, (List<Object>) expectedValue);
             return;
         }
-        super.assertPositionValue(block, position, expectedValue);
+        super.assertCheckedPositionValue(block, position, expectedValue);
+    }
+
+    @Override
+    protected <T> void assertPositionValueUnchecked(Block block, int internalPosition, T expectedValue)
+    {
+        if (expectedValue instanceof List) {
+            assertValueUnchecked(block, internalPosition, (List<Object>) expectedValue);
+            return;
+        }
+        super.assertPositionValueUnchecked(block, internalPosition, expectedValue);
     }
 
     private void assertValue(Block rowBlock, int position, List<Object> row)
@@ -157,7 +214,7 @@ public class TestRowBlock
         requireNonNull(row, "row is null");
 
         assertFalse(rowBlock.isNull(position));
-        SingleRowBlock singleRowBlock = (SingleRowBlock) rowBlock.getObject(position, Block.class);
+        SingleRowBlock singleRowBlock = (SingleRowBlock) rowBlock.getBlock(position);
         assertEquals(singleRowBlock.getPositionCount(), row.size());
 
         for (int i = 0; i < row.size(); i++) {
@@ -174,6 +231,34 @@ public class TestRowBlock
                 }
                 else {
                     throw new IllegalArgumentException();
+                }
+            }
+        }
+    }
+
+    private void assertValueUnchecked(Block rowBlock, int internalPosition, List<Object> row)
+    {
+        // null rows are handled by assertPositionValue
+        requireNonNull(row, "row is null");
+
+        assertFalse(rowBlock.isNullUnchecked(internalPosition));
+        SingleRowBlock singleRowBlock = (SingleRowBlock) rowBlock.getBlockUnchecked(internalPosition);
+        assertEquals(singleRowBlock.getPositionCount(), row.size());
+
+        for (int i = 0; i < row.size(); i++) {
+            Object fieldValue = row.get(i);
+            if (fieldValue == null) {
+                assertTrue(singleRowBlock.isNullUnchecked(i + singleRowBlock.getOffsetBase()));
+            }
+            else {
+                if (fieldValue instanceof Long) {
+                    assertEquals(BIGINT.getLongUnchecked(singleRowBlock, i + singleRowBlock.getOffsetBase()), ((Long) fieldValue).longValue());
+                }
+                else if (fieldValue instanceof String) {
+                    assertEquals(VARCHAR.getSliceUnchecked(singleRowBlock, i + singleRowBlock.getOffsetBase()), utf8Slice((String) fieldValue));
+                }
+                else {
+                    fail("Unexpected type: " + fieldValue.getClass().getSimpleName());
                 }
             }
         }

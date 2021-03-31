@@ -15,10 +15,10 @@
 package com.facebook.presto.type;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.SqlTime;
+import com.facebook.presto.common.type.SqlTimeWithTimeZone;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.scalar.FunctionAssertions;
-import com.facebook.presto.spi.type.SqlTime;
-import com.facebook.presto.spi.type.SqlTimeWithTimeZone;
-import com.facebook.presto.spi.type.Type;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.Test;
@@ -26,10 +26,10 @@ import org.testng.annotations.Test;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKey;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKey;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.testing.DateTimeTestingUtils.sqlTimestampOf;
 import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
 import static com.google.common.base.Verify.verify;
@@ -51,28 +51,28 @@ public class TestDateTimeOperatorsLegacy
         assertFunction(
                 "TIMESTAMP '2013-03-31 00:05' + INTERVAL '1' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 1, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 3, 31, 1, 5, 0, 0, session));
         assertFunction(
                 "TIMESTAMP '2013-03-31 00:05' + INTERVAL '2' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 3, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 3, 31, 3, 5, 0, 0, session));
         assertFunction(
                 "TIMESTAMP '2013-03-31 00:05' + INTERVAL '3' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 4, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 3, 31, 4, 5, 0, 0, session));
 
         assertFunction(
                 "TIMESTAMP '2013-03-31 04:05' - INTERVAL '3' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 0, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 3, 31, 0, 5, 0, 0, session));
         assertFunction(
                 "TIMESTAMP '2013-03-31 03:05' - INTERVAL '2' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 0, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 3, 31, 0, 5, 0, 0, session));
         assertFunction(
                 "TIMESTAMP '2013-03-31 01:05' - INTERVAL '1' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 3, 31, 0, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 3, 31, 0, 5, 0, 0, session));
     }
 
     @Test
@@ -82,42 +82,42 @@ public class TestDateTimeOperatorsLegacy
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '1' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 1, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 10, 27, 1, 5, 0, 0, session));
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '2' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 2, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 10, 27, 2, 5, 0, 0, session));
         // we need to manipulate millis directly here because 2 am has two representations in out time zone, and we need the second one
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '3' hour",
                 TIMESTAMP,
-                sqlTimestampOf(new DateTime(2013, 10, 27, 0, 5, 0, 0, TIME_ZONE).plus(HOURS.toMillis(3)), session));
+                sqlTimestampOf(new DateTime(2013, 10, 27, 0, 5, 0, 0, DATE_TIME_ZONE).plus(HOURS.toMillis(3)), session));
         assertFunction(
                 "TIMESTAMP '2013-10-27 00:05' + INTERVAL '4' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 3, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 10, 27, 3, 5, 0, 0, session));
 
         assertFunction(
                 "TIMESTAMP '2013-10-27 03:05' - INTERVAL '4' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, session));
         assertFunction(
                 "TIMESTAMP '2013-10-27 02:05' - INTERVAL '2' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, session));
         assertFunction(
                 "TIMESTAMP '2013-10-27 01:05' - INTERVAL '1' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 10, 27, 0, 5, 0, 0, session));
 
         assertFunction(
                 "TIMESTAMP '2013-10-27 03:05' - INTERVAL '1' hour",
                 TIMESTAMP,
-                sqlTimestampOf(new DateTime(2013, 10, 27, 0, 5, 0, 0, TIME_ZONE).plus(HOURS.toMillis(3)), session));
+                sqlTimestampOf(new DateTime(2013, 10, 27, 0, 5, 0, 0, DATE_TIME_ZONE).plus(HOURS.toMillis(3)), session));
         assertFunction(
                 "TIMESTAMP '2013-10-27 03:05' - INTERVAL '2' hour",
                 TIMESTAMP,
-                sqlTimestampOf(2013, 10, 27, 2, 5, 0, 0, TIME_ZONE, TIME_ZONE_KEY, session));
+                sqlTimestampOf(2013, 10, 27, 2, 5, 0, 0, session));
     }
 
     @Test

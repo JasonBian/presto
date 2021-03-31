@@ -13,31 +13,35 @@
  */
 package com.facebook.presto.jdbc;
 
+import com.facebook.airlift.log.Logging;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.BigintType;
+import com.facebook.presto.common.type.BooleanType;
+import com.facebook.presto.common.type.DateType;
+import com.facebook.presto.common.type.DoubleType;
+import com.facebook.presto.common.type.IntegerType;
+import com.facebook.presto.common.type.RealType;
+import com.facebook.presto.common.type.SmallintType;
+import com.facebook.presto.common.type.TimeType;
+import com.facebook.presto.common.type.TimeWithTimeZoneType;
+import com.facebook.presto.common.type.TimeZoneKey;
+import com.facebook.presto.common.type.TimestampType;
+import com.facebook.presto.common.type.TimestampWithTimeZoneType;
+import com.facebook.presto.common.type.TinyintType;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarbinaryType;
 import com.facebook.presto.execution.QueryState;
+import com.facebook.presto.metadata.Catalog;
+import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.plugin.blackhole.BlackHolePlugin;
 import com.facebook.presto.server.testing.TestingPrestoServer;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.BigintType;
-import com.facebook.presto.spi.type.BooleanType;
-import com.facebook.presto.spi.type.DateType;
-import com.facebook.presto.spi.type.DoubleType;
-import com.facebook.presto.spi.type.IntegerType;
-import com.facebook.presto.spi.type.RealType;
-import com.facebook.presto.spi.type.SmallintType;
-import com.facebook.presto.spi.type.TimeType;
-import com.facebook.presto.spi.type.TimeWithTimeZoneType;
-import com.facebook.presto.spi.type.TimeZoneKey;
-import com.facebook.presto.spi.type.TimestampType;
-import com.facebook.presto.spi.type.TimestampWithTimeZoneType;
-import com.facebook.presto.spi.type.TinyintType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarbinaryType;
+import com.facebook.presto.spi.security.SelectedRole;
 import com.facebook.presto.tpch.TpchMetadata;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.facebook.presto.type.ColorType;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
-import io.airlift.log.Logging;
 import io.airlift.units.Duration;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
@@ -59,6 +63,7 @@ import java.sql.Statement;
 import java.sql.Time;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.ZoneId;
 import java.util.ArrayList;
 import java.util.GregorianCalendar;
 import java.util.List;
@@ -72,16 +77,19 @@ import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.regex.Pattern;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
+import static com.facebook.airlift.testing.Assertions.assertContains;
+import static com.facebook.airlift.testing.Assertions.assertInstanceOf;
+import static com.facebook.airlift.testing.Assertions.assertLessThan;
+import static com.facebook.presto.common.type.CharType.createCharType;
+import static com.facebook.presto.common.type.DecimalType.createDecimalType;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.common.type.VarcharType.createVarcharType;
 import static com.facebook.presto.execution.QueryState.FAILED;
 import static com.facebook.presto.execution.QueryState.RUNNING;
-import static com.facebook.presto.spi.type.CharType.createCharType;
-import static com.facebook.presto.spi.type.DecimalType.createDecimalType;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
-import static com.facebook.presto.spi.type.VarcharType.createVarcharType;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
-import static io.airlift.testing.Assertions.assertContains;
-import static io.airlift.testing.Assertions.assertInstanceOf;
-import static io.airlift.testing.Assertions.assertLessThan;
+import static com.facebook.presto.testing.TestingSession.TESTING_CATALOG;
+import static com.facebook.presto.testing.TestingSession.createBogusTestingCatalog;
+import static com.facebook.presto.tests.AbstractTestQueries.TEST_CATALOG_PROPERTIES;
 import static io.airlift.units.Duration.nanosSince;
 import static java.lang.Float.POSITIVE_INFINITY;
 import static java.lang.String.format;
@@ -103,7 +111,7 @@ import static org.testng.Assert.fail;
 public class TestPrestoDriver
 {
     private static final DateTimeZone ASIA_ORAL_ZONE = DateTimeZone.forID("Asia/Oral");
-    private static final GregorianCalendar ASIA_ORAL_CALENDAR = new GregorianCalendar(ASIA_ORAL_ZONE.toTimeZone());
+    private static final GregorianCalendar ASIA_ORAL_CALENDAR = new GregorianCalendar(TimeZone.getTimeZone(ZoneId.of(ASIA_ORAL_ZONE.getID())));
     private static final String TEST_CATALOG = "test_catalog";
 
     private TestingPrestoServer server;
@@ -119,6 +127,10 @@ public class TestPrestoDriver
         server.createCatalog(TEST_CATALOG, "tpch");
         server.installPlugin(new BlackHolePlugin());
         server.createCatalog("blackhole", "blackhole");
+        Catalog bogusTestingCatalog = createBogusTestingCatalog(TESTING_CATALOG);
+        server.getCatalogManager().registerCatalog(bogusTestingCatalog);
+        SessionPropertyManager sessionPropertyManager = server.getMetadata().getSessionPropertyManager();
+        sessionPropertyManager.addConnectorSessionProperties(bogusTestingCatalog.getConnectorId(), TEST_CATALOG_PROPERTIES);
         waitForNodeRefresh(server);
         setupTestTables();
         executorService = newCachedThreadPool(daemonThreadsNamed("test-%s"));
@@ -377,7 +389,7 @@ public class TestPrestoDriver
     {
         try (Connection connection = createConnection()) {
             try (ResultSet rs = connection.getMetaData().getCatalogs()) {
-                assertEquals(readRows(rs), list(list("blackhole"), list("system"), list(TEST_CATALOG)));
+                assertEquals(readRows(rs), list(list("blackhole"), list("system"), list(TEST_CATALOG), list(TESTING_CATALOG)));
 
                 ResultSetMetaData metadata = rs.getMetaData();
                 assertEquals(metadata.getColumnCount(), 1);
@@ -1238,6 +1250,27 @@ public class TestPrestoDriver
     }
 
     @Test
+    public void testGetMoreResultsClearsUpdateCount()
+            throws Exception
+    {
+        try (Connection connection = createConnection("blackhole", "default")) {
+            try (PrestoStatement statement = connection.createStatement().unwrap(PrestoStatement.class)) {
+                assertFalse(statement.execute("CREATE TABLE test_more_results_clears_update_count (id bigint)"));
+                assertEquals(statement.getUpdateCount(), 0);
+                assertEquals(statement.getUpdateType(), "CREATE TABLE");
+                assertFalse(statement.getMoreResults());
+                assertEquals(statement.getUpdateCount(), -1);
+                assertNull(statement.getUpdateType());
+            }
+            finally {
+                try (Statement statement = connection.createStatement()) {
+                    statement.execute("DROP TABLE test_more_results_clears_update_count");
+                }
+            }
+        }
+    }
+
+    @Test
     public void testSetTimeZoneId()
             throws Exception
     {
@@ -1382,6 +1415,26 @@ public class TestPrestoDriver
         }
     }
 
+    @Test
+    public void testSetRole()
+            throws Exception
+    {
+        try (PrestoConnection connection = createConnection(TEST_CATALOG, "tiny").unwrap(PrestoConnection.class)) {
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("SET ROLE ALL");
+            }
+            assertEquals(connection.getRoles(), ImmutableMap.of(TEST_CATALOG, new SelectedRole(SelectedRole.Type.ALL, Optional.empty())));
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("SET ROLE NONE");
+            }
+            assertEquals(connection.getRoles(), ImmutableMap.of(TEST_CATALOG, new SelectedRole(SelectedRole.Type.NONE, Optional.empty())));
+            try (Statement statement = connection.createStatement()) {
+                statement.executeUpdate("SET ROLE bar");
+            }
+            assertEquals(connection.getRoles(), ImmutableMap.of(TEST_CATALOG, new SelectedRole(SelectedRole.Type.ROLE, Optional.of("bar"))));
+        }
+    }
+
     @Test(timeOut = 10000)
     public void testQueryCancelByInterrupt()
             throws Exception
@@ -1392,7 +1445,7 @@ public class TestPrestoDriver
         AtomicReference<Throwable> queryFailure = new AtomicReference<>();
 
         Future<?> queryFuture = executorService.submit(() -> {
-            try (Connection connection = createConnection("blackhole", "default");
+            try (Connection connection = createConnection("blackhole", "blackhole");
                     Statement statement = connection.createStatement();
                     ResultSet resultSet = statement.executeQuery("SELECT * FROM slow_test_table")) {
                 queryId.set(resultSet.unwrap(PrestoResultSet.class).getQueryId());
@@ -1435,7 +1488,7 @@ public class TestPrestoDriver
         AtomicReference<String> queryId = new AtomicReference<>();
         AtomicReference<Throwable> queryFailure = new AtomicReference<>();
 
-        try (Connection connection = createConnection("blackhole", "default");
+        try (Connection connection = createConnection("blackhole", "blackhole");
                 Statement statement = connection.createStatement()) {
             // execute the slow query on another thread
             executorService.execute(() -> {
@@ -1476,7 +1529,7 @@ public class TestPrestoDriver
         AtomicReference<Throwable> queryFailure = new AtomicReference<>();
         String queryUuid = "/* " + UUID.randomUUID().toString() + " */";
 
-        try (Connection connection = createConnection("blackhole", "default");
+        try (Connection connection = createConnection("blackhole", "blackhole");
                 Statement statement = connection.createStatement()) {
             // execute the slow update on another thread
             executorService.execute(() -> {
@@ -1530,7 +1583,7 @@ public class TestPrestoDriver
         AtomicReference<Throwable> queryFailure = new AtomicReference<>();
 
         executorService.submit(() -> {
-            try (Connection connection = createConnection("blackhole", "default");
+            try (Connection connection = createConnection("blackhole", "blackhole");
                     Statement statement = connection.createStatement()) {
                 statement.setQueryTimeout(1);
                 try (ResultSet resultSet = statement.executeQuery("SELECT * FROM test_query_timeout")) {
@@ -1563,7 +1616,7 @@ public class TestPrestoDriver
     public void testQueryPartialCancel()
             throws Exception
     {
-        try (Connection connection = createConnection("blackhole", "default");
+        try (Connection connection = createConnection("blackhole", "blackhole");
                 Statement statement = connection.createStatement();
                 ResultSet resultSet = statement.executeQuery("SELECT count(*) FROM slow_test_table")) {
             statement.unwrap(PrestoStatement.class).partialCancel();
@@ -1578,7 +1631,7 @@ public class TestPrestoDriver
     {
         CountDownLatch queryRunning = new CountDownLatch(1);
 
-        try (Connection connection = createConnection("blackhole", "default");
+        try (Connection connection = createConnection("blackhole", "blackhole");
                 Statement statement = connection.createStatement()) {
             // execute the slow update on another thread
             Future<Integer> future = executorService.submit(() ->
@@ -1598,6 +1651,32 @@ public class TestPrestoDriver
             // make sure query completes
             assertEquals(future.get(10, SECONDS), (Integer) 1);
         }
+    }
+
+    @Test
+    public void testEncodeDecodeSessionValue()
+            throws Exception
+    {
+        boolean isValidSessionValue = false;
+        String targetValue = "a+1==3";
+        try (Connection connection = createConnection(TESTING_CATALOG)) {
+            try (Statement statement = connection.createStatement()) {
+                assertFalse(statement.execute(format("set session %s.connector_string='%s'", TESTING_CATALOG, targetValue)));
+                assertNull(statement.getResultSet());
+
+                assertTrue(statement.execute("show session"));
+                ResultSet rs = statement.getResultSet();
+                while (rs.next()) {
+                    String sessionName = rs.getString("Name");
+                    if (sessionName.equals(format("%s.connector_string", TESTING_CATALOG))) {
+                        assertEquals(rs.getString("Value"), targetValue);
+                        isValidSessionValue = true;
+                        break;
+                    }
+                }
+            }
+        }
+        assertTrue(isValidSessionValue);
     }
 
     private QueryState getQueryState(String queryId)

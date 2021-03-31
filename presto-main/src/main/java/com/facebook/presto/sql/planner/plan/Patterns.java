@@ -15,8 +15,19 @@ package com.facebook.presto.sql.planner.plan;
 
 import com.facebook.presto.matching.Pattern;
 import com.facebook.presto.matching.Property;
-import com.facebook.presto.sql.planner.Symbol;
-import com.facebook.presto.sql.tree.Expression;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.FilterNode;
+import com.facebook.presto.spi.plan.IntersectNode;
+import com.facebook.presto.spi.plan.LimitNode;
+import com.facebook.presto.spi.plan.MarkDistinctNode;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.ProjectNode;
+import com.facebook.presto.spi.plan.TableScanNode;
+import com.facebook.presto.spi.plan.TopNNode;
+import com.facebook.presto.spi.plan.UnionNode;
+import com.facebook.presto.spi.plan.ValuesNode;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 
 import java.util.List;
 import java.util.Optional;
@@ -24,7 +35,6 @@ import java.util.Optional;
 import static com.facebook.presto.matching.Pattern.typeOf;
 import static com.facebook.presto.matching.Property.optionalProperty;
 import static com.facebook.presto.matching.Property.property;
-import static java.util.Optional.empty;
 
 public class Patterns
 {
@@ -73,6 +83,11 @@ public class Patterns
     public static Pattern<JoinNode> join()
     {
         return typeOf(JoinNode.class);
+    }
+
+    public static Pattern<SpatialJoinNode> spatialJoin()
+    {
+        return typeOf(SpatialJoinNode.class);
     }
 
     public static Pattern<LateralJoinNode> lateralJoin()
@@ -130,6 +145,11 @@ public class Patterns
         return typeOf(TableWriterNode.class);
     }
 
+    public static Pattern<TableWriterMergeNode> tableWriterMergeNode()
+    {
+        return typeOf(TableWriterMergeNode.class);
+    }
+
     public static Pattern<TopNNode> topN()
     {
         return typeOf(TopNNode.class);
@@ -138,6 +158,11 @@ public class Patterns
     public static Pattern<UnionNode> union()
     {
         return typeOf(UnionNode.class);
+    }
+
+    public static Pattern<IntersectNode> intersect()
+    {
+        return typeOf(IntersectNode.class);
     }
 
     public static Pattern<ValuesNode> values()
@@ -150,11 +175,21 @@ public class Patterns
         return typeOf(WindowNode.class);
     }
 
+    public static Pattern<RowNumberNode> rowNumber()
+    {
+        return typeOf(RowNumberNode.class);
+    }
+
+    public static Pattern<UnnestNode> unnest()
+    {
+        return typeOf(UnnestNode.class);
+    }
+
     public static Property<PlanNode, PlanNode> source()
     {
         return optionalProperty("source", node -> node.getSources().size() == 1 ?
                 Optional.of(node.getSources().get(0)) :
-                empty());
+                Optional.empty());
     }
 
     public static Property<PlanNode, List<PlanNode>> sources()
@@ -164,7 +199,7 @@ public class Patterns
 
     public static class Aggregation
     {
-        public static Property<AggregationNode, List<Symbol>> groupingColumns()
+        public static Property<AggregationNode, List<VariableReferenceExpression>> groupingColumns()
         {
             return property("groupingKeys", AggregationNode::getGroupingKeys);
         }
@@ -177,15 +212,23 @@ public class Patterns
 
     public static class Apply
     {
-        public static Property<ApplyNode, List<Symbol>> correlation()
+        public static Property<ApplyNode, List<VariableReferenceExpression>> correlation()
         {
             return property("correlation", ApplyNode::getCorrelation);
         }
     }
 
+    public static class Join
+    {
+        public static Property<JoinNode, JoinNode.Type> type()
+        {
+            return property("type", JoinNode::getType);
+        }
+    }
+
     public static class LateralJoin
     {
-        public static Property<LateralJoinNode, List<Symbol>> correlation()
+        public static Property<LateralJoinNode, List<VariableReferenceExpression>> correlation()
         {
             return property("correlation", LateralJoinNode::getCorrelation);
         }
@@ -227,7 +270,7 @@ public class Patterns
 
     public static class Values
     {
-        public static Property<ValuesNode, List<List<Expression>>> rows()
+        public static Property<ValuesNode, List<List<RowExpression>>> rows()
         {
             return property("rows", ValuesNode::getRows);
         }

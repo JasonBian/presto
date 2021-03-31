@@ -14,52 +14,56 @@
 
 package com.facebook.presto.tpcds.statistics;
 
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.statistics.ColumnStatistics;
+import com.facebook.presto.spi.statistics.DoubleRange;
 import com.facebook.presto.spi.statistics.Estimate;
 import com.facebook.presto.spi.statistics.TableStatistics;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.TimeType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
 import com.facebook.presto.tpcds.TpcdsColumnHandle;
 import com.teradata.tpcds.Table;
-import io.airlift.slice.Slices;
+import io.airlift.slice.Slice;
 
 import java.time.LocalDate;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.Chars.truncateToLengthAndTrimSpaces;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.Decimals.isShortDecimal;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.Decimals.isLongDecimal;
+import static com.facebook.presto.common.type.Decimals.isShortDecimal;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static java.lang.Double.parseDouble;
 
 public class TpcdsTableStatisticsFactory
 {
     private final TableStatisticsDataRepository statisticsDataRepository = new TableStatisticsDataRepository();
 
-    public TableStatistics create(String schemaName, Table table, Map<String, ColumnHandle> columnHandles)
+    public TableStatistics create(String schemaName, Table table, List<ColumnHandle> columnHandles)
     {
         Optional<TableStatisticsData> statisticsDataOptional = statisticsDataRepository.load(schemaName, table);
         return statisticsDataOptional.map(statisticsData -> toTableStatistics(columnHandles, statisticsData))
-                .orElse(TableStatistics.EMPTY_STATISTICS);
+                .orElse(TableStatistics.empty());
     }
 
-    private TableStatistics toTableStatistics(Map<String, ColumnHandle> columnHandles, TableStatisticsData statisticsData)
+    private TableStatistics toTableStatistics(List<ColumnHandle> columnHandles, TableStatisticsData statisticsData)
     {
         long rowCount = statisticsData.getRowCount();
         TableStatistics.Builder tableStatistics = TableStatistics.builder()
-                .setRowCount(new Estimate(rowCount));
+                .setRowCount(Estimate.of(rowCount));
 
         if (rowCount > 0) {
             Map<String, ColumnStatisticsData> columnsData = statisticsData.getColumns();
-            for (Map.Entry<String, ColumnHandle> entry : columnHandles.entrySet()) {
-                TpcdsColumnHandle columnHandle = (TpcdsColumnHandle) entry.getValue();
-                tableStatistics.setColumnStatistics(entry.getValue(), toColumnStatistics(columnsData.get(entry.getKey()), columnHandle.getType(), rowCount));
+            for (ColumnHandle handle : columnHandles) {
+                TpcdsColumnHandle columnHandle = (TpcdsColumnHandle) handle;
+                tableStatistics.setColumnStatistics(columnHandle, toColumnStatistics(columnsData.get(columnHandle.getColumnName()), columnHandle.getType(), rowCount));
             }
         }
 
@@ -70,41 +74,44 @@ public class TpcdsTableStatisticsFactory
     {
         ColumnStatistics.Builder columnStatistics = ColumnStatistics.builder();
         long nullCount = columnStatisticsData.getNullsCount();
-        columnStatistics.setNullsFraction(new Estimate((double) nullCount / rowCount));
-        columnStatistics.addRange(builder -> builder
-                .setLowValue(
-                        columnStatisticsData.getMin()
-                                .map(value -> toPrestoValue(value, type)))
-                .setHighValue(
-                        columnStatisticsData.getMax()
-                                .map(value -> toPrestoValue(value, type)))
-                .setDistinctValuesCount(new Estimate(columnStatisticsData.getDistinctValuesCount()))
-                .setDataSize(columnStatisticsData.getDataSize().map(Estimate::new).orElse(Estimate.unknownValue()))
-                .setFraction(new Estimate(((double) rowCount - nullCount) / rowCount))
-                .build());
-
+        columnStatistics.setNullsFraction(Estimate.of((double) nullCount / rowCount));
+        columnStatistics.setRange(toRange(columnStatisticsData.getMin(), columnStatisticsData.getMax(), type));
+        columnStatistics.setDistinctValuesCount(Estimate.of(columnStatisticsData.getDistinctValuesCount()));
+        columnStatistics.setDataSize(columnStatisticsData.getDataSize().map(Estimate::of).orElse(Estimate.unknown()));
         return columnStatistics.build();
     }
 
-    private Object toPrestoValue(Object tpcdsValue, Type type)
+    private static Optional<DoubleRange> toRange(Optional<Object> min, Optional<Object> max, Type columnType)
     {
-        if (type instanceof VarcharType) {
-            return Slices.utf8Slice((String) tpcdsValue);
+        if (columnType instanceof VarcharType || columnType instanceof CharType || columnType.equals(TIME)) {
+            return Optional.empty();
         }
-        else if (type instanceof CharType) {
-            return truncateToLengthAndTrimSpaces(Slices.utf8Slice((String) tpcdsValue), type);
+        if (!min.isPresent() || !max.isPresent()) {
+            return Optional.empty();
         }
-        else if (tpcdsValue instanceof String && type.equals(DATE)) {
-            return LocalDate.parse((CharSequence) tpcdsValue).toEpochDay();
+        return Optional.of(new DoubleRange(toDouble(min.get(), columnType), toDouble(max.get(), columnType)));
+    }
+
+    private static double toDouble(Object value, Type type)
+    {
+        if (value instanceof String && type.equals(DATE)) {
+            return LocalDate.parse((CharSequence) value).toEpochDay();
         }
-        else if (type.equals(BIGINT) || type.equals(INTEGER) || type.equals(DATE) || (type instanceof DecimalType && isShortDecimal(type))) {
-            return ((Number) tpcdsValue).longValue();
+        if (type.equals(BIGINT) || type.equals(INTEGER) || type.equals(DATE)) {
+            return ((Number) value).doubleValue();
         }
-        else if (type.equals(DOUBLE)) {
-            return ((Number) tpcdsValue).doubleValue();
+        if (type instanceof DecimalType) {
+            DecimalType decimalType = (DecimalType) type;
+            if (isShortDecimal(decimalType)) {
+                return parseDouble(Decimals.toString(((Number) value).longValue(), decimalType.getScale()));
+            }
+            if (isLongDecimal(decimalType)) {
+                return parseDouble(Decimals.toString((Slice) value, decimalType.getScale()));
+            }
+            throw new IllegalArgumentException("Unexpected decimal type: " + decimalType);
         }
-        else if (type.equals(TimeType.TIME)) {
-            return ((Number) tpcdsValue).longValue();
+        if (type.equals(DOUBLE)) {
+            return ((Number) value).doubleValue();
         }
         throw new IllegalArgumentException("unsupported column type " + type);
     }

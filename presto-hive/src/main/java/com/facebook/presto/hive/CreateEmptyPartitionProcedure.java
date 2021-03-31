@@ -13,15 +13,16 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.airlift.json.JsonCodec;
 import com.facebook.presto.hive.LocationService.WriteInfo;
 import com.facebook.presto.hive.PartitionUpdate.UpdateMode;
 import com.facebook.presto.hive.metastore.ExtendedHiveMetastore;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.classloader.ThreadContextClassLoader;
 import com.facebook.presto.spi.procedure.Procedure;
 import com.facebook.presto.spi.procedure.Procedure.Argument;
 import com.google.common.collect.ImmutableList;
-import io.airlift.json.JsonCodec;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import org.apache.hadoop.hive.common.FileUtils;
@@ -35,10 +36,10 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.function.Supplier;
 
+import static com.facebook.presto.common.block.MethodHandleUtil.methodHandle;
+import static com.facebook.presto.common.type.StandardTypes.VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.ALREADY_EXISTS;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_PROCEDURE_ARGUMENT;
-import static com.facebook.presto.spi.block.MethodHandleUtil.methodHandle;
-import static com.facebook.presto.spi.type.StandardTypes.VARCHAR;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
@@ -75,14 +76,21 @@ public class CreateEmptyPartitionProcedure
                 "system",
                 "create_empty_partition",
                 ImmutableList.of(
-                        new Argument("schema", VARCHAR),
-                        new Argument("table", VARCHAR),
-                        new Argument("partitionColumnNames", "array(varchar)"),
-                        new Argument("partitionValues", "array(varchar)")),
+                        new Argument("schema_name", VARCHAR),
+                        new Argument("table_name", VARCHAR),
+                        new Argument("partition_columns", "array(varchar)"),
+                        new Argument("partition_values", "array(varchar)")),
                 CREATE_EMPTY_PARTITION.bindTo(this));
     }
 
     public void createEmptyPartition(ConnectorSession session, String schema, String table, List<Object> partitionColumnNames, List<Object> partitionValues)
+    {
+        try (ThreadContextClassLoader ignored = new ThreadContextClassLoader(getClass().getClassLoader())) {
+            doCreateEmptyPartition(session, schema, table, partitionColumnNames, partitionValues);
+        }
+    }
+
+    private void doCreateEmptyPartition(ConnectorSession session, String schema, String table, List<Object> partitionColumnNames, List<Object> partitionValues)
     {
         TransactionalMetadata hiveMetadata = hiveMetadataFactory.get();
 
@@ -116,7 +124,8 @@ public class CreateEmptyPartitionProcedure
                                 ImmutableList.of(),
                                 0,
                                 0,
-                                0)));
+                                0,
+                                writeInfo.getWritePath().getName().matches("\\d+"))));
 
         hiveMetadata.finishInsert(
                 session,

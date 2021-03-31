@@ -13,9 +13,12 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.airlift.stats.CounterStat;
+import com.facebook.airlift.stats.GcMonitor;
 import com.facebook.presto.Session;
 import com.facebook.presto.execution.Lifespan;
 import com.facebook.presto.execution.TaskId;
+import com.facebook.presto.execution.TaskMetadataContext;
 import com.facebook.presto.execution.TaskState;
 import com.facebook.presto.execution.TaskStateMachine;
 import com.facebook.presto.execution.buffer.LazyOutputBuffer;
@@ -28,8 +31,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.AtomicDouble;
 import com.google.common.util.concurrent.ListenableFuture;
-import io.airlift.stats.CounterStat;
-import io.airlift.stats.GcMonitor;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 import org.joda.time.DateTime;
@@ -38,7 +39,6 @@ import javax.annotation.concurrent.GuardedBy;
 import javax.annotation.concurrent.ThreadSafe;
 
 import java.util.List;
-import java.util.OptionalInt;
 import java.util.Set;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executor;
@@ -51,7 +51,6 @@ import static com.google.common.collect.ImmutableSet.toImmutableSet;
 import static com.google.common.collect.Iterables.transform;
 import static com.google.common.collect.Sets.newConcurrentHashSet;
 import static io.airlift.units.DataSize.Unit.BYTE;
-import static io.airlift.units.DataSize.succinctBytes;
 import static java.lang.Math.max;
 import static java.lang.Math.toIntExact;
 import static java.util.Objects.requireNonNull;
@@ -86,13 +85,19 @@ public class TaskContext
 
     private final List<PipelineContext> pipelineContexts = new CopyOnWriteArrayList<>();
 
-    private final boolean verboseStats;
+    private final boolean perOperatorCpuTimerEnabled;
     private final boolean cpuTimerEnabled;
 
-    private final OptionalInt totalPartitions;
+    private final boolean perOperatorAllocationTrackingEnabled;
+    private final boolean allocationTrackingEnabled;
+
+    private final boolean legacyLifespanCompletionCondition;
 
     private final Object cumulativeMemoryLock = new Object();
     private final AtomicDouble cumulativeUserMemory = new AtomicDouble(0.0);
+
+    private final AtomicLong peakTotalMemoryInBytes = new AtomicLong(0);
+    private final AtomicLong peakUserMemoryInBytes = new AtomicLong(0);
 
     @GuardedBy("cumulativeMemoryLock")
     private long lastUserMemoryReservation;
@@ -102,6 +107,8 @@ public class TaskContext
 
     private final MemoryTrackingContext taskMemoryContext;
 
+    private final TaskMetadataContext taskMetadataContext;
+
     public static TaskContext createTaskContext(
             QueryContext queryContext,
             TaskStateMachine taskStateMachine,
@@ -110,11 +117,25 @@ public class TaskContext
             ScheduledExecutorService yieldExecutor,
             Session session,
             MemoryTrackingContext taskMemoryContext,
-            boolean verboseStats,
+            boolean perOperatorCpuTimerEnabled,
             boolean cpuTimerEnabled,
-            OptionalInt totalPartitions)
+            boolean perOperatorAllocationTrackingEnabled,
+            boolean allocationTrackingEnabled,
+            boolean legacyLifespanCompletionCondition)
     {
-        TaskContext taskContext = new TaskContext(queryContext, taskStateMachine, gcMonitor, notificationExecutor, yieldExecutor, session, taskMemoryContext, verboseStats, cpuTimerEnabled, totalPartitions);
+        TaskContext taskContext = new TaskContext(
+                queryContext,
+                taskStateMachine,
+                gcMonitor,
+                notificationExecutor,
+                yieldExecutor,
+                session,
+                taskMemoryContext,
+                perOperatorCpuTimerEnabled,
+                cpuTimerEnabled,
+                perOperatorAllocationTrackingEnabled,
+                allocationTrackingEnabled,
+                legacyLifespanCompletionCondition);
         taskContext.initialize();
         return taskContext;
     }
@@ -126,9 +147,11 @@ public class TaskContext
             ScheduledExecutorService yieldExecutor,
             Session session,
             MemoryTrackingContext taskMemoryContext,
-            boolean verboseStats,
+            boolean perOperatorCpuTimerEnabled,
             boolean cpuTimerEnabled,
-            OptionalInt totalPartitions)
+            boolean perOperatorAllocationTrackingEnabled,
+            boolean allocationTrackingEnabled,
+            boolean legacyLifespanCompletionCondition)
     {
         this.taskStateMachine = requireNonNull(taskStateMachine, "taskStateMachine is null");
         this.gcMonitor = requireNonNull(gcMonitor, "gcMonitor is null");
@@ -139,9 +162,12 @@ public class TaskContext
         this.taskMemoryContext = requireNonNull(taskMemoryContext, "taskMemoryContext is null");
         // Initialize the local memory contexts with the LazyOutputBuffer tag as LazyOutputBuffer will do the local memory allocations
         taskMemoryContext.initializeLocalMemoryContexts(LazyOutputBuffer.class.getSimpleName());
-        this.verboseStats = verboseStats;
+        this.perOperatorCpuTimerEnabled = perOperatorCpuTimerEnabled;
         this.cpuTimerEnabled = cpuTimerEnabled;
-        this.totalPartitions = requireNonNull(totalPartitions, "totalPartitions is null");
+        this.perOperatorAllocationTrackingEnabled = perOperatorAllocationTrackingEnabled;
+        this.allocationTrackingEnabled = allocationTrackingEnabled;
+        this.legacyLifespanCompletionCondition = legacyLifespanCompletionCondition;
+        this.taskMetadataContext = new TaskMetadataContext();
     }
 
     // the state change listener is added here in a separate initialize() method
@@ -157,12 +183,7 @@ public class TaskContext
         return taskStateMachine.getTaskId();
     }
 
-    public OptionalInt getTotalPartitions()
-    {
-        return totalPartitions;
-    }
-
-    public PipelineContext addPipelineContext(int pipelineId, boolean inputPipeline, boolean outputPipeline)
+    public PipelineContext addPipelineContext(int pipelineId, boolean inputPipeline, boolean outputPipeline, boolean partitioned)
     {
         PipelineContext pipelineContext = new PipelineContext(
                 pipelineId,
@@ -171,7 +192,8 @@ public class TaskContext
                 yieldExecutor,
                 taskMemoryContext.newMemoryTrackingContext(),
                 inputPipeline,
-                outputPipeline);
+                outputPipeline,
+                partitioned);
         pipelineContexts.add(pipelineContext);
         return pipelineContext;
     }
@@ -233,6 +255,11 @@ public class TaskContext
         return taskStateMachine.getState();
     }
 
+    public TaskMetadataContext getTaskMetadataContext()
+    {
+        return taskMetadataContext;
+    }
+
     public DataSize getMemoryReservation()
     {
         return new DataSize(taskMemoryContext.getUserMemory(), BYTE);
@@ -286,14 +313,29 @@ public class TaskContext
         pipelineContexts.forEach(PipelineContext::moreMemoryAvailable);
     }
 
-    public boolean isVerboseStats()
+    public boolean isPerOperatorAllocationTrackingEnabled()
     {
-        return verboseStats;
+        return perOperatorAllocationTrackingEnabled;
+    }
+
+    public boolean isAllocationTrackingEnabled()
+    {
+        return allocationTrackingEnabled;
+    }
+
+    public boolean isPerOperatorCpuTimerEnabled()
+    {
+        return perOperatorCpuTimerEnabled;
     }
 
     public boolean isCpuTimerEnabled()
     {
         return cpuTimerEnabled;
+    }
+
+    public boolean isLegacyLifespanCompletionCondition()
+    {
+        return legacyLifespanCompletionCondition;
     }
 
     public CounterStat getInputDataSize()
@@ -389,6 +431,8 @@ public class TaskContext
         long totalCpuTime = 0;
         long totalBlockedTime = 0;
 
+        long totalAllocation = 0;
+
         long rawInputDataSize = 0;
         long rawInputPositions = 0;
 
@@ -413,45 +457,50 @@ public class TaskContext
             blockedDrivers += pipeline.getBlockedDrivers();
             completedDrivers += pipeline.getCompletedDrivers();
 
-            totalScheduledTime += pipeline.getTotalScheduledTime().roundTo(NANOSECONDS);
-            totalCpuTime += pipeline.getTotalCpuTime().roundTo(NANOSECONDS);
-            totalBlockedTime += pipeline.getTotalBlockedTime().roundTo(NANOSECONDS);
+            totalScheduledTime += pipeline.getTotalScheduledTimeInNanos();
+            totalCpuTime += pipeline.getTotalCpuTimeInNanos();
+            totalBlockedTime += pipeline.getTotalBlockedTimeInNanos();
+
+            totalAllocation += pipeline.getTotalAllocationInBytes();
 
             if (pipeline.isInputPipeline()) {
-                rawInputDataSize += pipeline.getRawInputDataSize().toBytes();
+                rawInputDataSize += pipeline.getRawInputDataSizeInBytes();
                 rawInputPositions += pipeline.getRawInputPositions();
 
-                processedInputDataSize += pipeline.getProcessedInputDataSize().toBytes();
+                processedInputDataSize += pipeline.getProcessedInputDataSizeInBytes();
                 processedInputPositions += pipeline.getProcessedInputPositions();
             }
 
             if (pipeline.isOutputPipeline()) {
-                outputDataSize += pipeline.getOutputDataSize().toBytes();
+                outputDataSize += pipeline.getOutputDataSizeInBytes();
                 outputPositions += pipeline.getOutputPositions();
             }
 
-            physicalWrittenDataSize += pipeline.getPhysicalWrittenDataSize().toBytes();
+            physicalWrittenDataSize += pipeline.getPhysicalWrittenDataSizeInBytes();
         }
 
         long startNanos = this.startNanos.get();
         if (startNanos == 0) {
             startNanos = System.nanoTime();
         }
-        Duration queuedTime = new Duration(startNanos - createNanos, NANOSECONDS);
+        long queuedTimeInNanos = startNanos - createNanos;
 
         long endNanos = this.endNanos.get();
-        Duration elapsedTime;
+        long elapsedTimeInNanos;
         if (endNanos >= startNanos) {
-            elapsedTime = new Duration(endNanos - createNanos, NANOSECONDS);
+            elapsedTimeInNanos = endNanos - createNanos;
         }
         else {
-            elapsedTime = new Duration(0, NANOSECONDS);
+            elapsedTimeInNanos = 0;
         }
 
         int fullGcCount = getFullGcCount();
         Duration fullGcTime = getFullGcTime();
 
         long userMemory = taskMemoryContext.getUserMemory();
+        long systemMemory = taskMemoryContext.getSystemMemory();
+
+        updatePeakMemory();
 
         synchronized (cumulativeMemoryLock) {
             double sinceLastPeriodMillis = (System.nanoTime() - lastTaskStatCallNanos) / 1_000_000.0;
@@ -477,8 +526,8 @@ public class TaskContext
                 lastExecutionStartTime.get(),
                 lastExecutionEndTime == 0 ? null : new DateTime(lastExecutionEndTime),
                 executionEndTime.get(),
-                elapsedTime.convertToMostSuccinctTimeUnit(),
-                queuedTime.convertToMostSuccinctTimeUnit(),
+                elapsedTimeInNanos,
+                queuedTimeInNanos,
                 totalDrivers,
                 queuedDrivers,
                 queuedPartitionedDrivers,
@@ -487,24 +536,37 @@ public class TaskContext
                 blockedDrivers,
                 completedDrivers,
                 cumulativeUserMemory.get(),
-                succinctBytes(userMemory),
-                succinctBytes(taskMemoryContext.getRevocableMemory()),
-                succinctBytes(taskMemoryContext.getSystemMemory()),
-                new Duration(totalScheduledTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
-                new Duration(totalCpuTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
-                new Duration(totalBlockedTime, NANOSECONDS).convertToMostSuccinctTimeUnit(),
+                userMemory,
+                taskMemoryContext.getRevocableMemory(),
+                systemMemory,
+                peakTotalMemoryInBytes.get(),
+                peakUserMemoryInBytes.get(),
+                queryContext.getPeakNodeTotalMemory(),
+                totalScheduledTime,
+                totalCpuTime,
+                totalBlockedTime,
                 fullyBlocked && (runningDrivers > 0 || runningPartitionedDrivers > 0),
                 blockedReasons,
-                succinctBytes(rawInputDataSize),
+                totalAllocation,
+                rawInputDataSize,
                 rawInputPositions,
-                succinctBytes(processedInputDataSize),
+                processedInputDataSize,
                 processedInputPositions,
-                succinctBytes(outputDataSize),
+                outputDataSize,
                 outputPositions,
-                succinctBytes(physicalWrittenDataSize),
+                physicalWrittenDataSize,
                 fullGcCount,
-                fullGcTime,
+                fullGcTime.toMillis(),
                 pipelineStats);
+    }
+
+    public void updatePeakMemory()
+    {
+        long userMemory = taskMemoryContext.getUserMemory();
+        long systemMemory = taskMemoryContext.getSystemMemory();
+
+        peakTotalMemoryInBytes.accumulateAndGet(userMemory + systemMemory, Math::max);
+        peakUserMemoryInBytes.accumulateAndGet(userMemory, Math::max);
     }
 
     public <C, R> R accept(QueryContextVisitor<C, R> visitor, C context)

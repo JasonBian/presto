@@ -13,23 +13,22 @@
  */
 package com.facebook.presto.hive.rcfile;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.LazyBlock;
+import com.facebook.presto.common.block.LazyBlockLoader;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.HiveColumnHandle;
 import com.facebook.presto.hive.HiveType;
 import com.facebook.presto.rcfile.RcFileCorruptionException;
 import com.facebook.presto.rcfile.RcFileReader;
 import com.facebook.presto.spi.ConnectorPageSource;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.LazyBlock;
-import com.facebook.presto.spi.block.LazyBlockLoader;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
-import org.joda.time.DateTimeZone;
 
 import java.io.IOException;
 import java.util.List;
@@ -56,18 +55,14 @@ public class RcFilePageSource
     private final int[] hiveColumnIndexes;
 
     private int pageId;
+    private long completedPositions;
 
     private boolean closed;
 
-    public RcFilePageSource(
-            RcFileReader rcFileReader,
-            List<HiveColumnHandle> columns,
-            DateTimeZone hiveStorageTimeZone,
-            TypeManager typeManager)
+    public RcFilePageSource(RcFileReader rcFileReader, List<HiveColumnHandle> columns, TypeManager typeManager)
     {
         requireNonNull(rcFileReader, "rcReader is null");
         requireNonNull(columns, "columns is null");
-        requireNonNull(hiveStorageTimeZone, "hiveStorageTimeZone is null");
         requireNonNull(typeManager, "typeManager is null");
 
         this.rcFileReader = rcFileReader;
@@ -111,6 +106,12 @@ public class RcFilePageSource
     }
 
     @Override
+    public long getCompletedPositions()
+    {
+        return completedPositions;
+    }
+
+    @Override
     public long getReadTimeNanos()
     {
         return rcFileReader.getReadTimeNanos();
@@ -136,6 +137,8 @@ public class RcFilePageSource
                 return null;
             }
 
+            completedPositions += currentPageSize;
+
             Block[] blocks = new Block[hiveColumnIndexes.length];
             for (int fieldId = 0; fieldId < blocks.length; fieldId++) {
                 if (constantBlocks[fieldId] != null) {
@@ -146,9 +149,7 @@ public class RcFilePageSource
                 }
             }
 
-            Page page = new Page(currentPageSize, blocks);
-
-            return page;
+            return new Page(currentPageSize, blocks);
         }
         catch (PrestoException e) {
             closeWithSuppression(e);

@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.spi.type.StandardTypes;
-import io.airlift.json.JsonCodec;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.presto.common.type.StandardTypes;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.PARTITION_KEY;
 import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.REGULAR;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static org.testng.Assert.assertEquals;
 
 public class TestHiveColumnHandle
@@ -38,14 +38,14 @@ public class TestHiveColumnHandle
     @Test
     public void testRegularColumn()
     {
-        HiveColumnHandle expectedPartitionColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, parseTypeSignature(StandardTypes.DOUBLE), 88, PARTITION_KEY, Optional.empty());
+        HiveColumnHandle expectedPartitionColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, parseTypeSignature(StandardTypes.DOUBLE), 88, PARTITION_KEY, Optional.empty(), Optional.empty());
         testRoundTrip(expectedPartitionColumn);
     }
 
     @Test
     public void testPartitionKeyColumn()
     {
-        HiveColumnHandle expectedRegularColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, parseTypeSignature(StandardTypes.DOUBLE), 88, REGULAR, Optional.empty());
+        HiveColumnHandle expectedRegularColumn = new HiveColumnHandle("name", HiveType.HIVE_FLOAT, parseTypeSignature(StandardTypes.DOUBLE), 88, REGULAR, Optional.empty(), Optional.empty());
         testRoundTrip(expectedRegularColumn);
     }
 

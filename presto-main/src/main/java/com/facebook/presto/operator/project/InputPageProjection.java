@@ -13,32 +13,28 @@
  */
 package com.facebook.presto.operator.project;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.DictionaryId;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.facebook.presto.operator.CompletedWork;
 import com.facebook.presto.operator.DriverYieldSignal;
 import com.facebook.presto.operator.Work;
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.google.common.collect.ImmutableList;
+
+import java.util.List;
 
 import static java.util.Objects.requireNonNull;
 
 public class InputPageProjection
         implements PageProjection
 {
-    private final Type type;
     private final InputChannels inputChannels;
 
-    public InputPageProjection(int inputChannel, Type type)
+    public InputPageProjection(int inputChannel)
     {
-        this.type = type;
         this.inputChannels = new InputChannels(inputChannel);
-    }
-
-    @Override
-    public Type getType()
-    {
-        return type;
     }
 
     @Override
@@ -54,18 +50,27 @@ public class InputPageProjection
     }
 
     @Override
-    public Work<Block> project(ConnectorSession session, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
+    public Work<List<Block>> project(SqlFunctionProperties properties, DriverYieldSignal yieldSignal, Page page, SelectedPositions selectedPositions)
     {
         Block block = requireNonNull(page, "page is null").getBlock(0);
         requireNonNull(selectedPositions, "selectedPositions is null");
 
         Block result;
         if (selectedPositions.isList()) {
-            result = block.copyPositions(selectedPositions.getPositions(), selectedPositions.getOffset(), selectedPositions.size());
+            result = new DictionaryBlock(
+                    selectedPositions.getOffset(),
+                    selectedPositions.size(),
+                    block.getLoadedBlock(),
+                    selectedPositions.getPositions(),
+                    false,
+                    DictionaryId.randomDictionaryId());
+        }
+        else if (selectedPositions.getOffset() == 0 && selectedPositions.size() == page.getPositionCount()) {
+            result = block.getLoadedBlock();
         }
         else {
             result = block.getRegion(selectedPositions.getOffset(), selectedPositions.size());
         }
-        return new CompletedWork<>(result);
+        return new CompletedWork<>(ImmutableList.of(result));
     }
 }

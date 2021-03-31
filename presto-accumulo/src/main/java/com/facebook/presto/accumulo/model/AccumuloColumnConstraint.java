@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.accumulo.model;
 
-import com.facebook.presto.spi.predicate.Domain;
+import com.facebook.presto.common.predicate.Domain;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -42,7 +42,7 @@ public class AccumuloColumnConstraint
         this.name = requireNonNull(name, "name is null");
         this.family = requireNonNull(family, "family is null");
         this.qualifier = requireNonNull(qualifier, "qualifier is null");
-        this.indexed = requireNonNull(indexed, "indexed is null");
+        this.indexed = indexed;
         this.domain = requireNonNull(domain, "domain is null");
     }
 

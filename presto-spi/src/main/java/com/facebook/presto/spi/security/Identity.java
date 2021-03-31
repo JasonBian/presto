@@ -14,20 +14,47 @@
 package com.facebook.presto.spi.security;
 
 import java.security.Principal;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 
+import static java.util.Collections.emptyMap;
+import static java.util.Collections.unmodifiableMap;
 import static java.util.Objects.requireNonNull;
 
 public class Identity
 {
     private final String user;
     private final Optional<Principal> principal;
+    private final Map<String, SelectedRole> roles;
+    private final Map<String, String> extraCredentials;
+
+    /**
+     * extraAuthenticators is used when short-lived access token has to be refreshed periodically.
+     * Otherwise, extraCredentials should be used to store pre-fetched long-lived access token.
+     *
+     * extraAuthenticators will not be serialized. It has to be injected on Presto worker directly.
+     */
+    private final Map<String, TokenAuthenticator> extraAuthenticators;
 
     public Identity(String user, Optional<Principal> principal)
     {
+        this(user, principal, emptyMap(), emptyMap(), emptyMap());
+    }
+
+    public Identity(
+            String user,
+            Optional<Principal> principal,
+            Map<String, SelectedRole> roles,
+            Map<String, String> extraCredentials,
+            Map<String, TokenAuthenticator> extraAuthenticators)
+    {
         this.user = requireNonNull(user, "user is null");
         this.principal = requireNonNull(principal, "principal is null");
+        this.roles = unmodifiableMap(requireNonNull(roles, "roles is null"));
+        this.extraCredentials = unmodifiableMap(new HashMap<>(requireNonNull(extraCredentials, "extraCredentials is null")));
+        this.extraAuthenticators = unmodifiableMap(new HashMap<>(requireNonNull(extraAuthenticators, "extraAuthenticators is null")));
     }
 
     public String getUser()
@@ -38,6 +65,42 @@ public class Identity
     public Optional<Principal> getPrincipal()
     {
         return principal;
+    }
+
+    public Map<String, SelectedRole> getRoles()
+    {
+        return roles;
+    }
+
+    public Map<String, String> getExtraCredentials()
+    {
+        return extraCredentials;
+    }
+
+    public Map<String, TokenAuthenticator> getExtraAuthenticators()
+    {
+        return extraAuthenticators;
+    }
+
+    public ConnectorIdentity toConnectorIdentity()
+    {
+        return new ConnectorIdentity(
+                user,
+                principal,
+                Optional.empty(),
+                extraCredentials,
+                extraAuthenticators);
+    }
+
+    public ConnectorIdentity toConnectorIdentity(String catalog)
+    {
+        requireNonNull(catalog, "catalog is null");
+        return new ConnectorIdentity(
+                user,
+                principal,
+                Optional.ofNullable(roles.get(catalog)),
+                extraCredentials,
+                extraAuthenticators);
     }
 
     @Override
@@ -64,9 +127,10 @@ public class Identity
     {
         StringBuilder sb = new StringBuilder("Identity{");
         sb.append("user='").append(user).append('\'');
-        if (principal.isPresent()) {
-            sb.append(", principal=").append(principal.get());
-        }
+        principal.ifPresent(principal -> sb.append(", principal=").append(principal));
+        sb.append(", roles=").append(roles);
+        sb.append(", extraCredentials=").append(extraCredentials.keySet());
+        sb.append(", extraAuthenticators=").append(extraAuthenticators.keySet());
         sb.append('}');
         return sb.toString();
     }

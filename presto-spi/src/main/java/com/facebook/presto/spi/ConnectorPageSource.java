@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.spi;
 
+import com.facebook.presto.common.Page;
+
 import java.io.Closeable;
 import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
@@ -27,6 +29,12 @@ public interface ConnectorPageSource
      * If size is not available, this method should return zero.
      */
     long getCompletedBytes();
+
+    /**
+     * Gets the number of input rows processed by this page source so far.
+     * If number is not available, this method should return zero.
+     */
+    long getCompletedPositions();
 
     /**
      * Gets the wall time this page source spent reading data from the input.

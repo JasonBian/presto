@@ -15,8 +15,12 @@ package com.facebook.presto.connector.informationSchema;
 
 import com.facebook.presto.FullConnectorSession;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.EquatableValueSet;
+import com.facebook.presto.common.predicate.NullableValue;
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
 import com.facebook.presto.metadata.QualifiedTablePrefix;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
@@ -30,10 +34,6 @@ import com.facebook.presto.spi.Constraint;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SchemaTablePrefix;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.EquatableValueSet;
-import com.facebook.presto.spi.predicate.NullableValue;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
@@ -48,12 +48,11 @@ import java.util.Set;
 import java.util.function.Predicate;
 import java.util.stream.Stream;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.metadata.MetadataUtil.SchemaMetadataBuilder.schemaMetadataBuilder;
 import static com.facebook.presto.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
 import static com.facebook.presto.metadata.MetadataUtil.findColumnMetadata;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Predicates.compose;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -74,6 +73,9 @@ public class InformationSchemaMetadata
     public static final SchemaTableName TABLE_VIEWS = new SchemaTableName(INFORMATION_SCHEMA, "views");
     public static final SchemaTableName TABLE_SCHEMATA = new SchemaTableName(INFORMATION_SCHEMA, "schemata");
     public static final SchemaTableName TABLE_TABLE_PRIVILEGES = new SchemaTableName(INFORMATION_SCHEMA, "table_privileges");
+    public static final SchemaTableName TABLE_ROLES = new SchemaTableName(INFORMATION_SCHEMA, "roles");
+    public static final SchemaTableName TABLE_APPLICABLE_ROLES = new SchemaTableName(INFORMATION_SCHEMA, "applicable_roles");
+    public static final SchemaTableName TABLE_ENABLED_ROLES = new SchemaTableName(INFORMATION_SCHEMA, "enabled_roles");
 
     public static final Map<SchemaTableName, ConnectorTableMetadata> TABLES = schemaMetadataBuilder()
             .table(tableMetadataBuilder(TABLE_COLUMNS)
@@ -98,6 +100,7 @@ public class InformationSchemaMetadata
                     .column("table_catalog", createUnboundedVarcharType())
                     .column("table_schema", createUnboundedVarcharType())
                     .column("table_name", createUnboundedVarcharType())
+                    .column("view_owner", createUnboundedVarcharType())
                     .column("view_definition", createUnboundedVarcharType())
                     .build())
             .table(tableMetadataBuilder(TABLE_SCHEMATA)
@@ -106,13 +109,27 @@ public class InformationSchemaMetadata
                     .build())
             .table(tableMetadataBuilder(TABLE_TABLE_PRIVILEGES)
                     .column("grantor", createUnboundedVarcharType())
+                    .column("grantor_type", createUnboundedVarcharType())
                     .column("grantee", createUnboundedVarcharType())
+                    .column("grantee_type", createUnboundedVarcharType())
                     .column("table_catalog", createUnboundedVarcharType())
                     .column("table_schema", createUnboundedVarcharType())
                     .column("table_name", createUnboundedVarcharType())
                     .column("privilege_type", createUnboundedVarcharType())
-                    .column("is_grantable", BOOLEAN)
-                    .column("with_hierarchy", BOOLEAN)
+                    .column("is_grantable", createUnboundedVarcharType())
+                    .column("with_hierarchy", createUnboundedVarcharType())
+                    .build())
+            .table(tableMetadataBuilder(TABLE_ROLES)
+                    .column("role_name", createUnboundedVarcharType())
+                    .build())
+            .table(tableMetadataBuilder(TABLE_APPLICABLE_ROLES)
+                    .column("grantee", createUnboundedVarcharType())
+                    .column("grantee_type", createUnboundedVarcharType())
+                    .column("role_name", createUnboundedVarcharType())
+                    .column("is_grantable", createUnboundedVarcharType())
+                    .build())
+            .table(tableMetadataBuilder(TABLE_ENABLED_ROLES)
+                    .column("role_name", createUnboundedVarcharType())
                     .build())
             .build();
 
@@ -278,7 +295,7 @@ public class InformationSchemaMetadata
                             .map(table -> table.toLowerCase(ENGLISH))
                             .map(table -> new QualifiedObjectName(catalogName, prefix.getSchemaName().get(), table)))
                     .filter(objectName -> metadata.getTableHandle(session, objectName).isPresent() || metadata.getView(session, objectName).isPresent())
-                    .map(QualifiedObjectName::asQualifiedTablePrefix)
+                    .map(QualifiedTablePrefix::toQualifiedTablePrefix)
                     .collect(toImmutableSet());
         }
 
@@ -287,7 +304,7 @@ public class InformationSchemaMetadata
                         metadata.listTables(session, prefix).stream(),
                         metadata.listViews(session, prefix).stream()))
                 .filter(objectName -> !predicate.isPresent() || predicate.get().test(asFixedValues(objectName)))
-                .map(QualifiedObjectName::asQualifiedTablePrefix)
+                .map(QualifiedTablePrefix::toQualifiedTablePrefix)
                 .collect(toImmutableSet());
     }
 

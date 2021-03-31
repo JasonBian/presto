@@ -13,133 +13,63 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.operator.aggregation.OptimizedTypedSet;
 import com.facebook.presto.spi.function.Description;
-import com.facebook.presto.spi.function.OperatorDependency;
 import com.facebook.presto.spi.function.ScalarFunction;
+import com.facebook.presto.spi.function.SqlInvokedScalarFunction;
+import com.facebook.presto.spi.function.SqlParameter;
 import com.facebook.presto.spi.function.SqlType;
 import com.facebook.presto.spi.function.TypeParameter;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.google.common.collect.ImmutableList;
-import it.unimi.dsi.fastutil.ints.AbstractIntComparator;
-import it.unimi.dsi.fastutil.ints.IntArrays;
-import it.unimi.dsi.fastutil.ints.IntComparator;
 
-import java.lang.invoke.MethodHandle;
-
-import static com.facebook.presto.spi.function.OperatorType.LESS_THAN;
-
-@ScalarFunction("array_intersect")
-@Description("Intersects elements of the two given arrays")
 public final class ArrayIntersectFunction
 {
-    private static final int INITIAL_SIZE = 128;
+    private ArrayIntersectFunction() {}
 
-    private int[] leftPositions = new int[INITIAL_SIZE];
-    private int[] rightPositions = new int[INITIAL_SIZE];
-    private final PageBuilder pageBuilder;
-
-    @TypeParameter("E")
-    public ArrayIntersectFunction(@TypeParameter("E") Type elementType)
-    {
-        pageBuilder = new PageBuilder(ImmutableList.of(elementType));
-    }
-
-    private static IntComparator intBlockCompare(Type type, Block block)
-    {
-        return new AbstractIntComparator()
-        {
-            @Override
-            public int compare(int left, int right)
-            {
-                if (block.isNull(left) && block.isNull(right)) {
-                    return 0;
-                }
-                if (block.isNull(left)) {
-                    return -1;
-                }
-                if (block.isNull(right)) {
-                    return 1;
-                }
-                return type.compareTo(block, left, block, right);
-            }
-        };
-    }
-
+    @ScalarFunction("array_intersect")
+    @Description("Intersects elements of the two given arrays")
     @TypeParameter("E")
     @SqlType("array(E)")
-    public Block intersect(
-            @OperatorDependency(operator = LESS_THAN, returnType = StandardTypes.BOOLEAN, argumentTypes = {"E", "E"}) MethodHandle lessThanFunction,
+    public static Block intersect(
             @TypeParameter("E") Type type,
             @SqlType("array(E)") Block leftArray,
             @SqlType("array(E)") Block rightArray)
     {
-        int leftPositionCount = leftArray.getPositionCount();
+        if (leftArray.getPositionCount() < rightArray.getPositionCount()) {
+            Block tempArray = leftArray;
+            leftArray = rightArray;
+            rightArray = tempArray;
+        }
+
         int rightPositionCount = rightArray.getPositionCount();
 
-        if (leftPositionCount == 0) {
-            return leftArray;
-        }
         if (rightPositionCount == 0) {
             return rightArray;
         }
 
-        if (leftPositions.length < leftPositionCount) {
-            leftPositions = new int[leftPositionCount];
-        }
+        OptimizedTypedSet typedSet = new OptimizedTypedSet(type, rightPositionCount);
+        typedSet.union(rightArray);
+        typedSet.intersect(leftArray);
 
-        if (rightPositions.length < rightPositionCount) {
-            rightPositions = new int[rightPositionCount];
-        }
+        return typedSet.getBlock();
+    }
 
-        if (pageBuilder.isFull()) {
-            pageBuilder.reset();
-        }
+    @SqlInvokedScalarFunction(value = "array_intersect", deterministic = true, calledOnNullInput = false)
+    @Description("Intersects elements of all arrays in the given array")
+    @SqlParameter(name = "input", type = "array<array<bigint>>")
+    @SqlType("array<bigint>")
+    public static String arrayIntersectBigint()
+    {
+        return "RETURN reduce(input, null, (s, x) -> IF((s IS NULL), x, array_intersect(s, x)), (s) -> s)";
+    }
 
-        for (int i = 0; i < leftPositionCount; i++) {
-            leftPositions[i] = i;
-        }
-        for (int i = 0; i < rightPositionCount; i++) {
-            rightPositions[i] = i;
-        }
-        IntArrays.quickSort(leftPositions, 0, leftPositionCount, intBlockCompare(type, leftArray));
-        IntArrays.quickSort(rightPositions, 0, rightPositionCount, intBlockCompare(type, rightArray));
-
-        BlockBuilder resultBlockBuilder = pageBuilder.getBlockBuilder(0);
-
-        int leftCurrentPosition = 0;
-        int rightCurrentPosition = 0;
-        int leftBasePosition;
-        int rightBasePosition;
-        int totalCount = 0;
-
-        while (leftCurrentPosition < leftPositionCount && rightCurrentPosition < rightPositionCount) {
-            leftBasePosition = leftCurrentPosition;
-            rightBasePosition = rightCurrentPosition;
-            int compareValue = type.compareTo(leftArray, leftPositions[leftCurrentPosition], rightArray, rightPositions[rightCurrentPosition]);
-            if (compareValue > 0) {
-                rightCurrentPosition++;
-            }
-            else if (compareValue < 0) {
-                leftCurrentPosition++;
-            }
-            else {
-                type.appendTo(leftArray, leftPositions[leftCurrentPosition], resultBlockBuilder);
-                leftCurrentPosition++;
-                rightCurrentPosition++;
-                totalCount++;
-                while (leftCurrentPosition < leftPositionCount && type.equalTo(leftArray, leftPositions[leftBasePosition], leftArray, leftPositions[leftCurrentPosition])) {
-                    leftCurrentPosition++;
-                }
-                while (rightCurrentPosition < rightPositionCount && type.equalTo(rightArray, rightPositions[rightBasePosition], rightArray, rightPositions[rightCurrentPosition])) {
-                    rightCurrentPosition++;
-                }
-            }
-        }
-        pageBuilder.declarePositions(totalCount);
-        return resultBlockBuilder.getRegion(resultBlockBuilder.getPositionCount() - totalCount, totalCount);
+    @SqlInvokedScalarFunction(value = "array_intersect", deterministic = true, calledOnNullInput = false)
+    @Description("Intersects elements of all arrays in the given array")
+    @SqlParameter(name = "input", type = "array<array<double>>")
+    @SqlType("array<double>")
+    public static String arrayIntersectDouble()
+    {
+        return "RETURN reduce(input, null, (s, x) -> IF((s IS NULL), x, array_intersect(s, x)), (s) -> s)";
     }
 }

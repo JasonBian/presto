@@ -13,10 +13,12 @@
  */
 package com.facebook.presto.spi.function;
 
+import com.facebook.presto.common.function.OperatorType;
+
 import java.lang.annotation.Retention;
 import java.lang.annotation.Target;
 
-import static com.facebook.presto.spi.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
+import static com.facebook.presto.spi.function.InvocationConvention.InvocationReturnConvention.FAIL_ON_NULL;
 import static java.lang.annotation.ElementType.PARAMETER;
 import static java.lang.annotation.RetentionPolicy.RUNTIME;
 
@@ -25,8 +27,6 @@ import static java.lang.annotation.RetentionPolicy.RUNTIME;
 public @interface OperatorDependency
 {
     OperatorType operator();
-
-    String returnType();
 
     String[] argumentTypes();
 

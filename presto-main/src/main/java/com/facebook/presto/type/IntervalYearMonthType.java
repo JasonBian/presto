@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.type;
 
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.AbstractIntType;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.AbstractIntType;
+import com.facebook.presto.common.type.StandardTypes;
 
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 
 public final class IntervalYearMonthType
         extends AbstractIntType
@@ -31,12 +31,12 @@ public final class IntervalYearMonthType
     }
 
     @Override
-    public Object getObjectValue(ConnectorSession session, Block block, int position)
+    public Object getObjectValue(SqlFunctionProperties properties, Block block, int position)
     {
         if (block.isNull(position)) {
             return null;
         }
-        return new SqlIntervalYearMonth(block.getInt(position, 0));
+        return new SqlIntervalYearMonth(block.getInt(position));
     }
 
     @Override

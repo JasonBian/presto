@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.plugin.memory;
 
+import com.facebook.presto.common.Page;
 import com.facebook.presto.spi.ConnectorInsertTableHandle;
 import com.facebook.presto.spi.ConnectorOutputTableHandle;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.HostAddress;
 import com.facebook.presto.spi.NodeManager;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.PageSinkContext;
 import com.facebook.presto.spi.connector.ConnectorPageSinkProvider;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
 import com.google.common.annotations.VisibleForTesting;
@@ -31,6 +32,7 @@ import javax.inject.Inject;
 import java.util.Collection;
 import java.util.concurrent.CompletableFuture;
 
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.CompletableFuture.completedFuture;
@@ -55,8 +57,10 @@ public class MemoryPageSinkProvider
     }
 
     @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle)
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorOutputTableHandle outputTableHandle, PageSinkContext pageSinkContext)
     {
+        checkArgument(!pageSinkContext.isCommitRequired(), "Memory connector does not support page sink commit");
+
         MemoryOutputTableHandle memoryOutputTableHandle = (MemoryOutputTableHandle) outputTableHandle;
         MemoryTableHandle tableHandle = memoryOutputTableHandle.getTable();
         long tableId = tableHandle.getTableId();
@@ -68,8 +72,10 @@ public class MemoryPageSinkProvider
     }
 
     @Override
-    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle)
+    public ConnectorPageSink createPageSink(ConnectorTransactionHandle transactionHandle, ConnectorSession session, ConnectorInsertTableHandle insertTableHandle, PageSinkContext pageSinkContext)
     {
+        checkArgument(!pageSinkContext.isCommitRequired(), "Memory connector does not support page sink commit");
+
         MemoryInsertTableHandle memoryInsertTableHandle = (MemoryInsertTableHandle) insertTableHandle;
         MemoryTableHandle tableHandle = memoryInsertTableHandle.getTable();
         long tableId = tableHandle.getTableId();

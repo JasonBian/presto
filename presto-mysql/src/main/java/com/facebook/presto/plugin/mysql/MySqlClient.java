@@ -13,15 +13,20 @@
  */
 package com.facebook.presto.plugin.mysql;
 
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.plugin.jdbc.BaseJdbcClient;
 import com.facebook.presto.plugin.jdbc.BaseJdbcConfig;
 import com.facebook.presto.plugin.jdbc.ConnectionFactory;
 import com.facebook.presto.plugin.jdbc.DriverConnectionFactory;
+import com.facebook.presto.plugin.jdbc.JdbcColumnHandle;
 import com.facebook.presto.plugin.jdbc.JdbcConnectorId;
+import com.facebook.presto.plugin.jdbc.JdbcIdentity;
+import com.facebook.presto.plugin.jdbc.JdbcTableHandle;
+import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.collect.ImmutableSet;
 import com.mysql.jdbc.Driver;
 import com.mysql.jdbc.Statement;
@@ -33,18 +38,24 @@ import java.sql.DatabaseMetaData;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.util.Collection;
+import java.util.Optional;
 import java.util.Properties;
-import java.util.Set;
 
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.Varchars.isVarcharType;
 import static com.facebook.presto.plugin.jdbc.DriverConnectionFactory.basicConnectionProperties;
+import static com.facebook.presto.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
+import static com.facebook.presto.spi.StandardErrorCode.ALREADY_EXISTS;
 import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
-import static com.facebook.presto.spi.type.Varchars.isVarcharType;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
+import static com.mysql.jdbc.SQLError.SQL_STATE_ER_TABLE_EXISTS_ERROR;
+import static com.mysql.jdbc.SQLError.SQL_STATE_SYNTAX_ERROR;
+import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
 
 public class MySqlClient
@@ -74,20 +85,24 @@ public class MySqlClient
             connectionProperties.setProperty("connectTimeout", String.valueOf(mySqlConfig.getConnectionTimeout().toMillis()));
         }
 
-        return new DriverConnectionFactory(new Driver(), config.getConnectionUrl(), connectionProperties);
+        return new DriverConnectionFactory(
+                new Driver(),
+                config.getConnectionUrl(),
+                Optional.ofNullable(config.getUserCredentialName()),
+                Optional.ofNullable(config.getPasswordCredentialName()),
+                connectionProperties);
     }
 
     @Override
-    public Set<String> getSchemaNames()
+    protected Collection<String> listSchemas(Connection connection)
     {
         // for MySQL, we need to list catalogs instead of schemas
-        try (Connection connection = connectionFactory.openConnection();
-                ResultSet resultSet = connection.getMetaData().getCatalogs()) {
+        try (ResultSet resultSet = connection.getMetaData().getCatalogs()) {
             ImmutableSet.Builder<String> schemaNames = ImmutableSet.builder();
             while (resultSet.next()) {
-                String schemaName = resultSet.getString("TABLE_CAT").toLowerCase(ENGLISH);
+                String schemaName = resultSet.getString("TABLE_CAT");
                 // skip internal schemas
-                if (!schemaName.equals("information_schema") && !schemaName.equals("mysql")) {
+                if (!schemaName.equalsIgnoreCase("information_schema") && !schemaName.equalsIgnoreCase("mysql")) {
                     schemaNames.add(schemaName);
                 }
             }
@@ -119,27 +134,25 @@ public class MySqlClient
     }
 
     @Override
-    protected ResultSet getTables(Connection connection, String schemaName, String tableName)
+    protected ResultSet getTables(Connection connection, Optional<String> schemaName, Optional<String> tableName)
             throws SQLException
     {
         // MySQL maps their "database" to SQL catalogs and does not have schemas
         DatabaseMetaData metadata = connection.getMetaData();
-        String escape = metadata.getSearchStringEscape();
+        Optional<String> escape = Optional.ofNullable(metadata.getSearchStringEscape());
         return metadata.getTables(
-                schemaName,
+                schemaName.orElse(null),
                 null,
-                escapeNamePattern(tableName, escape),
+                escapeNamePattern(tableName, escape).orElse(null),
                 new String[] {"TABLE", "VIEW"});
     }
 
     @Override
-    protected SchemaTableName getSchemaTableName(ResultSet resultSet)
+    protected String getTableSchemaName(ResultSet resultSet)
             throws SQLException
     {
         // MySQL uses catalogs instead of schemas
-        return new SchemaTableName(
-                resultSet.getString("TABLE_CAT").toLowerCase(ENGLISH),
-                resultSet.getString("TABLE_NAME").toLowerCase(ENGLISH));
+        return resultSet.getString("TABLE_CAT");
     }
 
     @Override
@@ -175,5 +188,51 @@ public class MySqlClient
         }
 
         return super.toSqlType(type);
+    }
+
+    @Override
+    public void createTable(ConnectorSession session, ConnectorTableMetadata tableMetadata)
+    {
+        try {
+            createTable(tableMetadata, session, tableMetadata.getTable().getTableName());
+        }
+        catch (SQLException e) {
+            if (SQL_STATE_ER_TABLE_EXISTS_ERROR.equals(e.getSQLState())) {
+                throw new PrestoException(ALREADY_EXISTS, e);
+            }
+            throw new PrestoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    public void renameColumn(JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    {
+        try (Connection connection = connectionFactory.openConnection(identity)) {
+            DatabaseMetaData metadata = connection.getMetaData();
+            if (metadata.storesUpperCaseIdentifiers()) {
+                newColumnName = newColumnName.toUpperCase(ENGLISH);
+            }
+            String sql = format(
+                    "ALTER TABLE %s RENAME COLUMN %s TO %s",
+                    quoted(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName()),
+                    quoted(jdbcColumn.getColumnName()),
+                    quoted(newColumnName));
+            execute(connection, sql);
+        }
+        catch (SQLException e) {
+            // MySQL versions earlier than 8 do not support the above RENAME COLUMN syntax
+            if (SQL_STATE_SYNTAX_ERROR.equals(e.getSQLState())) {
+                throw new PrestoException(NOT_SUPPORTED, format("Rename column not supported in catalog: '%s'", handle.getCatalogName()), e);
+            }
+            throw new PrestoException(JDBC_ERROR, e);
+        }
+    }
+
+    @Override
+    protected void renameTable(JdbcIdentity identity, String catalogName, SchemaTableName oldTable, SchemaTableName newTable)
+    {
+        // MySQL doesn't support specifying the catalog name in a rename; by setting the
+        // catalogName parameter to null it will be omitted in the alter table statement.
+        super.renameTable(identity, null, oldTable, newTable);
     }
 }

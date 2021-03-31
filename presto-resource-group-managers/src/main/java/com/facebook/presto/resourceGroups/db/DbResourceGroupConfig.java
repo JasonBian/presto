@@ -13,18 +13,11 @@
  */
 package com.facebook.presto.resourceGroups.db;
 
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.units.Duration;
-import io.airlift.units.MinDuration;
-
-import static java.util.concurrent.TimeUnit.HOURS;
+import com.facebook.airlift.configuration.Config;
 
 public class DbResourceGroupConfig
 {
     private String configUrl;
-    private boolean exactMatchSelectorEnabled;
-    private Duration maxRefreshInterval = new Duration(1, HOURS);
 
     public String getConfigDbUrl()
     {
@@ -35,32 +28,6 @@ public class DbResourceGroupConfig
     public DbResourceGroupConfig setConfigDbUrl(String configUrl)
     {
         this.configUrl = configUrl;
-        return this;
-    }
-
-    @MinDuration("10s")
-    public Duration getMaxRefreshInterval()
-    {
-        return maxRefreshInterval;
-    }
-
-    @Config("resource-groups.max-refresh-interval")
-    @ConfigDescription("Time period for which the cluster will continue to accept queries after refresh failures cause configuration to become stale")
-    public DbResourceGroupConfig setMaxRefreshInterval(Duration maxRefreshInterval)
-    {
-        this.maxRefreshInterval = maxRefreshInterval;
-        return this;
-    }
-
-    public boolean getExactMatchSelectorEnabled()
-    {
-        return exactMatchSelectorEnabled;
-    }
-
-    @Config("resource-groups.exact-match-selector-enabled")
-    public DbResourceGroupConfig setExactMatchSelectorEnabled(boolean exactMatchSelectorEnabled)
-    {
-        this.exactMatchSelectorEnabled = exactMatchSelectorEnabled;
         return this;
     }
 }

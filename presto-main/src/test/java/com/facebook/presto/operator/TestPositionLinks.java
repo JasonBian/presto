@@ -14,18 +14,18 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.RowPagesBuilder;
+import com.facebook.presto.array.AdaptiveLongBigArray;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.google.common.collect.ImmutableList;
-import it.unimi.dsi.fastutil.longs.LongArrayList;
 import org.testng.annotations.Test;
 
 import java.util.Optional;
 import java.util.OptionalInt;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.operator.SyntheticAddress.encodeSyntheticAddress;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static org.testng.Assert.assertEquals;
 
@@ -315,15 +315,16 @@ public class TestPositionLinks
                 ImmutableList.of(),
                 OptionalInt.empty(),
                 Optional.of(0),
-                MetadataManager.createTestMetadataManager().getFunctionRegistry(),
+                MetadataManager.createTestMetadataManager().getFunctionAndTypeManager(),
                 new FeaturesConfig().isGroupByUsesEqualTo());
     }
 
-    private static LongArrayList addresses()
+    private static AdaptiveLongBigArray addresses()
     {
-        LongArrayList addresses = new LongArrayList();
+        AdaptiveLongBigArray addresses = new AdaptiveLongBigArray();
+        addresses.ensureCapacity(TEST_PAGE.getPositionCount());
         for (int i = 0; i < TEST_PAGE.getPositionCount(); ++i) {
-            addresses.add(encodeSyntheticAddress(0, i));
+            addresses.set(i, encodeSyntheticAddress(0, i));
         }
         return addresses;
     }

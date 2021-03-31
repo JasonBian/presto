@@ -13,13 +13,16 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.ScheduledSplit;
-import com.facebook.presto.TaskSource;
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.execution.FragmentResultCacheContext;
+import com.facebook.presto.execution.ScheduledSplit;
+import com.facebook.presto.execution.TaskSource;
 import com.facebook.presto.metadata.Split;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.UpdatablePageSource;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.split.RemoteSplit;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.base.VerifyException;
 import com.google.common.collect.ImmutableList;
@@ -27,7 +30,6 @@ import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Sets;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.SettableFuture;
-import io.airlift.log.Logger;
 import io.airlift.units.Duration;
 
 import javax.annotation.concurrent.GuardedBy;
@@ -35,6 +37,7 @@ import javax.annotation.concurrent.GuardedBy;
 import java.io.Closeable;
 import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -45,12 +48,14 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Supplier;
 
 import static com.facebook.presto.operator.Operator.NOT_BLOCKED;
+import static com.facebook.presto.operator.SpillingUtils.checkSpillSucceeded;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_INTERNAL_ERROR;
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.NO_PREFERENCE;
+import static com.facebook.presto.util.MoreUninterruptibles.tryLockUninterruptibly;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
-import static io.airlift.concurrent.MoreFutures.getFutureValue;
 import static java.lang.Boolean.TRUE;
 import static java.util.Objects.requireNonNull;
 
@@ -66,6 +71,7 @@ public class Driver
     private static final Logger log = Logger.get(Driver.class);
 
     private final DriverContext driverContext;
+    private final AtomicReference<Optional<FragmentResultCacheContext>> fragmentResultCacheContext;
     private final List<Operator> activeOperators;
     // this is present only for debugging
     @SuppressWarnings("unused")
@@ -88,6 +94,10 @@ public class Driver
     private TaskSource currentTaskSource;
 
     private final AtomicReference<SettableFuture<?>> driverBlockedFuture = new AtomicReference<>();
+
+    private final AtomicReference<Optional<Iterator<Page>>> cachedResult = new AtomicReference<>(Optional.empty());
+    private final AtomicReference<Split> split = new AtomicReference<>();
+    private final List<Page> outputPages = new ArrayList<>();
 
     private enum State
     {
@@ -119,6 +129,7 @@ public class Driver
     private Driver(DriverContext driverContext, List<Operator> operators)
     {
         this.driverContext = requireNonNull(driverContext, "driverContext is null");
+        this.fragmentResultCacheContext = new AtomicReference<>(driverContext.getFragmentResultCacheContext());
         this.allOperators = ImmutableList.copyOf(requireNonNull(operators, "operators is null"));
         checkArgument(allOperators.size() > 1, "At least two operators are required");
         this.activeOperators = new ArrayList<>(operators);
@@ -206,7 +217,7 @@ public class Driver
         checkLockNotHeld("Can not update sources while holding the driver lock");
         checkArgument(
                 sourceOperator.isPresent() && sourceOperator.get().getSourceId().equals(sourceUpdate.getPlanNodeId()),
-                "sourceUpdate is for a plan node that is different from this Driver's source node");
+                "sourceUpdate is for a canonicalPlan node that is different from this Driver's source node");
 
         // stage the new updates
         pendingTaskSourceUpdates.updateAndGet(current -> current == null ? sourceUpdate : current.update(sourceUpdate));
@@ -247,6 +258,13 @@ public class Driver
         for (ScheduledSplit newSplit : newSplits) {
             Split split = newSplit.getSplit();
 
+            if (fragmentResultCacheContext.get().isPresent() && !(split.getConnectorSplit() instanceof RemoteSplit)) {
+                checkState(!this.cachedResult.get().isPresent());
+                this.fragmentResultCacheContext.set(this.fragmentResultCacheContext.get().map(context -> context.updateRuntimeInformation(split.getConnectorSplit())));
+                this.cachedResult.set(fragmentResultCacheContext.get().get().getFragmentResultCacheManager().get(fragmentResultCacheContext.get().get().getHashedCanonicalPlanFragment(), split));
+                this.split.set(split);
+            }
+
             Supplier<Optional<UpdatablePageSource>> pageSource = sourceOperator.addSplit(split);
             deleteOperator.ifPresent(deleteOperator -> deleteOperator.setPageSource(pageSource));
         }
@@ -274,12 +292,13 @@ public class Driver
         long maxRuntime = duration.roundTo(TimeUnit.NANOSECONDS);
 
         Optional<ListenableFuture<?>> result = tryWithLock(100, TimeUnit.MILLISECONDS, () -> {
+            OperationTimer operationTimer = createTimer();
             driverContext.startProcessTimer();
             driverContext.getYieldSignal().setWithDelay(maxRuntime, driverContext.getYieldExecutor());
             try {
                 long start = System.nanoTime();
                 do {
-                    ListenableFuture<?> future = processInternal();
+                    ListenableFuture<?> future = processInternal(operationTimer);
                     if (!future.isDone()) {
                         return updateDriverBlockedFuture(future);
                     }
@@ -288,7 +307,7 @@ public class Driver
             }
             finally {
                 driverContext.getYieldSignal().reset();
-                driverContext.recordProcessed();
+                driverContext.recordProcessed(operationTimer);
             }
             return NOT_BLOCKED;
         });
@@ -306,10 +325,19 @@ public class Driver
         }
 
         Optional<ListenableFuture<?>> result = tryWithLock(100, TimeUnit.MILLISECONDS, () -> {
-            ListenableFuture<?> future = processInternal();
+            ListenableFuture<?> future = processInternal(createTimer());
             return updateDriverBlockedFuture(future);
         });
         return result.orElse(NOT_BLOCKED);
+    }
+
+    private OperationTimer createTimer()
+    {
+        return new OperationTimer(
+                driverContext.isCpuTimerEnabled(),
+                driverContext.isCpuTimerEnabled() && driverContext.isPerOperatorCpuTimerEnabled(),
+                driverContext.isAllocationTrackingEnabled(),
+                driverContext.isAllocationTrackingEnabled() && driverContext.isPerOperatorAllocationTrackingEnabled());
     }
 
     private ListenableFuture<?> updateDriverBlockedFuture(ListenableFuture<?> sourceBlockedFuture)
@@ -335,8 +363,13 @@ public class Driver
         return newDriverBlockedFuture;
     }
 
+    private boolean shouldUseFragmentResultCache()
+    {
+        return fragmentResultCacheContext.get().isPresent() && split.get() != null && split.get().getConnectorSplit().getNodeSelectionStrategy() != NO_PREFERENCE;
+    }
+
     @GuardedBy("exclusiveLock")
-    private ListenableFuture<?> processInternal()
+    private ListenableFuture<?> processInternal(OperationTimer operationTimer)
     {
         checkLockHeld("Lock must be held to call processInternal");
 
@@ -351,52 +384,69 @@ public class Driver
             // Note: finish should not be called on the natural source of the pipeline as this could cause the task to finish early
             if (!activeOperators.isEmpty() && activeOperators.size() != allOperators.size()) {
                 Operator rootOperator = activeOperators.get(0);
-                rootOperator.getOperatorContext().startIntervalTimer();
                 rootOperator.finish();
-                rootOperator.getOperatorContext().recordFinish();
+                rootOperator.getOperatorContext().recordFinish(operationTimer);
             }
 
             boolean movedPage = false;
-            for (int i = 0; i < activeOperators.size() - 1 && !driverContext.isDone(); i++) {
-                Operator current = activeOperators.get(i);
-                Operator next = activeOperators.get(i + 1);
-
-                // skip blocked operator
-                if (getBlockedFuture(current).isPresent()) {
-                    continue;
+            if (cachedResult.get().isPresent()) {
+                Iterator<Page> remainingPages = cachedResult.get().get();
+                Operator outputOperator = activeOperators.get(activeOperators.size() - 1);
+                if (remainingPages.hasNext()) {
+                    Page outputPage = remainingPages.next();
+                    outputPages.add(outputPage);
+                    outputOperator.addInput(outputPage);
                 }
+                else {
+                    outputOperator.finish();
+                    outputOperator.getOperatorContext().recordFinish(operationTimer);
+                }
+            }
+            else {
+                for (int i = 0; i < activeOperators.size() - 1 && !driverContext.isDone(); i++) {
+                    Operator current = activeOperators.get(i);
+                    Operator next = activeOperators.get(i + 1);
 
-                // if the current operator is not finished and next operator isn't blocked and needs input...
-                if (!current.isFinished() && !getBlockedFuture(next).isPresent() && next.needsInput()) {
-                    // get an output page from current operator
-                    current.getOperatorContext().startIntervalTimer();
-                    Page page = current.getOutput();
-                    current.getOperatorContext().recordGetOutput(page);
-
-                    // if we got an output page, add it to the next operator
-                    if (page != null && page.getPositionCount() != 0) {
-                        next.getOperatorContext().startIntervalTimer();
-                        next.addInput(page);
-                        next.getOperatorContext().recordAddInput(page);
-                        movedPage = true;
+                    // skip blocked operator
+                    if (getBlockedFuture(current).isPresent()) {
+                        continue;
                     }
 
-                    if (current instanceof SourceOperator) {
-                        movedPage = true;
-                    }
-                }
+                    // if the current operator is not finished and next operator isn't blocked and needs input...
+                    if (!current.isFinished() && !getBlockedFuture(next).isPresent() && next.needsInput()) {
+                        // get an output page from current operator
+                        Page page = current.getOutput();
+                        current.getOperatorContext().recordGetOutput(operationTimer, page);
 
-                // if current operator is finished...
-                if (current.isFinished()) {
-                    // let next operator know there will be no more data
-                    next.getOperatorContext().startIntervalTimer();
-                    next.finish();
-                    next.getOperatorContext().recordFinish();
+                        // For the last non-output operator, we keep the pages for caching purpose.
+                        if (shouldUseFragmentResultCache() && i == activeOperators.size() - 2 && page != null) {
+                            outputPages.add(page);
+                        }
+
+                        // if we got an output page, add it to the next operator
+                        if (page != null && page.getPositionCount() != 0) {
+                            next.addInput(page);
+                            next.getOperatorContext().recordAddInput(operationTimer, page);
+                            movedPage = true;
+                        }
+
+                        if (current instanceof SourceOperator) {
+                            movedPage = true;
+                        }
+                    }
+
+                    // if current operator is finished...
+                    if (current.isFinished()) {
+                        // let next operator know there will be no more data
+                        next.finish();
+                        next.getOperatorContext().recordFinish(operationTimer);
+                    }
                 }
             }
 
             for (int index = activeOperators.size() - 1; index >= 0; index--) {
                 if (activeOperators.get(index).isFinished()) {
+                    boolean outputOperatorFinished = index == activeOperators.size() - 1;
                     // close and remove this operator and all source operators
                     List<Operator> finishedOperators = this.activeOperators.subList(0, index + 1);
                     Throwable throwable = closeAndDestroyOperators(finishedOperators);
@@ -405,12 +455,18 @@ public class Driver
                         throwIfUnchecked(throwable);
                         throw new RuntimeException(throwable);
                     }
+
+                    if (shouldUseFragmentResultCache() && outputOperatorFinished && !cachedResult.get().isPresent()) {
+                        checkState(split.get() != null);
+                        checkState(fragmentResultCacheContext.get().isPresent());
+                        fragmentResultCacheContext.get().get().getFragmentResultCacheManager().put(fragmentResultCacheContext.get().get().getHashedCanonicalPlanFragment(), split.get(), outputPages);
+                    }
+
                     // Finish the next operator, which is now the first operator.
                     if (!activeOperators.isEmpty()) {
                         Operator newRootOperator = activeOperators.get(0);
-                        newRootOperator.getOperatorContext().startIntervalTimer();
                         newRootOperator.finish();
-                        newRootOperator.getOperatorContext().recordFinish();
+                        newRootOperator.getOperatorContext().recordFinish(operationTimer);
                     }
                     break;
                 }
@@ -484,7 +540,7 @@ public class Driver
     {
         ListenableFuture<?> future = revokingOperators.get(operator);
         if (future.isDone()) {
-            getFutureValue(future); // propagate exception if there was some
+            checkSpillSucceeded(future); // propagate exception if there was some
             revokingOperators.remove(operator);
             operator.finishMemoryRevoke();
             operator.getOperatorContext().resetMemoryRevokingRequested();
@@ -655,13 +711,7 @@ public class Driver
     {
         checkLockNotHeld("Lock can not be reacquired");
 
-        boolean acquired = false;
-        try {
-            acquired = exclusiveLock.tryLock(timeout, unit);
-        }
-        catch (InterruptedException e) {
-            Thread.currentThread().interrupt();
-        }
+        boolean acquired = exclusiveLock.tryLock(timeout, unit);
 
         if (!acquired) {
             return Optional.empty();
@@ -734,10 +784,9 @@ public class Driver
         }
 
         public boolean tryLock(long timeout, TimeUnit unit)
-                throws InterruptedException
         {
             checkState(!lock.isHeldByCurrentThread(), "Lock is not reentrant");
-            boolean acquired = lock.tryLock(timeout, unit);
+            boolean acquired = tryLockUninterruptibly(lock, timeout, unit);
             if (acquired) {
                 setOwner();
             }

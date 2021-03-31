@@ -13,18 +13,20 @@
  */
 package com.facebook.presto.spiller;
 
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.SpillContext;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.BlockEncodingSerde;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.spiller.SpillCipher;
 import com.facebook.presto.sql.analyzer.FeaturesConfig;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.util.concurrent.ListeningExecutorService;
 import com.google.inject.Inject;
-import io.airlift.log.Logger;
 
 import javax.annotation.PostConstruct;
 import javax.annotation.PreDestroy;
@@ -34,10 +36,11 @@ import java.nio.file.DirectoryStream;
 import java.nio.file.FileStore;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Optional;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.spi.StandardErrorCode.OUT_OF_SPILL_SPACE;
 import static com.google.common.util.concurrent.MoreExecutors.listeningDecorator;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static java.lang.String.format;
 import static java.nio.file.Files.createDirectories;
 import static java.nio.file.Files.delete;
@@ -62,10 +65,11 @@ public class FileSingleStreamSpillerFactory
     private final List<Path> spillPaths;
     private final SpillerStats spillerStats;
     private final double maxUsedSpaceThreshold;
+    private final boolean spillEncryptionEnabled;
     private int roundRobinIndex;
 
     @Inject
-    public FileSingleStreamSpillerFactory(BlockEncodingSerde blockEncodingSerde, SpillerStats spillerStats, FeaturesConfig featuresConfig)
+    public FileSingleStreamSpillerFactory(BlockEncodingSerde blockEncodingSerde, SpillerStats spillerStats, FeaturesConfig featuresConfig, NodeSpillConfig nodeSpillConfig)
     {
         this(
                 listeningDecorator(newFixedThreadPool(
@@ -74,7 +78,9 @@ public class FileSingleStreamSpillerFactory
                 blockEncodingSerde,
                 spillerStats,
                 requireNonNull(featuresConfig, "featuresConfig is null").getSpillerSpillPaths(),
-                requireNonNull(featuresConfig, "featuresConfig is null").getSpillMaxUsedSpaceThreshold());
+                requireNonNull(featuresConfig, "featuresConfig is null").getSpillMaxUsedSpaceThreshold(),
+                requireNonNull(nodeSpillConfig, "nodeSpillConfig is null").isSpillCompressionEnabled(),
+                requireNonNull(nodeSpillConfig, "nodeSpillConfig is null").isSpillEncryptionEnabled());
     }
 
     @VisibleForTesting
@@ -83,9 +89,11 @@ public class FileSingleStreamSpillerFactory
             BlockEncodingSerde blockEncodingSerde,
             SpillerStats spillerStats,
             List<Path> spillPaths,
-            double maxUsedSpaceThreshold)
+            double maxUsedSpaceThreshold,
+            boolean spillCompressionEnabled,
+            boolean spillEncryptionEnabled)
     {
-        this.serdeFactory = new PagesSerdeFactory(requireNonNull(blockEncodingSerde, "blockEncodingSerde is null"), false);
+        this.serdeFactory = new PagesSerdeFactory(requireNonNull(blockEncodingSerde, "blockEncodingSerde is null"), spillCompressionEnabled);
         this.executor = requireNonNull(executor, "executor is null");
         this.spillerStats = requireNonNull(spillerStats, "spillerStats can not be null");
         requireNonNull(spillPaths, "spillPaths is null");
@@ -104,6 +112,7 @@ public class FileSingleStreamSpillerFactory
             }
         });
         this.maxUsedSpaceThreshold = maxUsedSpaceThreshold;
+        this.spillEncryptionEnabled = spillEncryptionEnabled;
         this.roundRobinIndex = 0;
     }
 
@@ -140,7 +149,12 @@ public class FileSingleStreamSpillerFactory
     @Override
     public SingleStreamSpiller create(List<Type> types, SpillContext spillContext, LocalMemoryContext memoryContext)
     {
-        return new FileSingleStreamSpiller(serdeFactory.createPagesSerde(), executor, getNextSpillPath(), spillerStats, spillContext, memoryContext);
+        Optional<SpillCipher> spillCipher = Optional.empty();
+        if (spillEncryptionEnabled) {
+            spillCipher = Optional.of(new AesSpillCipher());
+        }
+        PagesSerde serde = serdeFactory.createPagesSerdeForSpill(spillCipher);
+        return new FileSingleStreamSpiller(serde, executor, getNextSpillPath(), spillerStats, spillContext, memoryContext, spillCipher);
     }
 
     private synchronized Path getNextSpillPath()

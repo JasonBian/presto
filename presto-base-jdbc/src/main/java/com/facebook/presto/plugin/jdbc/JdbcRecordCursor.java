@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.plugin.jdbc;
 
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.RecordCursor;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.base.VerifyException;
-import io.airlift.log.Logger;
 import io.airlift.slice.Slice;
 
 import java.sql.Connection;
@@ -86,8 +86,8 @@ public class JdbcRecordCursor
         }
 
         try {
-            connection = jdbcClient.getConnection(split);
-            statement = jdbcClient.buildSql(connection, split, columnHandles);
+            connection = jdbcClient.getConnection(JdbcIdentity.from(session), split);
+            statement = jdbcClient.buildSql(session, connection, split, columnHandles);
             log.debug("Executing: %s", statement.toString());
             resultSet = statement.executeQuery();
         }

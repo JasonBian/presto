@@ -13,11 +13,15 @@
  */
 package com.facebook.presto.sql;
 
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.operator.scalar.ScalarFunctionImplementation;
-import com.facebook.presto.operator.scalar.ScalarFunctionImplementation.ArgumentProperty;
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.common.InvalidFunctionArgumentException;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.TimeZoneNotSupportedException;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation;
+import com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty;
+import com.facebook.presto.spi.PrestoException;
+import com.facebook.presto.spi.function.FunctionHandle;
 import com.google.common.base.Defaults;
 
 import java.lang.invoke.MethodHandle;
@@ -25,24 +29,32 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.ArgumentType.VALUE_TYPE;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention.USE_NULL_FLAG;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentType.VALUE_TYPE;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.USE_NULL_FLAG;
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.Throwables.throwIfUnchecked;
 import static java.lang.invoke.MethodHandleProxies.asInterfaceInstance;
 import static java.util.Objects.requireNonNull;
 
 public class InterpretedFunctionInvoker
 {
-    private final FunctionRegistry registry;
+    private final FunctionAndTypeManager functionAndTypeManager;
 
-    public InterpretedFunctionInvoker(FunctionRegistry registry)
+    public InterpretedFunctionInvoker(FunctionAndTypeManager functionAndTypeManager)
     {
-        this.registry = requireNonNull(registry, "registry is null");
+        this.functionAndTypeManager = requireNonNull(functionAndTypeManager, "registry is null");
     }
 
-    public Object invoke(Signature function, ConnectorSession session, Object... arguments)
+    public Object invoke(FunctionHandle functionHandle, SqlFunctionProperties properties, Object... arguments)
     {
-        return invoke(function, session, Arrays.asList(arguments));
+        return invoke(functionHandle, properties, Arrays.asList(arguments));
+    }
+
+    public Object invoke(FunctionHandle functionHandle, SqlFunctionProperties properties, List<Object> arguments)
+    {
+        return invoke(functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionHandle), properties, arguments);
     }
 
     /**
@@ -50,23 +62,28 @@ public class InterpretedFunctionInvoker
      * <p>
      * Returns a value in the native container type corresponding to the declared SQL return type
      */
-    public Object invoke(Signature function, ConnectorSession session, List<Object> arguments)
+    private Object invoke(BuiltInScalarFunctionImplementation function, SqlFunctionProperties properties, List<Object> arguments)
     {
-        ScalarFunctionImplementation implementation = registry.getScalarFunctionImplementation(function);
-        MethodHandle method = implementation.getMethodHandle();
+        MethodHandle method = function.getMethodHandle();
 
         // handle function on instance method, to allow use of fields
-        method = bindInstanceFactory(method, implementation);
+        method = bindInstanceFactory(method, function);
 
-        if (method.type().parameterCount() > 0 && method.type().parameterType(0) == ConnectorSession.class) {
-            method = method.bindTo(session);
+        if (method.type().parameterCount() > 0 && method.type().parameterType(0) == SqlFunctionProperties.class) {
+            method = method.bindTo(properties);
         }
         List<Object> actualArguments = new ArrayList<>();
         for (int i = 0; i < arguments.size(); i++) {
             Object argument = arguments.get(i);
-            ArgumentProperty argumentProperty = implementation.getArgumentProperty(i);
+            ArgumentProperty argumentProperty = function.getArgumentProperty(i);
             if (argumentProperty.getArgumentType() == VALUE_TYPE) {
-                if (implementation.getArgumentProperty(i).getNullConvention() == USE_NULL_FLAG) {
+                if (function.getArgumentProperty(i).getNullConvention() == RETURN_NULL_ON_NULL) {
+                    if (argument == null) {
+                        return null;
+                    }
+                    actualArguments.add(argument);
+                }
+                else if (function.getArgumentProperty(i).getNullConvention() == USE_NULL_FLAG) {
                     boolean isNull = argument == null;
                     if (isNull) {
                         argument = Defaults.defaultValue(method.type().parameterType(actualArguments.size()));
@@ -92,7 +109,7 @@ public class InterpretedFunctionInvoker
         }
     }
 
-    private static MethodHandle bindInstanceFactory(MethodHandle method, ScalarFunctionImplementation implementation)
+    private static MethodHandle bindInstanceFactory(MethodHandle method, BuiltInScalarFunctionImplementation implementation)
     {
         if (!implementation.getInstanceFactory().isPresent()) {
             return method;
@@ -110,6 +127,12 @@ public class InterpretedFunctionInvoker
     {
         if (throwable instanceof InterruptedException) {
             Thread.currentThread().interrupt();
+        }
+        if (throwable instanceof InvalidFunctionArgumentException) {
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, throwable.getMessage(), throwable);
+        }
+        if (throwable instanceof NotSupportedException || throwable instanceof TimeZoneNotSupportedException) {
+            throw new PrestoException(NOT_SUPPORTED, throwable.getMessage(), throwable);
         }
         throwIfUnchecked(throwable);
         throw new RuntimeException(throwable);

@@ -13,11 +13,10 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.common.io.DataOutput;
 import com.facebook.presto.orc.metadata.Stream;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
-
-import javax.annotation.Nonnull;
 
 import java.util.function.ToLongFunction;
 
@@ -25,7 +24,7 @@ import static com.google.common.base.Verify.verify;
 import static java.util.Objects.requireNonNull;
 
 public final class StreamDataOutput
-        implements OrcDataOutput, Comparable<StreamDataOutput>
+        implements DataOutput, Comparable<StreamDataOutput>
 {
     private final ToLongFunction<SliceOutput> writer;
     private final Stream stream;
@@ -47,7 +46,7 @@ public final class StreamDataOutput
     }
 
     @Override
-    public int compareTo(@Nonnull StreamDataOutput otherStream)
+    public int compareTo(StreamDataOutput otherStream)
     {
         return Long.compare(size(), otherStream.size());
     }

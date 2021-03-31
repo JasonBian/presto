@@ -13,10 +13,11 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.MapType;
+import com.facebook.presto.spi.function.FunctionHandle;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
@@ -24,13 +25,13 @@ import org.testng.annotations.Test;
 import java.util.HashMap;
 import java.util.Map;
 
-import static com.facebook.presto.metadata.FunctionKind.AGGREGATE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.operator.aggregation.AggregationTestUtils.assertAggregation;
 import static com.facebook.presto.operator.aggregation.MapUnionAggregation.NAME;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.util.StructuralTestUtil.arrayBlockOf;
 import static com.facebook.presto.util.StructuralTestUtil.mapBlockOf;
 import static com.facebook.presto.util.StructuralTestUtil.mapType;
@@ -38,14 +39,14 @@ import static com.google.common.base.Preconditions.checkArgument;
 
 public class TestMapUnionAggregation
 {
-    private static final MetadataManager metadata = MetadataManager.createTestMetadataManager();
+    private static final FunctionAndTypeManager FUNCTION_AND_TYPE_MANAGER = MetadataManager.createTestMetadataManager().getFunctionAndTypeManager();
 
     @Test
     public void testSimpleWithDuplicates()
     {
         MapType mapType = mapType(DOUBLE, VARCHAR);
-        InternalAggregationFunction aggFunc = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME, AGGREGATE, mapType.getTypeSignature(), mapType.getTypeSignature()));
+        FunctionHandle functionHandle = FUNCTION_AND_TYPE_MANAGER.lookupFunction(NAME, fromTypes(mapType));
+        InternalAggregationFunction aggFunc = FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(functionHandle);
         assertAggregation(
                 aggFunc,
                 ImmutableMap.of(23.0, "aaa", 33.0, "bbb", 43.0, "ccc", 53.0, "ddd", 13.0, "eee"),
@@ -55,8 +56,8 @@ public class TestMapUnionAggregation
                         mapBlockOf(DOUBLE, VARCHAR, ImmutableMap.of(43.0, "ccc", 53.0, "ddd", 13.0, "eee"))));
 
         mapType = mapType(DOUBLE, BIGINT);
-        aggFunc = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME, AGGREGATE, mapType.getTypeSignature(), mapType.getTypeSignature()));
+        functionHandle = FUNCTION_AND_TYPE_MANAGER.lookupFunction(NAME, fromTypes(mapType));
+        aggFunc = FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(functionHandle);
         assertAggregation(
                 aggFunc,
                 ImmutableMap.of(1.0, 99L, 2.0, 99L, 3.0, 99L, 4.0, 44L),
@@ -66,8 +67,8 @@ public class TestMapUnionAggregation
                         mapBlockOf(DOUBLE, BIGINT, ImmutableMap.of(1.0, 44L, 2.0, 44L, 4.0, 44L))));
 
         mapType = mapType(BOOLEAN, BIGINT);
-        aggFunc = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME, AGGREGATE, mapType.getTypeSignature(), mapType.getTypeSignature()));
+        functionHandle = FUNCTION_AND_TYPE_MANAGER.lookupFunction(NAME, fromTypes(mapType));
+        aggFunc = FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(functionHandle);
         assertAggregation(
                 aggFunc,
                 ImmutableMap.of(false, 12L, true, 13L),
@@ -81,8 +82,8 @@ public class TestMapUnionAggregation
     public void testSimpleWithNulls()
     {
         MapType mapType = mapType(DOUBLE, VARCHAR);
-        InternalAggregationFunction aggFunc = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME, AGGREGATE, mapType.getTypeSignature(), mapType.getTypeSignature()));
+        FunctionHandle functionHandle = FUNCTION_AND_TYPE_MANAGER.lookupFunction(NAME, fromTypes(mapType));
+        InternalAggregationFunction aggFunc = FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(functionHandle);
 
         Map<Object, Object> expected = mapOf(23.0, "aaa", 33.0, null, 43.0, "ccc", 53.0, "ddd");
 
@@ -100,8 +101,8 @@ public class TestMapUnionAggregation
     public void testStructural()
     {
         MapType mapType = mapType(DOUBLE, new ArrayType(VARCHAR));
-        InternalAggregationFunction aggFunc = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME, AGGREGATE, mapType.getTypeSignature(), mapType.getTypeSignature()));
+        FunctionHandle functionHandle = FUNCTION_AND_TYPE_MANAGER.lookupFunction(NAME, fromTypes(mapType));
+        InternalAggregationFunction aggFunc = FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(functionHandle);
         assertAggregation(
                 aggFunc,
                 ImmutableMap.of(
@@ -133,8 +134,8 @@ public class TestMapUnionAggregation
                                         ImmutableList.of("w", "z")))));
 
         mapType = mapType(DOUBLE, mapType(VARCHAR, VARCHAR));
-        aggFunc = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME, AGGREGATE, mapType.getTypeSignature(), mapType.getTypeSignature()));
+        functionHandle = FUNCTION_AND_TYPE_MANAGER.lookupFunction(NAME, fromTypes(mapType));
+        aggFunc = FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(functionHandle);
         assertAggregation(
                 aggFunc,
                 ImmutableMap.of(
@@ -159,8 +160,8 @@ public class TestMapUnionAggregation
                                         ImmutableMap.of("e", "f")))));
 
         mapType = mapType(new ArrayType(VARCHAR), DOUBLE);
-        aggFunc = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(NAME, AGGREGATE, mapType.getTypeSignature(), mapType.getTypeSignature()));
+        functionHandle = FUNCTION_AND_TYPE_MANAGER.lookupFunction(NAME, fromTypes(mapType));
+        aggFunc = FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(functionHandle);
         assertAggregation(
                 aggFunc,
                 ImmutableMap.of(

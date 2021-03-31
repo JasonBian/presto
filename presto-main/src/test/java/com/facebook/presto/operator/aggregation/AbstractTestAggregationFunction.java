@@ -13,54 +13,83 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignature;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
+import com.facebook.presto.Session;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.Plugin;
+import com.facebook.presto.spi.function.FunctionHandle;
 import com.facebook.presto.sql.analyzer.TypeSignatureProvider;
 import com.facebook.presto.sql.tree.QualifiedName;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.Lists;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
 import java.util.List;
+import java.util.Optional;
 
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.qualifyObjectName;
+import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
 import static com.facebook.presto.operator.aggregation.AggregationTestUtils.assertAggregation;
 import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypeSignatures;
+import static com.facebook.presto.testing.TestingSession.testSessionBuilder;
+import static java.util.Objects.requireNonNull;
 
 public abstract class AbstractTestAggregationFunction
 {
-    protected TypeRegistry typeRegistry;
-    protected FunctionRegistry functionRegistry;
+    protected FunctionAndTypeManager functionAndTypeManager;
+    protected Session session;
+
+    protected AbstractTestAggregationFunction()
+    {
+        this(testSessionBuilder().build());
+    }
+
+    protected AbstractTestAggregationFunction(Session session)
+    {
+        this.session = requireNonNull(session, "session is null");
+    }
 
     @BeforeClass
     public final void initTestAggregationFunction()
     {
-        typeRegistry = new TypeRegistry();
-        functionRegistry = new FunctionRegistry(typeRegistry, new BlockEncodingManager(typeRegistry), new FeaturesConfig());
+        functionAndTypeManager = createTestFunctionAndTypeManager();
     }
 
     @AfterClass(alwaysRun = true)
     public final void destroyTestAggregationFunction()
     {
-        functionRegistry = null;
-        typeRegistry = null;
+        functionAndTypeManager = null;
     }
 
     public abstract Block[] getSequenceBlocks(int start, int length);
 
+    protected void registerFunctions(Plugin plugin)
+    {
+        functionAndTypeManager.registerBuiltInFunctions(extractFunctions(plugin.getFunctions()));
+    }
+
+    protected void registerTypes(Plugin plugin)
+    {
+        for (Type type : plugin.getTypes()) {
+            functionAndTypeManager.addType(type);
+        }
+    }
+
     protected final InternalAggregationFunction getFunction()
     {
         List<TypeSignatureProvider> parameterTypes = fromTypeSignatures(Lists.transform(getFunctionParameterTypes(), TypeSignature::parseTypeSignature));
-        Signature signature = functionRegistry.resolveFunction(QualifiedName.of(getFunctionName()), parameterTypes);
-        return functionRegistry.getAggregateFunctionImplementation(signature);
+        FunctionHandle functionHandle = functionAndTypeManager.resolveFunction(
+                Optional.empty(),
+                session.getTransactionId(),
+                qualifyObjectName(QualifiedName.of(getFunctionName())),
+                parameterTypes);
+        return functionAndTypeManager.getAggregateFunctionImplementation(functionHandle);
     }
 
     protected abstract String getFunctionName();

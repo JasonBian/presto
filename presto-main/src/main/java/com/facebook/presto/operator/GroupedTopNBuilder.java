@@ -14,10 +14,9 @@
 package com.facebook.presto.operator;
 
 import com.facebook.presto.array.ObjectBigArray;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.type.Type;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.AbstractIterator;
 import com.google.common.collect.ImmutableList;
@@ -34,7 +33,7 @@ import java.util.Iterator;
 import java.util.List;
 import java.util.stream.IntStream;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
@@ -315,11 +314,7 @@ public class GroupedTopNBuilder
             verify(index == usedPositionCount);
 
             // compact page
-            Block[] blocks = new Block[page.getChannelCount()];
-            for (int i = 0; i < page.getChannelCount(); i++) {
-                Block block = page.getBlock(i);
-                blocks[i] = block.copyPositions(positions, 0, usedPositionCount);
-            }
+            Page newPage = page.copyPositions(positions, 0, usedPositionCount);
 
             // update all the elements in the heaps that reference the current page
             for (int i = 0; i < usedPositionCount; i++) {
@@ -327,7 +322,7 @@ public class GroupedTopNBuilder
                 // it only updates the value of the elements; while keeping the same order
                 newReference[i].reset(i);
             }
-            page = new Page(usedPositionCount, blocks);
+            page = newPage;
             reference = newReference;
         }
 

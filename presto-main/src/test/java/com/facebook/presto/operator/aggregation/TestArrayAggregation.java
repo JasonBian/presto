@@ -13,16 +13,18 @@
  */
 package com.facebook.presto.operator.aggregation;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.operator.UpdateMemory;
 import com.facebook.presto.operator.aggregation.groupByAggregations.AggregationTestInput;
 import com.facebook.presto.operator.aggregation.groupByAggregations.AggregationTestInputBuilder;
 import com.facebook.presto.operator.aggregation.groupByAggregations.AggregationTestOutput;
 import com.facebook.presto.operator.aggregation.groupByAggregations.GroupByAggregationTestUtils;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.StandardTypes;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 import org.testng.internal.collections.Ints;
@@ -38,21 +40,22 @@ import static com.facebook.presto.block.BlockAssertions.createBooleansBlock;
 import static com.facebook.presto.block.BlockAssertions.createLongsBlock;
 import static com.facebook.presto.block.BlockAssertions.createStringsBlock;
 import static com.facebook.presto.block.BlockAssertions.createTypedLongsBlock;
-import static com.facebook.presto.metadata.FunctionKind.AGGREGATE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.operator.aggregation.AggregationTestUtils.assertAggregation;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static org.testng.Assert.assertTrue;
 
 public class TestArrayAggregation
 {
-    private static final MetadataManager metadata = MetadataManager.createTestMetadataManager();
+    private static final FunctionAndTypeManager FUNCTION_AND_TYPE_MANAGER = MetadataManager.createTestMetadataManager().getFunctionAndTypeManager();
 
     @Test
     public void testEmpty()
     {
-        InternalAggregationFunction bigIntAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(bigint)"), parseTypeSignature(StandardTypes.BIGINT)));
+        InternalAggregationFunction bigIntAgg = getAggregation(BIGINT);
         assertAggregation(
                 bigIntAgg,
                 null,
@@ -62,8 +65,7 @@ public class TestArrayAggregation
     @Test
     public void testNullOnly()
     {
-        InternalAggregationFunction bigIntAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(bigint)"), parseTypeSignature(StandardTypes.BIGINT)));
+        InternalAggregationFunction bigIntAgg = getAggregation(BIGINT);
         assertAggregation(
                 bigIntAgg,
                 Arrays.asList(null, null, null),
@@ -73,8 +75,7 @@ public class TestArrayAggregation
     @Test
     public void testNullPartial()
     {
-        InternalAggregationFunction bigIntAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(bigint)"), parseTypeSignature(StandardTypes.BIGINT)));
+        InternalAggregationFunction bigIntAgg = getAggregation(BIGINT);
         assertAggregation(
                 bigIntAgg,
                 Arrays.asList(null, 2L, null, 3L, null),
@@ -84,8 +85,7 @@ public class TestArrayAggregation
     @Test
     public void testBoolean()
     {
-        InternalAggregationFunction booleanAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(boolean)"), parseTypeSignature(StandardTypes.BOOLEAN)));
+        InternalAggregationFunction booleanAgg = getAggregation(BOOLEAN);
         assertAggregation(
                 booleanAgg,
                 Arrays.asList(true, false),
@@ -95,8 +95,7 @@ public class TestArrayAggregation
     @Test
     public void testBigInt()
     {
-        InternalAggregationFunction bigIntAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(bigint)"), parseTypeSignature(StandardTypes.BIGINT)));
+        InternalAggregationFunction bigIntAgg = getAggregation(BIGINT);
         assertAggregation(
                 bigIntAgg,
                 Arrays.asList(2L, 1L, 2L),
@@ -106,8 +105,7 @@ public class TestArrayAggregation
     @Test
     public void testVarchar()
     {
-        InternalAggregationFunction varcharAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(varchar)"), parseTypeSignature(StandardTypes.VARCHAR)));
+        InternalAggregationFunction varcharAgg = getAggregation(VARCHAR);
         assertAggregation(
                 varcharAgg,
                 Arrays.asList("hello", "world"),
@@ -117,8 +115,7 @@ public class TestArrayAggregation
     @Test
     public void testDate()
     {
-        InternalAggregationFunction varcharAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(date)"), parseTypeSignature(StandardTypes.DATE)));
+        InternalAggregationFunction varcharAgg = getAggregation(DATE);
         assertAggregation(
                 varcharAgg,
                 Arrays.asList(new SqlDate(1), new SqlDate(2), new SqlDate(4)),
@@ -128,9 +125,7 @@ public class TestArrayAggregation
     @Test
     public void testArray()
     {
-        InternalAggregationFunction varcharAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(array(bigint))"), parseTypeSignature("array(bigint)")));
-
+        InternalAggregationFunction varcharAgg = getAggregation(new ArrayType(BIGINT));
         assertAggregation(
                 varcharAgg,
                 Arrays.asList(Arrays.asList(1L), Arrays.asList(1L, 2L), Arrays.asList(1L, 2L, 3L)),
@@ -140,10 +135,9 @@ public class TestArrayAggregation
     @Test
     public void testEmptyStateOutputsNull()
     {
-        InternalAggregationFunction bigIntAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature("array_agg", AGGREGATE, parseTypeSignature("array(bigint)"), parseTypeSignature(StandardTypes.BIGINT)));
+        InternalAggregationFunction bigIntAgg = getAggregation(BIGINT);
         GroupedAccumulator groupedAccumulator = bigIntAgg.bind(Ints.asList(new int[] {}), Optional.empty())
-                .createGroupedAccumulator();
+                .createGroupedAccumulator(UpdateMemory.NOOP);
         BlockBuilder blockBuilder = groupedAccumulator.getFinalType().createBlockBuilder(null, 1000);
 
         groupedAccumulator.evaluateFinal(0, blockBuilder);
@@ -153,12 +147,7 @@ public class TestArrayAggregation
     @Test
     public void testWithMultiplePages()
     {
-        InternalAggregationFunction varcharAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(
-                        "array_agg",
-                        AGGREGATE,
-                        parseTypeSignature("array(varchar)"),
-                        parseTypeSignature(StandardTypes.VARCHAR)));
+        InternalAggregationFunction varcharAgg = getAggregation(VARCHAR);
 
         AggregationTestInputBuilder testInputBuilder = new AggregationTestInputBuilder(
                 new Block[] {
@@ -173,12 +162,7 @@ public class TestArrayAggregation
     @Test
     public void testMultipleGroupsWithMultiplePages()
     {
-        InternalAggregationFunction varcharAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(
-                        "array_agg",
-                        AGGREGATE,
-                        parseTypeSignature("array(varchar)"),
-                        parseTypeSignature(StandardTypes.VARCHAR)));
+        InternalAggregationFunction varcharAgg = getAggregation(VARCHAR);
 
         Block block1 = createStringsBlock("a", "b", "c", "d", "e");
         Block block2 = createStringsBlock("f", "g", "h", "i", "j");
@@ -203,12 +187,7 @@ public class TestArrayAggregation
     public void testManyValues()
     {
         // Test many values so multiple BlockBuilders will be used to store group state.
-        InternalAggregationFunction varcharAgg = metadata.getFunctionRegistry().getAggregateFunctionImplementation(
-                new Signature(
-                        "array_agg",
-                        AGGREGATE,
-                        parseTypeSignature("array(varchar)"),
-                        parseTypeSignature(StandardTypes.VARCHAR)));
+        InternalAggregationFunction varcharAgg = getAggregation(VARCHAR);
 
         int numGroups = 50000;
         int arraySize = 30;
@@ -240,6 +219,11 @@ public class TestArrayAggregation
         int[] args = GroupByAggregationTestUtils.createArgs(function);
 
         return function.bind(Ints.asList(args), Optional.empty())
-                .createGroupedAccumulator();
+                .createGroupedAccumulator(UpdateMemory.NOOP);
+    }
+
+    private InternalAggregationFunction getAggregation(Type... arguments)
+    {
+        return FUNCTION_AND_TYPE_MANAGER.getAggregateFunctionImplementation(FUNCTION_AND_TYPE_MANAGER.lookupFunction("array_agg", fromTypes(arguments)));
     }
 }

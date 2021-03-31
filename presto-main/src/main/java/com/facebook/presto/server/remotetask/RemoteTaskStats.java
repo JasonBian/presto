@@ -13,20 +13,22 @@
  */
 package com.facebook.presto.server.remotetask;
 
-import com.google.common.util.concurrent.AtomicDouble;
+import com.facebook.airlift.stats.DistributionStat;
+import com.facebook.presto.server.SimpleHttpResponseHandlerStats;
+import org.weakref.jmx.Flatten;
 import org.weakref.jmx.Managed;
+import org.weakref.jmx.Nested;
 
-import javax.annotation.concurrent.ThreadSafe;
+import static com.facebook.presto.server.SimpleHttpResponseHandlerStats.IncrementalAverage;
 
 public class RemoteTaskStats
 {
+    private final SimpleHttpResponseHandlerStats httpResponseStats = new SimpleHttpResponseHandlerStats();
     private final IncrementalAverage updateRoundTripMillis = new IncrementalAverage();
     private final IncrementalAverage infoRoundTripMillis = new IncrementalAverage();
     private final IncrementalAverage statusRoundTripMillis = new IncrementalAverage();
-    private final IncrementalAverage responseSizeBytes = new IncrementalAverage();
-
-    private long requestSuccess;
-    private long requestFailure;
+    private final DistributionStat updateWithPlanSize = new DistributionStat();
+    private final DistributionStat updateWithoutPlanSize = new DistributionStat();
 
     public void statusRoundTripMillis(long roundTripMillis)
     {
@@ -43,73 +45,70 @@ public class RemoteTaskStats
         updateRoundTripMillis.add(roundTripMillis);
     }
 
-    public void responseSize(long responseSizeBytes)
+    public void updateWithPlanSize(long bytes)
     {
-        this.responseSizeBytes.add(responseSizeBytes);
+        updateWithPlanSize.add(bytes);
     }
 
-    public void updateSuccess()
+    public void updateWithoutPlanSize(long bytes)
     {
-        requestSuccess++;
-    }
-
-    public void updateFailure()
-    {
-        requestFailure++;
+        updateWithoutPlanSize.add(bytes);
     }
 
     @Managed
-    public double getResponseSizeBytes()
+    @Flatten
+    public SimpleHttpResponseHandlerStats getHttpResponseStats()
     {
-        return responseSizeBytes.get();
+        return httpResponseStats;
     }
 
     @Managed
     public double getStatusRoundTripMillis()
     {
-        return statusRoundTripMillis.get();
+        return statusRoundTripMillis.getAverage();
+    }
+
+    @Managed
+    public long getStatusRoundTripCount()
+    {
+        return statusRoundTripMillis.getCount();
     }
 
     @Managed
     public double getUpdateRoundTripMillis()
     {
-        return updateRoundTripMillis.get();
+        return updateRoundTripMillis.getAverage();
+    }
+
+    @Managed
+    public long getUpdateRoundTripCount()
+    {
+        return updateRoundTripMillis.getCount();
     }
 
     @Managed
     public double getInfoRoundTripMillis()
     {
-        return infoRoundTripMillis.get();
+        return infoRoundTripMillis.getAverage();
     }
 
     @Managed
-    public long getRequestSuccess()
+    public long getInfoRoundTripCount()
     {
-        return requestSuccess;
+        return infoRoundTripMillis.getCount();
     }
 
     @Managed
-    public long getRequestFailure()
+    @Nested
+    public DistributionStat getUpdateWithPlanSize()
     {
-        return requestFailure;
+        return updateWithPlanSize;
     }
 
-    @ThreadSafe
-    private static class IncrementalAverage
+    @Managed
+    @Nested
+    public DistributionStat getUpdateWithoutPlanSize()
     {
-        private long count;
-        private final AtomicDouble average = new AtomicDouble();
-
-        synchronized void add(long value)
-        {
-            count++;
-            double oldAverage = average.get();
-            average.set(oldAverage + ((value - oldAverage) / count));
-        }
-
-        double get()
-        {
-            return average.get();
-        }
+        return updateWithoutPlanSize;
     }
 }

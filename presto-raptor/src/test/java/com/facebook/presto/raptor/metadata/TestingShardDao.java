@@ -23,7 +23,6 @@ import org.skife.jdbi.v2.sqlobject.customizers.Mapper;
 import org.skife.jdbi.v2.sqlobject.customizers.RegisterArgumentFactory;
 import org.skife.jdbi.v2.sqlobject.customizers.RegisterMapperFactory;
 
-import java.util.List;
 import java.util.Set;
 import java.util.UUID;
 
@@ -33,7 +32,7 @@ interface TestingShardDao
         extends H2ShardDao
 {
     @SqlQuery("SELECT shard_uuid FROM shards WHERE table_id = :tableId")
-    List<UUID> getShards(@Bind("tableId") long tableId);
+    Set<UUID> getShards(@Bind("tableId") long tableId);
 
     @SqlQuery("SELECT s.shard_uuid, n.node_identifier\n" +
             "FROM shards s\n" +
@@ -41,7 +40,7 @@ interface TestingShardDao
             "JOIN nodes n ON (sn.node_id = n.node_id)\n" +
             "WHERE s.table_id = :tableId")
     @Mapper(ShardNode.Mapper.class)
-    List<ShardNode> getShardNodes(@Bind("tableId") long tableId);
+    Set<ShardNode> getShardNodes(@Bind("tableId") long tableId);
 
     @SqlQuery("SELECT node_identifier FROM nodes")
     Set<String> getAllNodesInUse();
@@ -52,6 +51,20 @@ interface TestingShardDao
     long insertShard(
             @Bind("shardUuid") UUID shardUuid,
             @Bind("tableId") long tableId,
+            @Bind("bucketNumber") Integer bucketNumber,
+            @Bind("rowCount") long rowCount,
+            @Bind("compressedSize") long compressedSize,
+            @Bind("uncompressedSize") long uncompressedSize,
+            @Bind("xxhash64") long xxhash64);
+
+    @SqlUpdate("INSERT INTO shards (shard_uuid, table_id, is_delta, delta_uuid, bucket_number, create_time, row_count, compressed_size, uncompressed_size, xxhash64)\n" +
+            "VALUES (:shardUuid, :tableId, :isDelta, :deltaUuid, :bucketNumber, CURRENT_TIMESTAMP, :rowCount, :compressedSize, :uncompressedSize, :xxhash64)")
+    @GetGeneratedKeys
+    long insertShardWithDelta(
+            @Bind("shardUuid") UUID shardUuid,
+            @Bind("tableId") long tableId,
+            @Bind("isDelta") boolean isDelta,
+            @Bind("deltaUuid") UUID deltaUuid,
             @Bind("bucketNumber") Integer bucketNumber,
             @Bind("rowCount") long rowCount,
             @Bind("compressedSize") long compressedSize,

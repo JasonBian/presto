@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.execution;
 
+import com.facebook.airlift.configuration.Config;
+import com.facebook.airlift.configuration.ConfigDescription;
+import com.facebook.airlift.configuration.DefunctConfig;
+import com.facebook.airlift.configuration.LegacyConfig;
 import com.facebook.presto.util.PowerOfTwo;
-import io.airlift.configuration.Config;
-import io.airlift.configuration.ConfigDescription;
-import io.airlift.configuration.DefunctConfig;
-import io.airlift.configuration.LegacyConfig;
 import io.airlift.units.DataSize;
 import io.airlift.units.DataSize.Unit;
 import io.airlift.units.Duration;
@@ -41,8 +41,11 @@ import java.util.concurrent.TimeUnit;
         "task.level-absolute-priority"})
 public class TaskManagerConfig
 {
-    private boolean verboseStats;
+    private boolean perOperatorCpuTimerEnabled = true;
     private boolean taskCpuTimerEnabled = true;
+    private boolean statisticsCpuTimerEnabled = true;
+    private boolean perOperatorAllocationTrackingEnabled;
+    private boolean taskAllocationTrackingEnabled;
     private DataSize maxPartialAggregationMemoryUsage = new DataSize(16, Unit.MEGABYTE);
     private DataSize maxLocalExchangeBufferSize = new DataSize(32, Unit.MEGABYTE);
     private DataSize maxIndexMemoryUsage = new DataSize(64, Unit.MEGABYTE);
@@ -52,6 +55,7 @@ public class TaskManagerConfig
     private Integer initialSplitsPerNode;
     private int minDriversPerTask = 3;
     private int maxDriversPerTask = Integer.MAX_VALUE;
+    private int maxTasksPerStage = Integer.MAX_VALUE;
     private Duration splitConcurrencyAdjustmentInterval = new Duration(100, TimeUnit.MILLISECONDS);
 
     private DataSize sinkMaxBufferSize = new DataSize(32, Unit.MEGABYTE);
@@ -61,17 +65,24 @@ public class TaskManagerConfig
     private Duration infoMaxAge = new Duration(15, TimeUnit.MINUTES);
 
     private Duration statusRefreshMaxWait = new Duration(1, TimeUnit.SECONDS);
+    private Duration infoRefreshMaxWait = new Duration(0, TimeUnit.SECONDS);
+
     private Duration infoUpdateInterval = new Duration(3, TimeUnit.SECONDS);
 
     private int writerCount = 1;
+    private Integer partitionedWriterCount;
     private int taskConcurrency = 16;
     private int httpResponseThreads = 100;
+    private int httpTimeoutConcurrency = 3;
     private int httpTimeoutThreads = 3;
 
     private int taskNotificationThreads = 5;
     private int taskYieldThreads = 3;
 
     private BigDecimal levelTimeMultiplier = new BigDecimal(2.0);
+
+    private boolean legacyLifespanCompletionCondition;
+    private TaskPriorityTracking taskPriorityTracking = TaskPriorityTracking.TASK_FAIR;
 
     @MinDuration("1ms")
     @MaxDuration("10s")
@@ -104,15 +115,31 @@ public class TaskManagerConfig
         return this;
     }
 
-    public boolean isVerboseStats()
+    @NotNull
+    public Duration getInfoRefreshMaxWait()
     {
-        return verboseStats;
+        return infoRefreshMaxWait;
     }
 
-    @Config("task.verbose-stats")
-    public TaskManagerConfig setVerboseStats(boolean verboseStats)
+    @Config("experimental.task.info-update-refresh-max-wait")
+    @ConfigDescription("When this is set to non-zero, task info update request will be a long polling with " +
+            "given maximum update refresh wait time. This is an experimental config to reduce unnecessary task info update.")
+    public TaskManagerConfig setInfoRefreshMaxWait(Duration infoRefreshMaxWait)
     {
-        this.verboseStats = verboseStats;
+        this.infoRefreshMaxWait = infoRefreshMaxWait;
+        return this;
+    }
+
+    public boolean isPerOperatorCpuTimerEnabled()
+    {
+        return perOperatorCpuTimerEnabled;
+    }
+
+    @LegacyConfig("task.verbose-stats")
+    @Config("task.per-operator-cpu-timer-enabled")
+    public TaskManagerConfig setPerOperatorCpuTimerEnabled(boolean perOperatorCpuTimerEnabled)
+    {
+        this.perOperatorCpuTimerEnabled = perOperatorCpuTimerEnabled;
         return this;
     }
 
@@ -125,6 +152,42 @@ public class TaskManagerConfig
     public TaskManagerConfig setTaskCpuTimerEnabled(boolean taskCpuTimerEnabled)
     {
         this.taskCpuTimerEnabled = taskCpuTimerEnabled;
+        return this;
+    }
+
+    public boolean isStatisticsCpuTimerEnabled()
+    {
+        return statisticsCpuTimerEnabled;
+    }
+
+    @Config("task.statistics-cpu-timer-enabled")
+    public TaskManagerConfig setStatisticsCpuTimerEnabled(boolean statisticsCpuTimerEnabled)
+    {
+        this.statisticsCpuTimerEnabled = statisticsCpuTimerEnabled;
+        return this;
+    }
+
+    public boolean isPerOperatorAllocationTrackingEnabled()
+    {
+        return perOperatorAllocationTrackingEnabled;
+    }
+
+    @Config("task.per-operator-allocation-tracking-enabled")
+    public TaskManagerConfig setPerOperatorAllocationTrackingEnabled(boolean perOperatorAllocationTrackingEnabled)
+    {
+        this.perOperatorAllocationTrackingEnabled = perOperatorAllocationTrackingEnabled;
+        return this;
+    }
+
+    public boolean isTaskAllocationTrackingEnabled()
+    {
+        return taskAllocationTrackingEnabled;
+    }
+
+    @Config("task.allocation-tracking-enabled")
+    public TaskManagerConfig setTaskAllocationTrackingEnabled(boolean taskAllocationTrackingEnabled)
+    {
+        this.taskAllocationTrackingEnabled = taskAllocationTrackingEnabled;
         return this;
     }
 
@@ -281,6 +344,20 @@ public class TaskManagerConfig
         return this;
     }
 
+    @Min(1)
+    public int getMaxTasksPerStage()
+    {
+        return maxTasksPerStage;
+    }
+
+    @Config("stage.max-tasks-per-stage")
+    @ConfigDescription("Maximum number of tasks for a non source distributed stage")
+    public TaskManagerConfig setMaxTasksPerStage(int maxTasksPerStage)
+    {
+        this.maxTasksPerStage = maxTasksPerStage;
+        return this;
+    }
+
     @NotNull
     public DataSize getSinkMaxBufferSize()
     {
@@ -351,6 +428,21 @@ public class TaskManagerConfig
 
     @Min(1)
     @PowerOfTwo
+    public Integer getPartitionedWriterCount()
+    {
+        return partitionedWriterCount;
+    }
+
+    @Config("task.partitioned-writer-count")
+    @ConfigDescription("Number of writers per task for partitioned writes. If not set, the number set by task.writer-count will be used")
+    public TaskManagerConfig setPartitionedWriterCount(Integer partitionedWriterCount)
+    {
+        this.partitionedWriterCount = partitionedWriterCount;
+        return this;
+    }
+
+    @Min(1)
+    @PowerOfTwo
     public int getTaskConcurrency()
     {
         return taskConcurrency;
@@ -384,9 +476,24 @@ public class TaskManagerConfig
     }
 
     @Config("task.http-timeout-threads")
+    @ConfigDescription("Total number of timeout threads across all timeout thread pools")
     public TaskManagerConfig setHttpTimeoutThreads(int httpTimeoutThreads)
     {
         this.httpTimeoutThreads = httpTimeoutThreads;
+        return this;
+    }
+
+    @Min(1)
+    public int getHttpTimeoutConcurrency()
+    {
+        return httpTimeoutConcurrency;
+    }
+
+    @Config("task.http-timeout-concurrency")
+    @ConfigDescription("Number of thread pools to handle timeouts. Threads per pool is calculated by http-timeout-threads / http-timeout-concurrency")
+    public TaskManagerConfig setHttpTimeoutConcurrency(int httpTimeoutConcurrency)
+    {
+        this.httpTimeoutConcurrency = httpTimeoutConcurrency;
         return this;
     }
 
@@ -416,5 +523,38 @@ public class TaskManagerConfig
     {
         this.taskYieldThreads = taskYieldThreads;
         return this;
+    }
+
+    @Deprecated
+    public boolean isLegacyLifespanCompletionCondition()
+    {
+        return legacyLifespanCompletionCondition;
+    }
+
+    @Deprecated
+    @Config("task.legacy-lifespan-completion-condition")
+    public TaskManagerConfig setLegacyLifespanCompletionCondition(boolean legacyLifespanCompletionCondition)
+    {
+        this.legacyLifespanCompletionCondition = legacyLifespanCompletionCondition;
+        return this;
+    }
+
+    @NotNull
+    public TaskPriorityTracking getTaskPriorityTracking()
+    {
+        return taskPriorityTracking;
+    }
+
+    @Config("task.task-priority-tracking")
+    public TaskManagerConfig setTaskPriorityTracking(TaskPriorityTracking taskPriorityTracking)
+    {
+        this.taskPriorityTracking = taskPriorityTracking;
+        return this;
+    }
+
+    public enum TaskPriorityTracking
+    {
+        TASK_FAIR,
+        QUERY_FAIR,
     }
 }

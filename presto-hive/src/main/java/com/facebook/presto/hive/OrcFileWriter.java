@@ -13,26 +13,31 @@
  */
 package com.facebook.presto.hive;
 
-import com.facebook.presto.orc.OrcDataSink;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.io.DataSink;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.DwrfEncryptionProvider;
+import com.facebook.presto.orc.DwrfWriterEncryption;
 import com.facebook.presto.orc.OrcDataSource;
 import com.facebook.presto.orc.OrcEncoding;
 import com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode;
 import com.facebook.presto.orc.OrcWriter;
 import com.facebook.presto.orc.OrcWriterOptions;
-import com.facebook.presto.orc.OrcWriterStats;
+import com.facebook.presto.orc.WriterStats;
 import com.facebook.presto.orc.metadata.CompressionKind;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import org.joda.time.DateTimeZone;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
+import java.lang.management.ManagementFactory;
+import java.lang.management.ThreadMXBean;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -42,6 +47,8 @@ import java.util.function.Supplier;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_DATA_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITE_VALIDATION_FAILED;
+import static com.facebook.presto.hive.HiveManifestUtils.createFileStatisticsPage;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
@@ -49,6 +56,7 @@ public class OrcFileWriter
         implements HiveFileWriter
 {
     private static final int INSTANCE_SIZE = ClassLayout.parseClass(OrcFileWriter.class).instanceSize();
+    private static final ThreadMXBean THREAD_MX_BEAN = ManagementFactory.getThreadMXBean();
 
     private final OrcWriter orcWriter;
     private final Callable<Void> rollbackAction;
@@ -56,8 +64,11 @@ public class OrcFileWriter
     private final List<Block> nullBlocks;
     private final Optional<Supplier<OrcDataSource>> validationInputFactory;
 
+    private long validationCpuNanos;
+    private long rowCount;
+
     public OrcFileWriter(
-            OrcDataSink orcDataSink,
+            DataSink dataSink,
             Callable<Void> rollbackAction,
             OrcEncoding orcEncoding,
             List<String> columnNames,
@@ -69,22 +80,32 @@ public class OrcFileWriter
             DateTimeZone hiveStorageTimeZone,
             Optional<Supplier<OrcDataSource>> validationInputFactory,
             OrcWriteValidationMode validationMode,
-            OrcWriterStats stats)
+            WriterStats stats,
+            DwrfEncryptionProvider dwrfEncryptionProvider,
+            Optional<DwrfWriterEncryption> dwrfWriterEncryption)
     {
-        requireNonNull(orcDataSink, "orcDataSink is null");
+        requireNonNull(dataSink, "dataSink is null");
 
-        orcWriter = new OrcWriter(
-                orcDataSink,
-                columnNames,
-                fileColumnTypes,
-                orcEncoding,
-                compression,
-                options,
-                metadata,
-                hiveStorageTimeZone,
-                validationInputFactory.isPresent(),
-                validationMode,
-                stats);
+        try {
+            orcWriter = new OrcWriter(
+                    dataSink,
+                    columnNames,
+                    fileColumnTypes,
+                    orcEncoding,
+                    compression,
+                    dwrfWriterEncryption,
+                    dwrfEncryptionProvider,
+                    options,
+                    metadata,
+                    hiveStorageTimeZone,
+                    validationInputFactory.isPresent(),
+                    validationMode,
+                    stats);
+        }
+        catch (NotSupportedException e) {
+            throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
+        }
+
         this.rollbackAction = requireNonNull(rollbackAction, "rollbackAction is null");
 
         this.fileInputColumnIndexes = requireNonNull(fileInputColumnIndexes, "outputColumnInputIndexes is null");
@@ -103,6 +124,12 @@ public class OrcFileWriter
     public long getWrittenBytes()
     {
         return orcWriter.getWrittenBytes() + orcWriter.getBufferedBytes();
+    }
+
+    @Override
+    public long getFileSizeInBytes()
+    {
+        return orcWriter.getWrittenBytes();
     }
 
     @Override
@@ -127,6 +154,7 @@ public class OrcFileWriter
         Page page = new Page(dataPage.getPositionCount(), blocks);
         try {
             orcWriter.write(page);
+            rowCount += page.getPositionCount();
         }
         catch (IOException | UncheckedIOException e) {
             throw new PrestoException(HIVE_WRITER_DATA_ERROR, e);
@@ -134,7 +162,7 @@ public class OrcFileWriter
     }
 
     @Override
-    public void commit()
+    public Optional<Page> commit()
     {
         try {
             orcWriter.close();
@@ -152,13 +180,17 @@ public class OrcFileWriter
         if (validationInputFactory.isPresent()) {
             try {
                 try (OrcDataSource input = validationInputFactory.get().get()) {
+                    long startThreadCpuTime = THREAD_MX_BEAN.getCurrentThreadCpuTime();
                     orcWriter.validate(input);
+                    validationCpuNanos += THREAD_MX_BEAN.getCurrentThreadCpuTime() - startThreadCpuTime;
                 }
             }
             catch (IOException | UncheckedIOException e) {
                 throw new PrestoException(HIVE_WRITE_VALIDATION_FAILED, e);
             }
         }
+
+        return Optional.of(createFileStatisticsPage(getFileSizeInBytes(), rowCount));
     }
 
     @Override
@@ -175,6 +207,12 @@ public class OrcFileWriter
         catch (Exception e) {
             throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error rolling back write to Hive", e);
         }
+    }
+
+    @Override
+    public long getValidationCpuNanos()
+    {
+        return validationCpuNanos;
     }
 
     @Override

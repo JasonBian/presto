@@ -13,11 +13,9 @@
  */
 package com.facebook.presto.orc.stream;
 
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.orc.checkpoint.DoubleStreamCheckpoint;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import io.airlift.slice.Slice;
-import io.airlift.slice.Slices;
 
 import java.io.IOException;
 
@@ -27,8 +25,6 @@ public class DoubleInputStream
         implements ValueInputStream<DoubleStreamCheckpoint>
 {
     private final OrcInputStream input;
-    private final byte[] buffer = new byte[SIZE_OF_DOUBLE];
-    private final Slice slice = Slices.wrappedBuffer(buffer);
 
     public DoubleInputStream(OrcInputStream input)
     {
@@ -59,8 +55,7 @@ public class DoubleInputStream
     public double next()
             throws IOException
     {
-        input.readFully(buffer, 0, SIZE_OF_DOUBLE);
-        return slice.getDouble(0);
+        return input.readDouble();
     }
 
     public void nextVector(Type type, int items, BlockBuilder builder)
@@ -68,19 +63,6 @@ public class DoubleInputStream
     {
         for (int i = 0; i < items; i++) {
             type.writeDouble(builder, next());
-        }
-    }
-
-    public void nextVector(Type type, long items, BlockBuilder builder, boolean[] isNull)
-            throws IOException
-    {
-        for (int i = 0; i < items; i++) {
-            if (isNull[i]) {
-                builder.appendNull();
-            }
-            else {
-                type.writeDouble(builder, next());
-            }
         }
     }
 }

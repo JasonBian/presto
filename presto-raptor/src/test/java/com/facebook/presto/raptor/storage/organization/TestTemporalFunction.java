@@ -13,23 +13,24 @@
  */
 package com.facebook.presto.raptor.storage.organization;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 import org.joda.time.DateTime;
 import org.joda.time.DateTimeZone;
 import org.testng.annotations.Test;
 
 import java.time.Duration;
+import java.time.ZoneId;
 import java.util.TimeZone;
 
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
 import static org.joda.time.DateTimeZone.UTC;
 import static org.testng.Assert.assertEquals;
 
 public class TestTemporalFunction
 {
-    private static final DateTimeZone PST = DateTimeZone.forTimeZone(TimeZone.getTimeZone("PST"));
+    private static final DateTimeZone PST = DateTimeZone.forTimeZone(TimeZone.getTimeZone(ZoneId.of("PST", ZoneId.SHORT_IDS)));
     private static final DateTime UTC_TIME = new DateTime(1970, 1, 2, 0, 0, 0, UTC);
     private static final DateTime PST_TIME = new DateTime(1970, 1, 2, 0, 0, 0, PST);
 

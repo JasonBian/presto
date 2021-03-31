@@ -13,8 +13,9 @@
  */
 package com.facebook.presto.orc;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.cache.StorageOrcFileTailSource;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.units.DataSize;
 import org.joda.time.DateTimeZone;
@@ -22,12 +23,13 @@ import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.orc.DwrfEncryptionProvider.NO_ENCRYPTION;
+import static com.facebook.presto.orc.NoopOrcAggregatedMemoryContext.NOOP_ORC_AGGREGATED_MEMORY_CONTEXT;
 import static com.facebook.presto.orc.OrcEncoding.ORC;
 import static com.facebook.presto.orc.OrcReader.INITIAL_BATCH_SIZE;
 import static com.facebook.presto.orc.metadata.CompressionKind.LZ4;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
 import static com.google.common.io.Resources.getResource;
 import static com.google.common.io.Resources.toByteArray;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
@@ -46,7 +48,20 @@ public class TestOrcLz4
         // TODO: use Apache ORC library in OrcTester
         byte[] data = toByteArray(getResource("apache-lz4.orc"));
 
-        OrcReader orcReader = new OrcReader(new InMemoryOrcDataSource(data), ORC, SIZE, SIZE, SIZE, SIZE);
+        OrcReader orcReader = new OrcReader(
+                new InMemoryOrcDataSource(data),
+                ORC,
+                new StorageOrcFileTailSource(),
+                new StorageStripeMetadataSource(),
+                NOOP_ORC_AGGREGATED_MEMORY_CONTEXT,
+                new OrcReaderOptions(
+                        SIZE,
+                        SIZE,
+                        SIZE,
+                        false),
+                false,
+                NO_ENCRYPTION,
+                DwrfKeyProvider.EMPTY);
 
         assertEquals(orcReader.getCompressionKind(), LZ4);
         assertEquals(orcReader.getFooter().getNumberOfRows(), 10_000);
@@ -57,11 +72,11 @@ public class TestOrcLz4
                 .put(2, BIGINT)
                 .build();
 
-        OrcRecordReader reader = orcReader.createRecordReader(
+        OrcBatchRecordReader reader = orcReader.createBatchRecordReader(
                 includedColumns,
                 OrcPredicate.TRUE,
                 DateTimeZone.UTC,
-                newSimpleAggregatedMemoryContext(),
+                new TestingHiveOrcAggregatedMemoryContext(),
                 INITIAL_BATCH_SIZE);
 
         int rows = 0;
@@ -72,9 +87,9 @@ public class TestOrcLz4
             }
             rows += batchSize;
 
-            Block xBlock = reader.readBlock(BIGINT, 0);
-            Block yBlock = reader.readBlock(INTEGER, 1);
-            Block zBlock = reader.readBlock(BIGINT, 2);
+            Block xBlock = reader.readBlock(0);
+            Block yBlock = reader.readBlock(1);
+            Block zBlock = reader.readBlock(2);
 
             for (int position = 0; position < batchSize; position++) {
                 BIGINT.getLong(xBlock, position);

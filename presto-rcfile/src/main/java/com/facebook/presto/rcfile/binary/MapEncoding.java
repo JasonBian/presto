@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.rcfile.binary;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 
@@ -42,7 +42,7 @@ public class MapEncoding
     @Override
     public void encodeValue(Block block, int position, SliceOutput output)
     {
-        Block map = block.getObject(position, Block.class);
+        Block map = block.getBlock(position);
 
         // write entry count
         writeVInt(output, map.getPositionCount() / 2);

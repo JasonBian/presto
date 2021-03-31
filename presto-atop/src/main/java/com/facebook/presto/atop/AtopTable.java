@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.atop;
 
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignature;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slices;
 
@@ -31,13 +31,13 @@ import static com.facebook.presto.atop.AtopTable.AtopColumn.HOST_IP;
 import static com.facebook.presto.atop.AtopTable.AtopColumn.START_TIME;
 import static com.facebook.presto.atop.AtopTable.AtopColumnParser.bigintParser;
 import static com.facebook.presto.atop.AtopTable.AtopColumnParser.varcharParser;
-import static com.facebook.presto.spi.type.DateTimeEncoding.packDateTimeWithZone;
-import static com.facebook.presto.spi.type.StandardTypes.BIGINT;
-import static com.facebook.presto.spi.type.StandardTypes.DOUBLE;
-import static com.facebook.presto.spi.type.StandardTypes.INTERVAL_DAY_TO_SECOND;
-import static com.facebook.presto.spi.type.StandardTypes.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.StandardTypes.VARCHAR;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.DateTimeEncoding.packDateTimeWithZone;
+import static com.facebook.presto.common.type.StandardTypes.BIGINT;
+import static com.facebook.presto.common.type.StandardTypes.DOUBLE;
+import static com.facebook.presto.common.type.StandardTypes.INTERVAL_DAY_TO_SECOND;
+import static com.facebook.presto.common.type.StandardTypes.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.StandardTypes.VARCHAR;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static java.util.Objects.requireNonNull;
 
 public enum AtopTable
@@ -65,7 +65,7 @@ public enum AtopTable
     REBOOTS("reboots", "DSK", ImmutableList.of(HOST_IP, new AtopColumn("power_on_time", TIMESTAMP_WITH_TIME_ZONE, (fields, type, builder, session) -> {
         long millisUtc = Long.valueOf(fields.get(2)) * 1000;
         long durationMillis = Long.valueOf(fields.get(5)) * 1000;
-        long value = packDateTimeWithZone(millisUtc - durationMillis, session.getTimeZoneKey());
+        long value = packDateTimeWithZone(millisUtc - durationMillis, session.getSqlFunctionProperties().getTimeZoneKey());
         type.writeLong(builder, value);
     })));
 
@@ -125,13 +125,13 @@ public enum AtopTable
         public static final AtopColumn START_TIME = new AtopColumn("start_time", TIMESTAMP_WITH_TIME_ZONE, ((fields, type, builder, session) -> {
             long millisUtc = Long.valueOf(fields.get(2)) * 1000;
             long durationMillis = Long.valueOf(fields.get(5)) * 1000;
-            long value = packDateTimeWithZone(millisUtc - durationMillis, session.getTimeZoneKey());
+            long value = packDateTimeWithZone(millisUtc - durationMillis, session.getSqlFunctionProperties().getTimeZoneKey());
             type.writeLong(builder, value);
         }));
 
         public static final AtopColumn END_TIME = new AtopColumn("end_time", TIMESTAMP_WITH_TIME_ZONE, ((fields, type, builder, session) -> {
             long millisUtc = Long.valueOf(fields.get(2)) * 1000;
-            type.writeLong(builder, packDateTimeWithZone(millisUtc, session.getTimeZoneKey()));
+            type.writeLong(builder, packDateTimeWithZone(millisUtc, session.getSqlFunctionProperties().getTimeZoneKey()));
         }));
 
         private final String name;

@@ -13,83 +13,50 @@
  */
 package com.facebook.presto.hive.parquet.predicate;
 
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.TupleDomain;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.hive.HiveColumnHandle;
 import com.facebook.presto.hive.HiveType;
-import com.facebook.presto.hive.parquet.RichColumnDescriptor;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.TupleDomain;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.RowType;
-import com.facebook.presto.spi.type.StandardTypes;
+import com.facebook.presto.parquet.RichColumnDescriptor;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
-import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
+import org.apache.parquet.column.ColumnDescriptor;
+import org.apache.parquet.schema.GroupType;
+import org.apache.parquet.schema.MessageType;
+import org.apache.parquet.schema.PrimitiveType;
 import org.testng.annotations.Test;
-import parquet.column.ColumnDescriptor;
-import parquet.column.Encoding;
-import parquet.schema.GroupType;
-import parquet.schema.MessageType;
-import parquet.schema.PrimitiveType;
 
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.Set;
 
+import static com.facebook.presto.common.block.MethodHandleUtil.methodHandle;
+import static com.facebook.presto.common.predicate.TupleDomain.withColumnDomains;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.hive.HiveColumnHandle.ColumnType.REGULAR;
-import static com.facebook.presto.hive.parquet.ParquetTypeUtils.getDescriptors;
-import static com.facebook.presto.hive.parquet.predicate.ParquetPredicateUtils.getParquetTupleDomain;
-import static com.facebook.presto.hive.parquet.predicate.ParquetPredicateUtils.isOnlyDictionaryEncodingPages;
-import static com.facebook.presto.spi.block.MethodHandleUtil.methodHandle;
-import static com.facebook.presto.spi.predicate.TupleDomain.withColumnDomains;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.google.common.collect.Sets.union;
+import static com.facebook.presto.hive.parquet.ParquetPageSourceFactory.getParquetTupleDomain;
+import static com.facebook.presto.parquet.ParquetTypeUtils.getDescriptors;
+import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT32;
+import static org.apache.parquet.schema.PrimitiveType.PrimitiveTypeName.INT64;
+import static org.apache.parquet.schema.Type.Repetition.OPTIONAL;
+import static org.apache.parquet.schema.Type.Repetition.REPEATED;
+import static org.apache.parquet.schema.Type.Repetition.REQUIRED;
 import static org.testng.Assert.assertEquals;
-import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
-import static parquet.column.Encoding.BIT_PACKED;
-import static parquet.column.Encoding.PLAIN;
-import static parquet.column.Encoding.PLAIN_DICTIONARY;
-import static parquet.column.Encoding.RLE;
-import static parquet.schema.PrimitiveType.PrimitiveTypeName.INT32;
-import static parquet.schema.PrimitiveType.PrimitiveTypeName.INT64;
-import static parquet.schema.Type.Repetition.OPTIONAL;
-import static parquet.schema.Type.Repetition.REPEATED;
-import static parquet.schema.Type.Repetition.REQUIRED;
 
 public class TestParquetPredicateUtils
 {
     @Test
-    @SuppressWarnings("deprecation")
-    public void testDictionaryEncodingCasesV1()
-    {
-        Set<Encoding> required = ImmutableSet.of(BIT_PACKED);
-        Set<Encoding> optional = ImmutableSet.of(BIT_PACKED, RLE);
-        Set<Encoding> repeated = ImmutableSet.of(RLE);
-
-        Set<Encoding> notDictionary = ImmutableSet.of(PLAIN);
-        Set<Encoding> mixedDictionary = ImmutableSet.of(PLAIN_DICTIONARY, PLAIN);
-        Set<Encoding> dictionary = ImmutableSet.of(PLAIN_DICTIONARY);
-
-        assertFalse(isOnlyDictionaryEncodingPages(union(required, notDictionary)), "required notDictionary");
-        assertFalse(isOnlyDictionaryEncodingPages(union(optional, notDictionary)), "optional notDictionary");
-        assertFalse(isOnlyDictionaryEncodingPages(union(repeated, notDictionary)), "repeated notDictionary");
-        assertFalse(isOnlyDictionaryEncodingPages(union(required, mixedDictionary)), "required mixedDictionary");
-        assertFalse(isOnlyDictionaryEncodingPages(union(optional, mixedDictionary)), "optional mixedDictionary");
-        assertFalse(isOnlyDictionaryEncodingPages(union(repeated, mixedDictionary)), "repeated mixedDictionary");
-        assertTrue(isOnlyDictionaryEncodingPages(union(required, dictionary)), "required dictionary");
-        assertTrue(isOnlyDictionaryEncodingPages(union(optional, dictionary)), "optional dictionary");
-        assertTrue(isOnlyDictionaryEncodingPages(union(repeated, dictionary)), "repeated dictionary");
-    }
-
-    @Test
     public void testParquetTupleDomainPrimitiveArray()
     {
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_array", HiveType.valueOf("array<int>"), parseTypeSignature(StandardTypes.ARRAY), 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = new HiveColumnHandle("my_array", HiveType.valueOf("array<int>"), parseTypeSignature(StandardTypes.ARRAY), 0, REGULAR, Optional.empty(), Optional.empty());
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, Domain.notNull(new ArrayType(INTEGER))));
 
         MessageType fileSchema = new MessageType("hive_schema",
@@ -104,7 +71,7 @@ public class TestParquetPredicateUtils
     @Test
     public void testParquetTupleDomainStructArray()
     {
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_array_struct", HiveType.valueOf("array<struct<a:int>>"), parseTypeSignature(StandardTypes.ARRAY), 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = new HiveColumnHandle("my_array_struct", HiveType.valueOf("array<struct<a:int>>"), parseTypeSignature(StandardTypes.ARRAY), 0, REGULAR, Optional.empty(), Optional.empty());
         RowType.Field rowField = new RowType.Field(Optional.of("a"), INTEGER);
         RowType rowType = RowType.from(ImmutableList.of(rowField));
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, Domain.notNull(new ArrayType(rowType))));
@@ -122,7 +89,7 @@ public class TestParquetPredicateUtils
     @Test
     public void testParquetTupleDomainPrimitive()
     {
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_primitive", HiveType.valueOf("bigint"), parseTypeSignature(StandardTypes.BIGINT), 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = new HiveColumnHandle("my_primitive", HiveType.valueOf("bigint"), parseTypeSignature(StandardTypes.BIGINT), 0, REGULAR, Optional.empty(), Optional.empty());
         Domain singleValueDomain = Domain.singleValue(BIGINT, 123L);
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, singleValueDomain));
 
@@ -143,7 +110,7 @@ public class TestParquetPredicateUtils
     @Test
     public void testParquetTupleDomainStruct()
     {
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_struct", HiveType.valueOf("struct<a:int,b:int>"), parseTypeSignature(StandardTypes.ROW), 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = new HiveColumnHandle("my_struct", HiveType.valueOf("struct<a:int,b:int>"), parseTypeSignature(StandardTypes.ROW), 0, REGULAR, Optional.empty(), Optional.empty());
         RowType.Field rowField = new RowType.Field(Optional.of("my_struct"), INTEGER);
         RowType rowType = RowType.from(ImmutableList.of(rowField));
         TupleDomain<HiveColumnHandle> domain = withColumnDomains(ImmutableMap.of(columnHandle, Domain.notNull(rowType)));
@@ -160,13 +127,11 @@ public class TestParquetPredicateUtils
     @Test
     public void testParquetTupleDomainMap()
     {
-        HiveColumnHandle columnHandle = new HiveColumnHandle("my_map", HiveType.valueOf("map<int,int>"), parseTypeSignature(StandardTypes.MAP), 0, REGULAR, Optional.empty());
+        HiveColumnHandle columnHandle = new HiveColumnHandle("my_map", HiveType.valueOf("map<int,int>"), parseTypeSignature(StandardTypes.MAP), 0, REGULAR, Optional.empty(), Optional.empty());
 
         MapType mapType = new MapType(
                 INTEGER,
                 INTEGER,
-                methodHandle(TestParquetPredicateUtils.class, "throwUnsupportedOperationException"),
-                methodHandle(TestParquetPredicateUtils.class, "throwUnsupportedOperationException"),
                 methodHandle(TestParquetPredicateUtils.class, "throwUnsupportedOperationException"),
                 methodHandle(TestParquetPredicateUtils.class, "throwUnsupportedOperationException"));
 
@@ -175,8 +140,8 @@ public class TestParquetPredicateUtils
         MessageType fileSchema = new MessageType("hive_schema",
                 new GroupType(OPTIONAL, "my_map",
                         new GroupType(REPEATED, "map",
-                            new PrimitiveType(REQUIRED, INT32, "key"),
-                            new PrimitiveType(OPTIONAL, INT32, "value"))));
+                                new PrimitiveType(REQUIRED, INT32, "key"),
+                                new PrimitiveType(OPTIONAL, INT32, "value"))));
 
         Map<List<String>, RichColumnDescriptor> descriptorsByPath = getDescriptors(fileSchema, fileSchema);
         TupleDomain<ColumnDescriptor> tupleDomain = getParquetTupleDomain(descriptorsByPath, domain);

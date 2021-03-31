@@ -13,17 +13,17 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
 import com.facebook.presto.spi.function.Description;
 import com.facebook.presto.spi.function.LiteralParameters;
-import com.facebook.presto.spi.function.OperatorType;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.ScalarOperator;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import com.facebook.presto.type.CodePointsType;
 import com.facebook.presto.type.Constraint;
 import com.facebook.presto.type.LiteralParameter;
@@ -37,10 +37,10 @@ import io.airlift.slice.Slices;
 import java.text.Normalizer;
 import java.util.OptionalInt;
 
+import static com.facebook.presto.common.type.Chars.padSpaces;
+import static com.facebook.presto.common.type.Chars.trimTrailingSpaces;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.Chars.padSpaces;
-import static com.facebook.presto.spi.type.Chars.trimTrailingSpaces;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
 import static com.facebook.presto.util.Failures.checkCondition;
 import static io.airlift.slice.SliceUtf8.countCodePoints;
 import static io.airlift.slice.SliceUtf8.getCodePointAt;
@@ -122,8 +122,15 @@ public final class StringFunctions
     {
         // Empty search?
         if (search.length() == 0) {
-            // With empty `search` we insert `replace` in front of every character and and the end
-            Slice buffer = Slices.allocate((countCodePoints(str) + 1) * replace.length() + str.length());
+            // With empty `search` we insert `replace` in front of every character and at the end
+            int resultLength;
+            try {
+                resultLength = Math.addExact(Math.multiplyExact(countCodePoints(str) + 1, replace.length()), str.length());
+            }
+            catch (ArithmeticException e) {
+                throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "inputs to \"replace\" function are too large: when \"search\" parameter is empty, length of \"string\" times length of \"replace\" must not exceed " + Integer.MAX_VALUE);
+            }
+            Slice buffer = Slices.allocate(resultLength);
             // Always start with replace
             buffer.setBytes(0, replace);
             int indexBuffer = replace.length();
@@ -195,14 +202,85 @@ public final class StringFunctions
     @SqlType(StandardTypes.BIGINT)
     public static long stringPosition(@SqlType("varchar(x)") Slice string, @SqlType("varchar(y)") Slice substring)
     {
+        return stringPositionFromStart(string, substring, 1);
+    }
+
+    @Description("returns index of n-th occurrence of a substring (or 0 if not found)")
+    @ScalarFunction("strpos")
+    @LiteralParameters({"x", "y"})
+    @SqlType(StandardTypes.BIGINT)
+    public static long stringPosition(@SqlType("varchar(x)") Slice string, @SqlType("varchar(y)") Slice substring, @SqlType(StandardTypes.BIGINT) long instance)
+    {
+        return stringPositionFromStart(string, substring, instance);
+    }
+
+    @Description("returns index of last occurrence of a substring (or 0 if not found)")
+    @ScalarFunction("strrpos")
+    @LiteralParameters({"x", "y"})
+    @SqlType(StandardTypes.BIGINT)
+    public static long stringReversePosition(@SqlType("varchar(x)") Slice string, @SqlType("varchar(y)") Slice substring)
+    {
+        return stringPositionFromEnd(string, substring, 1);
+    }
+
+    @Description("returns index of n-th occurrence of a substring from the end of the string (or 0 if not found)")
+    @ScalarFunction("strrpos")
+    @LiteralParameters({"x", "y"})
+    @SqlType(StandardTypes.BIGINT)
+    public static long stringReversePosition(@SqlType("varchar(x)") Slice string, @SqlType("varchar(y)") Slice substring, @SqlType(StandardTypes.BIGINT) long instance)
+    {
+        return stringPositionFromEnd(string, substring, instance);
+    }
+
+    private static long stringPositionFromStart(Slice string, Slice substring, long instance)
+    {
+        if (instance <= 0) {
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "'instance' must be a positive number.");
+        }
         if (substring.length() == 0) {
             return 1;
         }
 
-        int index = string.indexOf(substring);
-        if (index < 0) {
-            return 0;
+        int foundInstances = 0;
+        // set the initial index just before the start of the string
+        // this is to allow for the initial index increment
+        int index = -1;
+        do {
+            // step forwards through string
+            index = string.indexOf(substring, index + 1);
+            if (index < 0) {
+                return 0;
+            }
+            foundInstances++;
         }
+        while (foundInstances < instance);
+
+        return countCodePoints(string, 0, index) + 1;
+    }
+
+    private static long stringPositionFromEnd(Slice string, Slice substring, long instance)
+    {
+        if (instance <= 0) {
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, "'instance' must be a positive number.");
+        }
+        if (substring.length() == 0) {
+            return 1;
+        }
+
+        int foundInstances = 0;
+        // set the initial index just after the end of the string
+        // this is to allow for the initial index decrement
+        int index = string.length();
+        do {
+            // step backwards through string
+            index = string.toStringUtf8().lastIndexOf(substring.toStringUtf8(), index - 1);
+            if (index < 0) {
+                return 0;
+            }
+            foundInstances++;
+        }
+        while (foundInstances < instance);
+
         return countCodePoints(string, 0, index) + 1;
     }
 
@@ -326,7 +404,6 @@ public final class StringFunctions
     {
         checkCondition(limit > 0, INVALID_FUNCTION_ARGUMENT, "Limit must be positive");
         checkCondition(limit <= Integer.MAX_VALUE, INVALID_FUNCTION_ARGUMENT, "Limit is too large");
-        checkCondition(delimiter.length() > 0, INVALID_FUNCTION_ARGUMENT, "The delimiter may not be the empty string");
         BlockBuilder parts = VARCHAR.createBlockBuilder(null, 1, string.length());
         // If limit is one, the last and only element is the complete string
         if (limit == 1) {
@@ -340,6 +417,10 @@ public final class StringFunctions
             // Found split?
             if (splitIndex < 0) {
                 break;
+            }
+            if (delimiter.length() == 0) {
+                // For zero-length delimiter, create 1-length splits.
+                splitIndex++;
             }
             // Add the part from current index to found split
             VARCHAR.writeSlice(parts, string, index, splitIndex - index);
@@ -733,8 +814,8 @@ public final class StringFunctions
                 distance++;
             }
 
-            leftPosition += codePointLeft > 0 ? lengthOfCodePoint(codePointLeft) : -codePointLeft;
-            rightPosition += codePointRight > 0 ? lengthOfCodePoint(codePointRight) : -codePointRight;
+            leftPosition += codePointLeft >= 0 ? lengthOfCodePoint(codePointLeft) : -codePointLeft;
+            rightPosition += codePointRight >= 0 ? lengthOfCodePoint(codePointRight) : -codePointRight;
         }
 
         checkCondition(

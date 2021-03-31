@@ -13,11 +13,11 @@
  */
 package com.facebook.presto.operator.scalar;
 
+import com.facebook.presto.common.type.StandardTypes;
 import com.facebook.presto.spi.function.LiteralParameters;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.StandardTypes;
 import io.airlift.slice.Slice;
 
 public final class CustomFunctions
@@ -31,7 +31,7 @@ public final class CustomFunctions
         return x + y;
     }
 
-    @ScalarFunction("custom_is_null")
+    @ScalarFunction(value = "custom_is_null", calledOnNullInput = true)
     @LiteralParameters("x")
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean customIsNullVarchar(@SqlNullable @SqlType("varchar(x)") Slice slice)
@@ -39,7 +39,7 @@ public final class CustomFunctions
         return slice == null;
     }
 
-    @ScalarFunction("custom_is_null")
+    @ScalarFunction(value = "custom_is_null", calledOnNullInput = true)
     @SqlType(StandardTypes.BOOLEAN)
     public static boolean customIsNullBigint(@SqlNullable @SqlType(StandardTypes.BIGINT) Long value)
     {

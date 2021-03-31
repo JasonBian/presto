@@ -15,25 +15,26 @@ package com.facebook.presto.sql.planner.sanity;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.sql.parser.SqlParser;
 import com.facebook.presto.sql.planner.TypeProvider;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
 
 import static com.facebook.presto.sql.planner.optimizations.PlanNodeSearcher.searchFrom;
 
 public final class VerifyNoFilteredAggregations
-        implements PlanSanityChecker.Checker
+        implements PlanChecker.Checker
 {
     @Override
-    public void validate(PlanNode plan, Session session, Metadata metadata, SqlParser sqlParser, TypeProvider types)
+    public void validate(PlanNode plan, Session session, Metadata metadata, SqlParser sqlParser, TypeProvider types, WarningCollector warningCollector)
     {
         searchFrom(plan)
                 .where(AggregationNode.class::isInstance)
                 .<AggregationNode>findAll()
                 .stream()
                 .flatMap(node -> node.getAggregations().values().stream())
-                .filter(aggregation -> aggregation.getCall().getFilter().isPresent())
+                .filter(aggregation -> aggregation.getFilter().isPresent())
                 .forEach(ignored -> {
                     throw new IllegalStateException("Generated plan contains unimplemented filtered aggregations");
                 });

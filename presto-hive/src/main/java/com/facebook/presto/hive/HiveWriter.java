@@ -13,13 +13,15 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.hive.PartitionUpdate.FileWriteInfo;
 import com.facebook.presto.hive.PartitionUpdate.UpdateMode;
-import com.facebook.presto.spi.Page;
 import com.google.common.collect.ImmutableList;
 
 import java.util.Optional;
 import java.util.function.Consumer;
 
+import static com.facebook.presto.hive.HiveManifestUtils.getFileSize;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
@@ -28,33 +30,37 @@ public class HiveWriter
     private final HiveFileWriter fileWriter;
     private final Optional<String> partitionName;
     private final UpdateMode updateMode;
-    private final String fileName;
+    private final FileWriteInfo fileWriteInfo;
     private final String writePath;
     private final String targetPath;
     private final Consumer<HiveWriter> onCommit;
     private final HiveWriterStats hiveWriterStats;
+    private final boolean writeTempData;
 
     private long rowCount;
     private long inputSizeInBytes;
+    private Optional<Page> fileStatistics = Optional.empty();
 
     public HiveWriter(
             HiveFileWriter fileWriter,
             Optional<String> partitionName,
             UpdateMode updateMode,
-            String fileName,
+            FileWriteInfo fileWriteInfo,
             String writePath,
             String targetPath,
             Consumer<HiveWriter> onCommit,
-            HiveWriterStats hiveWriterStats)
+            HiveWriterStats hiveWriterStats,
+            boolean writeTempData)
     {
         this.fileWriter = requireNonNull(fileWriter, "fileWriter is null");
         this.partitionName = requireNonNull(partitionName, "partitionName is null");
         this.updateMode = requireNonNull(updateMode, "updateMode is null");
-        this.fileName = requireNonNull(fileName, "fileName is null");
+        this.fileWriteInfo = requireNonNull(fileWriteInfo, "fileWriteInfo is null");
         this.writePath = requireNonNull(writePath, "writePath is null");
         this.targetPath = requireNonNull(targetPath, "targetPath is null");
         this.onCommit = requireNonNull(onCommit, "onCommit is null");
         this.hiveWriterStats = requireNonNull(hiveWriterStats, "hiveWriterStats is null");
+        this.writeTempData = writeTempData;
     }
 
     public long getWrittenBytes()
@@ -72,6 +78,16 @@ public class HiveWriter
         return rowCount;
     }
 
+    public Optional<String> getPartitionName()
+    {
+        return partitionName;
+    }
+
+    public boolean isWriteTempData()
+    {
+        return writeTempData;
+    }
+
     public void append(Page dataPage)
     {
         // getRegionSizeInBytes for each row can be expensive; use getRetainedSizeInBytes for estimation
@@ -83,8 +99,13 @@ public class HiveWriter
 
     public void commit()
     {
-        fileWriter.commit();
+        fileStatistics = fileWriter.commit();
         onCommit.accept(this);
+    }
+
+    long getValidationCpuNanos()
+    {
+        return fileWriter.getValidationCpuNanos();
     }
 
     public Optional<Runnable> getVerificationTask()
@@ -104,10 +125,11 @@ public class HiveWriter
                 updateMode,
                 writePath,
                 targetPath,
-                ImmutableList.of(fileName),
+                ImmutableList.of(new FileWriteInfo(fileWriteInfo.getWriteFileName(), fileWriteInfo.getTargetFileName(), fileStatistics.map(statisticsPage -> getFileSize(statisticsPage, 0)))),
                 rowCount,
                 inputSizeInBytes,
-                fileWriter.getWrittenBytes());
+                fileWriter.getWrittenBytes(),
+                fileWriteInfo.getWriteFileName().matches("\\d+"));
     }
 
     @Override
@@ -115,7 +137,8 @@ public class HiveWriter
     {
         return toStringHelper(this)
                 .add("fileWriter", fileWriter)
-                .add("filePath", writePath + "/" + fileName)
+                .add("writeFilePath", writePath + "/" + fileWriteInfo.getWriteFileName())
+                .add("targetFilePath", targetPath + "/" + fileWriteInfo.getTargetFileName())
                 .toString();
     }
 }

@@ -15,7 +15,9 @@ package com.facebook.presto.orc.stream;
 
 import com.facebook.presto.orc.OrcCorruptionException;
 import com.facebook.presto.orc.OrcDecompressor;
+import com.facebook.presto.orc.TestingHiveOrcAggregatedMemoryContext;
 import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
+import com.facebook.presto.orc.metadata.CompressionParameters;
 import com.facebook.presto.orc.metadata.Stream;
 import com.facebook.presto.orc.metadata.Stream.StreamKind;
 import io.airlift.slice.DynamicSliceOutput;
@@ -29,8 +31,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalInt;
 
-import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.orc.OrcDecompressor.createOrcDecompressor;
 import static com.facebook.presto.orc.metadata.CompressionKind.SNAPPY;
 import static org.testng.Assert.assertEquals;
@@ -56,6 +58,54 @@ public class TestBooleanStream
         }
         groups.add(group);
         testWriteValue(groups);
+    }
+
+    @Test
+    public void testGetSetBits()
+            throws IOException
+    {
+        BooleanOutputStream outputStream = createValueOutputStream();
+        for (int i = 0; i < 100; i++) {
+            outputStream.writeBoolean(true);
+            outputStream.writeBoolean(false);
+        }
+        outputStream.close();
+
+        BooleanInputStream valueStream = createValueStream(outputStream);
+        // 0 left
+        assertAlternatingValues(valueStream, 7, true);
+        // 1 left
+        assertAlternatingValues(valueStream, 7, false);
+        // 2 left
+        assertAlternatingValues(valueStream, 7, true);
+        // 3 left
+        assertAlternatingValues(valueStream, 7, false);
+        // 4 left
+        assertAlternatingValues(valueStream, 7, true);
+        // 5 left
+        assertAlternatingValues(valueStream, 7, false);
+        // 6 left
+        assertAlternatingValues(valueStream, 7, true);
+        // 7 left
+        assertAlternatingValues(valueStream, 7, false);
+        // 0 left
+        assertAlternatingValues(valueStream, 15, true);
+        // 1 left
+        assertAlternatingValues(valueStream, 10, false);
+    }
+
+    private void assertAlternatingValues(BooleanInputStream valueStream, int batchSize, boolean expectedFirstValue)
+            throws IOException
+    {
+        boolean[] data = new boolean[batchSize];
+        int setBits = valueStream.getSetBits(batchSize, data);
+        assertEquals(setBits, (int) (expectedFirstValue ? Math.ceil(batchSize / 2.0) : Math.floor(batchSize / 2.0)));
+
+        boolean expectedValue = expectedFirstValue;
+        for (int i = 0; i < batchSize; i++) {
+            assertEquals(data[i], expectedValue);
+            expectedValue = !expectedValue;
+        }
     }
 
     @Test
@@ -89,15 +139,7 @@ public class TestBooleanStream
 
             outputStream.close();
 
-            DynamicSliceOutput sliceOutput = new DynamicSliceOutput(1000);
-            StreamDataOutput streamDataOutput = outputStream.getStreamDataOutput(33);
-            streamDataOutput.writeData(sliceOutput);
-            Stream stream = streamDataOutput.getStream();
-            assertEquals(stream.getStreamKind(), StreamKind.DATA);
-            assertEquals(stream.getColumn(), 33);
-            assertEquals(stream.getLength(), sliceOutput.size());
-
-            BooleanInputStream valueStream = createValueStream(sliceOutput.slice());
+            BooleanInputStream valueStream = createValueStream(outputStream);
             for (int index = 0; index < expectedValues.size(); index++) {
                 boolean expectedValue = expectedValues.getBoolean(index);
                 boolean actualValue = readValue(valueStream);
@@ -109,7 +151,11 @@ public class TestBooleanStream
     @Override
     protected BooleanOutputStream createValueOutputStream()
     {
-        return new BooleanOutputStream(SNAPPY, COMPRESSION_BLOCK_SIZE);
+        CompressionParameters compressionParameters = new CompressionParameters(
+                SNAPPY,
+                OptionalInt.empty(),
+                COMPRESSION_BLOCK_SIZE);
+        return new BooleanOutputStream(compressionParameters, Optional.empty());
     }
 
     @Override
@@ -123,7 +169,15 @@ public class TestBooleanStream
             throws OrcCorruptionException
     {
         Optional<OrcDecompressor> orcDecompressor = createOrcDecompressor(ORC_DATA_SOURCE_ID, SNAPPY, COMPRESSION_BLOCK_SIZE);
-        return new BooleanInputStream(new OrcInputStream(ORC_DATA_SOURCE_ID, slice.getInput(), orcDecompressor, newSimpleAggregatedMemoryContext(), slice.getRetainedSize()));
+        TestingHiveOrcAggregatedMemoryContext aggregatedMemoryContext = new TestingHiveOrcAggregatedMemoryContext();
+        return new BooleanInputStream(new OrcInputStream(
+                ORC_DATA_SOURCE_ID,
+                new SharedBuffer(aggregatedMemoryContext.newOrcLocalMemoryContext("sharedDecompressionBuffer")),
+                slice.getInput(),
+                orcDecompressor,
+                Optional.empty(),
+                aggregatedMemoryContext,
+                slice.getRetainedSize()));
     }
 
     @Override
@@ -131,5 +185,19 @@ public class TestBooleanStream
             throws IOException
     {
         return valueStream.nextBit();
+    }
+
+    private BooleanInputStream createValueStream(BooleanOutputStream outputStream)
+            throws OrcCorruptionException
+    {
+        DynamicSliceOutput sliceOutput = new DynamicSliceOutput(1000);
+        StreamDataOutput streamDataOutput = outputStream.getStreamDataOutput(33);
+        streamDataOutput.writeData(sliceOutput);
+        Stream stream = streamDataOutput.getStream();
+        assertEquals(stream.getStreamKind(), StreamKind.DATA);
+        assertEquals(stream.getColumn(), 33);
+        assertEquals(stream.getLength(), sliceOutput.size());
+
+        return createValueStream(sliceOutput.slice());
     }
 }

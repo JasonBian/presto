@@ -17,7 +17,6 @@ import com.facebook.presto.Session;
 import com.facebook.presto.execution.StateMachine.StateChangeListener;
 import com.facebook.presto.server.BasicQueryInfo;
 import com.facebook.presto.spi.ErrorCode;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 import io.airlift.units.DataSize;
 import io.airlift.units.Duration;
 
@@ -25,12 +24,15 @@ import java.util.Optional;
 
 public interface ManagedQueryExecution
 {
-    void setResourceGroup(ResourceGroupId resourceGroupId);
-
-    void start();
+    void startWaitingForResources();
 
     void fail(Throwable cause);
 
+    /**
+     * Listener is always notified asynchronously using a dedicated notification thread pool so, care should
+     * be taken to avoid leaking {@code this} when adding a listener in a constructor. Additionally, it is
+     * possible notifications are observed out of order due to the asynchronous execution.
+     */
     void addStateChangeListener(StateChangeListener<QueryState> stateChangeListener);
 
     Session getSession();

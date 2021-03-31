@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.connector.thrift;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ColumnMetadata;
-import com.facebook.presto.spi.type.Type;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -23,7 +23,6 @@ import javax.annotation.Nullable;
 
 import java.util.Objects;
 
-import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
 public final class ThriftColumnHandle
@@ -107,11 +106,6 @@ public final class ThriftColumnHandle
     @Override
     public String toString()
     {
-        return toStringHelper(this)
-                .add("columnName", columnName)
-                .add("columnType", columnType)
-                .add("comment", comment)
-                .add("hidden", hidden)
-                .toString();
+        return columnName + ":" + columnType;
     }
 }

@@ -24,7 +24,7 @@ import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.lang.String.format;
 
 @ThreadSafe
-abstract class AbstractAggregatedMemoryContext
+public abstract class AbstractAggregatedMemoryContext
         implements AggregatedMemoryContext
 {
     static final ListenableFuture<?> NOT_BLOCKED = Futures.immediateFuture(null);
@@ -32,8 +32,10 @@ abstract class AbstractAggregatedMemoryContext
     // When an aggregated memory context is closed, it force-frees the memory allocated by its
     // children local memory contexts. Since the memory pool API enforces a tag to be used for
     // reserve/free operations, we define this special tag to use with such free operations.
-    protected static final String FORCE_FREE_TAG = "FORCE_FREE_OPERATION";
+    public static final String FORCE_FREE_TAG = "FORCE_FREE_OPERATION";
 
+    @GuardedBy("this")
+    private long broadcastUsedBytes;
     @GuardedBy("this")
     private long usedBytes;
     @GuardedBy("this")
@@ -55,6 +57,11 @@ abstract class AbstractAggregatedMemoryContext
     public synchronized long getBytes()
     {
         return usedBytes;
+    }
+
+    public synchronized long getBroadcastBytes()
+    {
+        return broadcastUsedBytes;
     }
 
     @Override
@@ -87,9 +94,14 @@ abstract class AbstractAggregatedMemoryContext
         usedBytes = addExact(usedBytes, bytes);
     }
 
-    abstract ListenableFuture<?> updateBytes(String allocationTag, long bytes);
+    synchronized void addBroadcastBytes(long bytes)
+    {
+        broadcastUsedBytes = addExact(broadcastUsedBytes, bytes);
+    }
 
-    abstract boolean tryUpdateBytes(String allocationTag, long delta);
+    abstract ListenableFuture<?> updateBytes(String allocationTag, long bytes, boolean enforceBroadcastMemoryLimit);
+
+    abstract boolean tryUpdateBytes(String allocationTag, long delta, boolean enforceBroadcastMemoryLimit);
 
     @Nullable
     abstract AbstractAggregatedMemoryContext getParent();

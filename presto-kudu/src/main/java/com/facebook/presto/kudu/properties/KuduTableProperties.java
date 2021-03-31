@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.kudu.properties;
 
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.session.PropertyMetadata;
-import com.facebook.presto.spi.type.TypeManager;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.collect.ImmutableList;
 import org.apache.kudu.ColumnSchema;
@@ -48,11 +48,11 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
 import static com.facebook.presto.spi.StandardErrorCode.GENERIC_USER_ERROR;
 import static com.facebook.presto.spi.session.PropertyMetadata.booleanProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.integerProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.stringProperty;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
@@ -65,7 +65,7 @@ public final class KuduTableProperties
     public static final String PARTITION_BY_HASH_BUCKETS_2 = "partition_by_second_hash_buckets";
     public static final String PARTITION_BY_RANGE_COLUMNS = "partition_by_range_columns";
     public static final String RANGE_PARTITIONS = "range_partitions";
-    public static final String NUM_REPLICAS = "num_replicas";
+    public static final String NUM_REPLICAS = "number_of_replicas";
     public static final String PRIMARY_KEY = "primary_key";
     public static final String NULLABLE = "nullable";
     public static final String ENCODING = "encoding";
@@ -321,7 +321,7 @@ public final class KuduTableProperties
             String partitionRangesValue = mapper.writeValueAsString(rangePartitionList);
             properties.put(RANGE_PARTITIONS, partitionRangesValue);
 
-            // currently no access to numReplicas?
+            properties.put(NUM_REPLICAS, table.getNumReplicas());
 
             return properties;
         }

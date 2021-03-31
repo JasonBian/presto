@@ -13,15 +13,20 @@
  */
 package com.facebook.presto.hive;
 
-import org.apache.hadoop.fs.FileSystem;
-import org.apache.hadoop.fs.LocatedFileStatus;
+import com.facebook.presto.hive.filesystem.ExtendedFileSystem;
+import com.facebook.presto.hive.metastore.Table;
 import org.apache.hadoop.fs.Path;
-import org.apache.hadoop.fs.RemoteIterator;
+import org.apache.hadoop.fs.PathFilter;
 
-import java.io.IOException;
+import java.util.Iterator;
 
 public interface DirectoryLister
 {
-    RemoteIterator<LocatedFileStatus> list(FileSystem fs, Path path)
-            throws IOException;
+    Iterator<HiveFileInfo> list(
+            ExtendedFileSystem fileSystem,
+            Table table,
+            Path path,
+            NamenodeStats namenodeStats,
+            PathFilter pathFilter,
+            HiveDirectoryContext hiveDirectoryContext);
 }

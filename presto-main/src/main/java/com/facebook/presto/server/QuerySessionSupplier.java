@@ -14,40 +14,26 @@
 package com.facebook.presto.server;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.type.TimeZoneKey;
 import com.facebook.presto.metadata.SessionPropertyManager;
 import com.facebook.presto.security.AccessControl;
 import com.facebook.presto.spi.QueryId;
-import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
-import com.facebook.presto.spi.resourceGroups.SessionPropertyConfigurationManagerContext;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.security.AccessControlContext;
 import com.facebook.presto.spi.security.Identity;
-import com.facebook.presto.spi.session.SessionConfigurationContext;
-import com.facebook.presto.spi.session.SessionPropertyConfigurationManager;
-import com.facebook.presto.spi.session.SessionPropertyConfigurationManagerFactory;
 import com.facebook.presto.sql.SqlEnvironmentConfig;
-import com.facebook.presto.sql.SqlPath;
 import com.facebook.presto.transaction.TransactionManager;
-import com.google.common.annotations.VisibleForTesting;
-import io.airlift.log.Logger;
-import io.airlift.node.NodeInfo;
 
 import javax.annotation.concurrent.ThreadSafe;
 import javax.inject.Inject;
 
-import java.io.File;
-import java.io.IOException;
-import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.atomic.AtomicReference;
 
 import static com.facebook.presto.Session.SessionBuilder;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKey;
-import static com.facebook.presto.util.PropertiesUtil.loadProperties;
-import static com.google.common.base.Preconditions.checkArgument;
-import static com.google.common.base.Preconditions.checkState;
-import static java.lang.String.format;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKey;
 import static java.util.Map.Entry;
 import static java.util.Objects.requireNonNull;
 
@@ -55,76 +41,31 @@ import static java.util.Objects.requireNonNull;
 public class QuerySessionSupplier
         implements SessionSupplier
 {
-    private static final Logger log = Logger.get(QuerySessionSupplier.class);
-    private static final File SESSION_PROPERTY_CONFIGURATION = new File("etc/session-property-config.properties");
-    private static final String SESSION_PROPERTY_MANAGER_NAME = "session-property-config.configuration-manager";
-
-    private final SessionPropertyConfigurationManagerContext configurationManagerContext;
     private final TransactionManager transactionManager;
     private final AccessControl accessControl;
     private final SessionPropertyManager sessionPropertyManager;
-    private final Map<String, SessionPropertyConfigurationManagerFactory> sessionPropertyConfigurationManagerFactories = new ConcurrentHashMap<>();
-    private final AtomicReference<SessionPropertyConfigurationManager> sessionPropertyConfigurationManager = new AtomicReference<>();
-    private final Optional<String> path;
+    private final Optional<TimeZoneKey> forcedSessionTimeZone;
 
     @Inject
     public QuerySessionSupplier(
-            NodeInfo nodeInfo,
             TransactionManager transactionManager,
             AccessControl accessControl,
             SessionPropertyManager sessionPropertyManager,
             SqlEnvironmentConfig config)
     {
-        this.configurationManagerContext = new SessionPropertyConfigurationManagerContextInstance(nodeInfo.getEnvironment());
         this.transactionManager = requireNonNull(transactionManager, "transactionManager is null");
         this.accessControl = requireNonNull(accessControl, "accessControl is null");
         this.sessionPropertyManager = requireNonNull(sessionPropertyManager, "sessionPropertyManager is null");
-        this.path = requireNonNull(config.getPath(), "path is null");
+        requireNonNull(config, "config is null");
+        this.forcedSessionTimeZone = requireNonNull(config.getForcedSessionTimeZone(), "forcedSessionTimeZone is null");
     }
 
     @Override
-    public void addConfigurationManager(SessionPropertyConfigurationManagerFactory sessionConfigFactory)
-    {
-        if (sessionPropertyConfigurationManagerFactories.putIfAbsent(sessionConfigFactory.getName(), sessionConfigFactory) != null) {
-            throw new IllegalArgumentException(format("Session property configuration manager '%s' is already registered", sessionConfigFactory.getName()));
-        }
-    }
-
-    @Override
-    public void loadConfigurationManager()
-            throws IOException
-    {
-        if (!SESSION_PROPERTY_CONFIGURATION.exists()) {
-            return;
-        }
-
-        Map<String, String> propertyMap = new HashMap<>(loadProperties(SESSION_PROPERTY_CONFIGURATION));
-
-        log.info("-- Loading session property configuration manager --");
-
-        String configManagerName = propertyMap.remove(SESSION_PROPERTY_MANAGER_NAME);
-        checkArgument(configManagerName != null, "Session property configuration %s does not contain %s", SESSION_PROPERTY_CONFIGURATION, SESSION_PROPERTY_MANAGER_NAME);
-
-        setConfigurationManager(configManagerName, propertyMap);
-
-        log.info("-- Loaded session property configuration manager %s --", configManagerName);
-    }
-
-    @VisibleForTesting
-    public void setConfigurationManager(String name, Map<String, String> properties)
-    {
-        SessionPropertyConfigurationManagerFactory factory = sessionPropertyConfigurationManagerFactories.get(name);
-        checkState(factory != null, "Session property configuration manager '%s' is not registered", name);
-
-        SessionPropertyConfigurationManager manager = factory.create(properties, configurationManagerContext);
-        checkState(sessionPropertyConfigurationManager.compareAndSet(null, manager), "sessionPropertyConfigurationManager is already set");
-    }
-
-    @Override
-    public Session createSession(QueryId queryId, SessionContext context, Optional<String> queryType, ResourceGroupId resourceGroupId)
+    public Session createSession(QueryId queryId, SessionContext context)
     {
         Identity identity = context.getIdentity();
-        accessControl.checkCanSetUser(identity.getPrincipal(), identity.getUser());
+        accessControl.checkCanSetUser(new AccessControlContext(queryId, Optional.ofNullable(context.getClientInfo()), Optional.ofNullable(context.getSource())),
+                identity.getPrincipal(), identity.getUser());
 
         SessionBuilder sessionBuilder = Session.builder(sessionPropertyManager)
                 .setQueryId(queryId)
@@ -132,43 +73,22 @@ public class QuerySessionSupplier
                 .setSource(context.getSource())
                 .setCatalog(context.getCatalog())
                 .setSchema(context.getSchema())
-                .setPath(new SqlPath(path))
                 .setRemoteUserAddress(context.getRemoteUserAddress())
                 .setUserAgent(context.getUserAgent())
                 .setClientInfo(context.getClientInfo())
                 .setClientTags(context.getClientTags())
-                .setClientCapabilities(context.getClientCapabilities())
                 .setTraceToken(context.getTraceToken())
                 .setResourceEstimates(context.getResourceEstimates());
 
-        if (context.getPath() != null) {
-            sessionBuilder.setPath(new SqlPath(Optional.of(context.getPath())));
+        if (forcedSessionTimeZone.isPresent()) {
+            sessionBuilder.setTimeZoneKey(forcedSessionTimeZone.get());
         }
-
-        if (context.getTimeZoneId() != null) {
+        else if (context.getTimeZoneId() != null) {
             sessionBuilder.setTimeZoneKey(getTimeZoneKey(context.getTimeZoneId()));
         }
 
         if (context.getLanguage() != null) {
             sessionBuilder.setLocale(Locale.forLanguageTag(context.getLanguage()));
-        }
-
-        if (sessionPropertyConfigurationManager.get() != null) {
-            SessionConfigurationContext configContext = new SessionConfigurationContext(
-                    context.getIdentity().getUser(),
-                    Optional.ofNullable(context.getSource()),
-                    context.getClientTags(),
-                    queryType,
-                    resourceGroupId);
-            for (Entry<String, String> entry : sessionPropertyConfigurationManager.get().getSystemSessionProperties(configContext).entrySet()) {
-                sessionBuilder.setSystemProperty(entry.getKey(), entry.getValue());
-            }
-            for (Entry<String, Map<String, String>> catalogProperties : sessionPropertyConfigurationManager.get().getCatalogSessionProperties(configContext).entrySet()) {
-                String catalog = catalogProperties.getKey();
-                for (Entry<String, String> entry : catalogProperties.getValue().entrySet()) {
-                    sessionBuilder.setCatalogSessionProperty(catalog, entry.getKey(), entry.getValue());
-                }
-            }
         }
 
         for (Entry<String, String> entry : context.getSystemProperties().entrySet()) {
@@ -187,6 +107,10 @@ public class QuerySessionSupplier
 
         if (context.supportClientTransaction()) {
             sessionBuilder.setClientTransactionSupport();
+        }
+
+        for (Entry<SqlFunctionId, SqlInvokedFunction> entry : context.getSessionFunctions().entrySet()) {
+            sessionBuilder.addSessionFunction(entry.getKey(), entry.getValue());
         }
 
         Session session = sessionBuilder.build();

@@ -13,6 +13,8 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.presto.orc.zstd.ZstdJniDecompressor;
+import io.airlift.compress.Decompressor;
 import io.airlift.compress.MalformedInputException;
 import io.airlift.compress.zstd.ZstdDecompressor;
 
@@ -24,12 +26,18 @@ class OrcZstdDecompressor
 {
     private final OrcDataSourceId orcDataSourceId;
     private final int maxBufferSize;
-    private final ZstdDecompressor decompressor = new ZstdDecompressor();
+    private final Decompressor decompressor;
 
-    public OrcZstdDecompressor(OrcDataSourceId orcDataSourceId, int maxBufferSize)
+    public OrcZstdDecompressor(OrcDataSourceId orcDataSourceId, int maxBufferSize, boolean zstdJniDecompressionEnabled)
     {
         this.orcDataSourceId = requireNonNull(orcDataSourceId, "orcDataSourceId is null");
         this.maxBufferSize = maxBufferSize;
+        if (zstdJniDecompressionEnabled) {
+            this.decompressor = new ZstdJniDecompressor();
+        }
+        else {
+            this.decompressor = new ZstdDecompressor();
+        }
     }
 
     @Override

@@ -13,20 +13,23 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.execution.buffer.OutputBuffer;
-import com.facebook.presto.execution.buffer.PagesSerde;
 import com.facebook.presto.execution.buffer.PagesSerdeFactory;
-import com.facebook.presto.execution.buffer.SerializedPage;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.spi.page.PagesSerde;
+import com.facebook.presto.spi.page.SerializedPage;
+import com.facebook.presto.spi.plan.PlanNodeId;
+import com.facebook.presto.sql.planner.OutputPartitioning;
 import com.google.common.util.concurrent.ListenableFuture;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.function.Function;
 
+import static com.facebook.presto.common.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
 import static com.facebook.presto.execution.buffer.PageSplitterUtil.splitPage;
-import static com.facebook.presto.spi.block.PageBuilderStatus.DEFAULT_MAX_PAGE_SIZE_IN_BYTES;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
 
@@ -44,8 +47,15 @@ public class TaskOutputOperator
         }
 
         @Override
-        public OperatorFactory createOutputOperator(int operatorId, PlanNodeId planNodeId, List<Type> types, Function<Page, Page> pagePreprocessor, PagesSerdeFactory serdeFactory)
+        public OperatorFactory createOutputOperator(
+                int operatorId,
+                PlanNodeId planNodeId,
+                List<Type> types,
+                Function<Page, Page> pagePreprocessor,
+                Optional<OutputPartitioning> outputPartitioning,
+                PagesSerdeFactory serdeFactory)
         {
+            checkArgument(!outputPartitioning.isPresent(), "outputPartitioning is not expected to be present");
             return new TaskOutputOperatorFactory(operatorId, planNodeId, outputBuffer, pagePreprocessor, serdeFactory);
         }
     }
@@ -91,6 +101,7 @@ public class TaskOutputOperator
     private final OutputBuffer outputBuffer;
     private final Function<Page, Page> pagePreprocessor;
     private final PagesSerde serde;
+    private ListenableFuture<?> isBlocked = NOT_BLOCKED;
     private boolean finished;
 
     public TaskOutputOperator(OperatorContext operatorContext, OutputBuffer outputBuffer, Function<Page, Page> pagePreprocessor, PagesSerdeFactory serdeFactory)
@@ -122,8 +133,14 @@ public class TaskOutputOperator
     @Override
     public ListenableFuture<?> isBlocked()
     {
-        ListenableFuture<?> blocked = outputBuffer.isFull();
-        return blocked.isDone() ? NOT_BLOCKED : blocked;
+        // Avoid re-synchronizing on the output buffer when operator is already blocked
+        if (isBlocked.isDone()) {
+            isBlocked = outputBuffer.isFull();
+            if (isBlocked.isDone()) {
+                isBlocked = NOT_BLOCKED;
+            }
+        }
+        return isBlocked;
     }
 
     @Override
@@ -146,8 +163,8 @@ public class TaskOutputOperator
                 .map(serde::serialize)
                 .collect(toImmutableList());
 
-        outputBuffer.enqueue(serializedPages);
-        operatorContext.recordGeneratedOutput(page.getSizeInBytes(), page.getPositionCount());
+        outputBuffer.enqueue(operatorContext.getDriverContext().getLifespan(), serializedPages);
+        operatorContext.recordOutput(page.getSizeInBytes(), page.getPositionCount());
     }
 
     @Override

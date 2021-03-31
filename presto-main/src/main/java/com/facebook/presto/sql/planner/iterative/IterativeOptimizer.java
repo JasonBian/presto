@@ -24,12 +24,13 @@ import com.facebook.presto.cost.StatsProvider;
 import com.facebook.presto.matching.Match;
 import com.facebook.presto.matching.Matcher;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.sql.planner.PlanNodeIdAllocator;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNodeIdAllocator;
+import com.facebook.presto.sql.planner.PlanVariableAllocator;
 import com.facebook.presto.sql.planner.RuleStatsRecorder;
-import com.facebook.presto.sql.planner.SymbolAllocator;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.optimizations.PlanOptimizer;
-import com.facebook.presto.sql.planner.plan.PlanNode;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.Duration;
 
@@ -74,12 +75,12 @@ public class IterativeOptimizer
     }
 
     @Override
-    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, SymbolAllocator symbolAllocator, PlanNodeIdAllocator idAllocator)
+    public PlanNode optimize(PlanNode plan, Session session, TypeProvider types, PlanVariableAllocator variableAllocator, PlanNodeIdAllocator idAllocator, WarningCollector warningCollector)
     {
         // only disable new rules if we have legacy rules to fall back to
         if (!SystemSessionProperties.isNewOptimizerEnabled(session) && !legacyRules.isEmpty()) {
             for (PlanOptimizer optimizer : legacyRules) {
-                plan = optimizer.optimize(plan, session, symbolAllocator.getTypes(), symbolAllocator, idAllocator);
+                plan = optimizer.optimize(plan, session, variableAllocator.getTypes(), variableAllocator, idAllocator, warningCollector);
             }
 
             return plan;
@@ -90,9 +91,11 @@ public class IterativeOptimizer
         Matcher matcher = new PlanNodeMatcher(lookup);
 
         Duration timeout = SystemSessionProperties.getOptimizerTimeout(session);
-        Context context = new Context(memo, lookup, idAllocator, symbolAllocator, System.nanoTime(), timeout.toMillis(), session);
-        exploreGroup(memo.getRootGroup(), context, matcher);
-
+        Context context = new Context(memo, lookup, idAllocator, variableAllocator, System.nanoTime(), timeout.toMillis(), session, warningCollector);
+        boolean planChanged = exploreGroup(memo.getRootGroup(), context, matcher);
+        if (!planChanged) {
+            return plan;
+        }
         return memo.extract();
     }
 
@@ -192,8 +195,8 @@ public class IterativeOptimizer
 
     private Rule.Context ruleContext(Context context)
     {
-        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, Optional.of(context.memo), context.lookup, context.session, context.symbolAllocator.getTypes());
-        CostProvider costProvider = new CachingCostProvider(costCalculator, statsProvider, Optional.of(context.memo), context.lookup, context.session, context.symbolAllocator.getTypes());
+        StatsProvider statsProvider = new CachingStatsProvider(statsCalculator, Optional.of(context.memo), context.lookup, context.session, context.variableAllocator.getTypes());
+        CostProvider costProvider = new CachingCostProvider(costCalculator, statsProvider, Optional.of(context.memo), context.session);
 
         return new Rule.Context()
         {
@@ -210,9 +213,9 @@ public class IterativeOptimizer
             }
 
             @Override
-            public SymbolAllocator getSymbolAllocator()
+            public PlanVariableAllocator getVariableAllocator()
             {
-                return context.symbolAllocator;
+                return context.variableAllocator;
             }
 
             @Override
@@ -238,6 +241,12 @@ public class IterativeOptimizer
             {
                 context.checkTimeoutNotExhausted();
             }
+
+            @Override
+            public WarningCollector getWarningCollector()
+            {
+                return context.warningCollector;
+            }
         };
     }
 
@@ -246,29 +255,32 @@ public class IterativeOptimizer
         private final Memo memo;
         private final Lookup lookup;
         private final PlanNodeIdAllocator idAllocator;
-        private final SymbolAllocator symbolAllocator;
+        private final PlanVariableAllocator variableAllocator;
         private final long startTimeInNanos;
         private final long timeoutInMilliseconds;
         private final Session session;
+        private final WarningCollector warningCollector;
 
         public Context(
                 Memo memo,
                 Lookup lookup,
                 PlanNodeIdAllocator idAllocator,
-                SymbolAllocator symbolAllocator,
+                PlanVariableAllocator variableAllocator,
                 long startTimeInNanos,
                 long timeoutInMilliseconds,
-                Session session)
+                Session session,
+                WarningCollector warningCollector)
         {
             checkArgument(timeoutInMilliseconds >= 0, "Timeout has to be a non-negative number [milliseconds]");
 
             this.memo = memo;
             this.lookup = lookup;
             this.idAllocator = idAllocator;
-            this.symbolAllocator = symbolAllocator;
+            this.variableAllocator = variableAllocator;
             this.startTimeInNanos = startTimeInNanos;
             this.timeoutInMilliseconds = timeoutInMilliseconds;
             this.session = session;
+            this.warningCollector = warningCollector;
         }
 
         public void checkTimeoutNotExhausted()

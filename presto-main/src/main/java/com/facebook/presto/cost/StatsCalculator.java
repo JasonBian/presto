@@ -14,16 +14,17 @@
 package com.facebook.presto.cost;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.spi.plan.PlanNode;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.IterativeOptimizer;
 import com.facebook.presto.sql.planner.iterative.Lookup;
-import com.facebook.presto.sql.planner.plan.PlanNode;
 
 public interface StatsCalculator
 {
     /**
      * Calculate stats for the {@code node}.
-     *  @param node The node to compute stats for.
+     *
+     * @param node The node to compute stats for.
      * @param sourceStats The stats provider for any child nodes' stats, if needed to compute stats for the {@code node}
      * @param lookup Lookup to be used when resolving source nodes, allowing stats calculation to work within {@link IterativeOptimizer}
      * @param types

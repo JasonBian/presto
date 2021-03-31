@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.atop;
 
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.spi.NodeManager;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.inject.Binder;
 import com.google.inject.Module;
 import com.google.inject.Scopes;
 
-import static io.airlift.configuration.ConfigBinder.configBinder;
+import static com.facebook.airlift.configuration.ConfigBinder.configBinder;
 import static java.util.Objects.requireNonNull;
 
 public class AtopModule

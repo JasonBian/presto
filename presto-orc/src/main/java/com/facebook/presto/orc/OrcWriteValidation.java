@@ -13,6 +13,17 @@
  */
 package com.facebook.presto.orc;
 
+import com.facebook.presto.common.GenericInternalException;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.ColumnarMap;
+import com.facebook.presto.common.block.ColumnarRow;
+import com.facebook.presto.common.type.AbstractLongType;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.orc.metadata.CompressionKind;
 import com.facebook.presto.orc.metadata.PostScript.HiveWriterVersion;
 import com.facebook.presto.orc.metadata.RowGroupIndex;
@@ -31,17 +42,6 @@ import com.facebook.presto.orc.metadata.statistics.StatisticsHasher;
 import com.facebook.presto.orc.metadata.statistics.StringStatistics;
 import com.facebook.presto.orc.metadata.statistics.StringStatisticsBuilder;
 import com.facebook.presto.orc.metadata.statistics.StripeStatistics;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.ColumnarMap;
-import com.facebook.presto.spi.block.ColumnarRow;
-import com.facebook.presto.spi.type.AbstractLongType;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableSortedMap;
 import com.google.common.collect.Iterables;
@@ -56,32 +56,33 @@ import java.util.List;
 import java.util.Map;
 import java.util.Map.Entry;
 import java.util.Objects;
+import java.util.Set;
 import java.util.SortedMap;
 import java.util.function.Function;
+import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
+import static com.facebook.presto.common.block.ColumnarArray.toColumnarArray;
+import static com.facebook.presto.common.block.ColumnarMap.toColumnarMap;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.StandardTypes.ARRAY;
+import static com.facebook.presto.common.type.StandardTypes.MAP;
+import static com.facebook.presto.common.type.StandardTypes.ROW;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode.BOTH;
 import static com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode.DETAILED;
 import static com.facebook.presto.orc.OrcWriteValidation.OrcWriteValidationMode.HASHED;
 import static com.facebook.presto.orc.metadata.DwrfMetadataWriter.STATIC_METADATA;
 import static com.facebook.presto.orc.metadata.OrcMetadataReader.maxStringTruncateToValidRange;
 import static com.facebook.presto.orc.metadata.OrcMetadataReader.minStringTruncateToValidRange;
-import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
-import static com.facebook.presto.spi.block.ColumnarArray.toColumnarArray;
-import static com.facebook.presto.spi.block.ColumnarMap.toColumnarMap;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.StandardTypes.ARRAY;
-import static com.facebook.presto.spi.type.StandardTypes.MAP;
-import static com.facebook.presto.spi.type.StandardTypes.ROW;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.ImmutableList.toImmutableList;
@@ -92,7 +93,8 @@ import static java.util.function.Function.identity;
 
 public class OrcWriteValidation
 {
-    public enum OrcWriteValidationMode {
+    public enum OrcWriteValidationMode
+    {
         HASHED, DETAILED, BOTH
     }
 
@@ -177,10 +179,6 @@ public class OrcWriteValidation
     public void validateFileStatistics(OrcDataSourceId orcDataSourceId, List<ColumnStatistics> actualFileStatistics)
             throws OrcCorruptionException
     {
-        if (actualFileStatistics.isEmpty()) {
-            // DWRF file statistics are disabled
-            return;
-        }
         validateColumnStatisticsEquivalent(orcDataSourceId, "file", actualFileStatistics, fileStatistics);
     }
 
@@ -216,7 +214,7 @@ public class OrcWriteValidation
         validateColumnStatisticsEquivalent(orcDataSourceId, "Stripe at " + stripeOffset, actual, expected.getColumnStatistics());
     }
 
-    public void validateRowGroupStatistics(OrcDataSourceId orcDataSourceId, long stripeOffset, Map<Integer, List<RowGroupIndex>> actualRowGroupStatistics)
+    public void validateRowGroupStatistics(OrcDataSourceId orcDataSourceId, long stripeOffset, Map<StreamId, List<RowGroupIndex>> actualRowGroupStatistics)
             throws OrcCorruptionException
     {
         requireNonNull(actualRowGroupStatistics, "actualRowGroupStatistics is null");
@@ -226,7 +224,11 @@ public class OrcWriteValidation
         }
 
         int rowGroupCount = expectedRowGroupStatistics.size();
-        for (Entry<Integer, List<RowGroupIndex>> entry : actualRowGroupStatistics.entrySet()) {
+        for (Entry<StreamId, List<RowGroupIndex>> entry : actualRowGroupStatistics.entrySet()) {
+            // TODO: Remove once the Presto writer supports flat map
+            if (entry.getKey().getSequence() > 0) {
+                throw new OrcCorruptionException(orcDataSourceId, "Unexpected sequence ID for column %s at offset %s", entry.getKey().getColumn(), stripeOffset);
+            }
             if (entry.getValue().size() != rowGroupCount) {
                 throw new OrcCorruptionException(orcDataSourceId, "Unexpected row group count stripe in at offset %s", stripeOffset);
             }
@@ -236,14 +238,15 @@ public class OrcWriteValidation
             RowGroupStatistics expectedRowGroup = expectedRowGroupStatistics.get(rowGroupIndex);
             if (expectedRowGroup.getValidationMode() != HASHED) {
                 Map<Integer, ColumnStatistics> expectedStatistics = expectedRowGroup.getColumnStatistics();
-                if (!expectedStatistics.keySet().equals(actualRowGroupStatistics.keySet())) {
+                Set<Integer> actualColumns = actualRowGroupStatistics.keySet().stream()
+                        .map(StreamId::getColumn)
+                        .collect(Collectors.toSet());
+                if (!expectedStatistics.keySet().equals(actualColumns)) {
                     throw new OrcCorruptionException(orcDataSourceId, "Unexpected column in row group %s in stripe at offset %s", rowGroupIndex, stripeOffset);
                 }
-                for (Entry<Integer, ColumnStatistics> entry : expectedStatistics.entrySet()) {
-                    int columnIndex = entry.getKey();
-                    List<RowGroupIndex> actualRowGroup = actualRowGroupStatistics.get(columnIndex);
-                    ColumnStatistics actual = actualRowGroup.get(rowGroupIndex).getColumnStatistics();
-                    ColumnStatistics expected = entry.getValue();
+                for (Entry<StreamId, List<RowGroupIndex>> entry : actualRowGroupStatistics.entrySet()) {
+                    ColumnStatistics actual = entry.getValue().get(rowGroupIndex).getColumnStatistics();
+                    ColumnStatistics expected = expectedStatistics.get(entry.getKey().getColumn());
                     validateColumnStatisticsEquivalent(orcDataSourceId, "Row group " + rowGroupIndex + " in stripe at offset " + stripeOffset, actual, expected);
                 }
             }
@@ -257,13 +260,13 @@ public class OrcWriteValidation
         }
     }
 
-    private static RowGroupStatistics buildActualRowGroupStatistics(int rowGroupIndex, Map<Integer, List<RowGroupIndex>> actualRowGroupStatistics)
+    private static RowGroupStatistics buildActualRowGroupStatistics(int rowGroupIndex, Map<StreamId, List<RowGroupIndex>> actualRowGroupStatistics)
     {
         return new RowGroupStatistics(
-                        BOTH,
-                        IntStream.range(1, actualRowGroupStatistics.size() + 1)
-                                .boxed()
-                                .collect(toImmutableMap(identity(), columnIndex -> actualRowGroupStatistics.get(columnIndex).get(rowGroupIndex).getColumnStatistics())));
+                BOTH,
+                actualRowGroupStatistics.entrySet()
+                        .stream()
+                        .collect(Collectors.toMap(entry -> entry.getKey().getColumn(), entry -> entry.getValue().get(rowGroupIndex).getColumnStatistics())));
     }
 
     public void validateRowGroupStatistics(
@@ -355,6 +358,7 @@ public class OrcWriteValidation
         if (actualColumnStatistics.getNumberOfValues() != expectedColumnStatistics.getNumberOfValues()) {
             throw new OrcCorruptionException(orcDataSourceId, "Write validation failed: unexpected number of values in %s statistics", name);
         }
+
         if (!Objects.equals(actualColumnStatistics.getBooleanStatistics(), expectedColumnStatistics.getBooleanStatistics())) {
             throw new OrcCorruptionException(orcDataSourceId, "Write validation failed: unexpected boolean counts in %s statistics", name);
         }
@@ -719,7 +723,7 @@ public class OrcWriteValidation
                         .collect(toImmutableList());
             }
             else {
-                throw new PrestoException(NOT_SUPPORTED, format("Unsupported Hive type: %s", type));
+                throw new GenericInternalException(format("Unsupported Hive type: %s", type));
             }
         }
 

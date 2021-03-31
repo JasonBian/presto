@@ -14,7 +14,10 @@
 package com.facebook.presto.sql.analyzer;
 
 import com.facebook.presto.metadata.Metadata;
+import com.facebook.presto.spi.PrestoWarning;
+import com.facebook.presto.spi.WarningCollector;
 import com.facebook.presto.sql.planner.ParameterRewriter;
+import com.facebook.presto.sql.relational.FunctionResolution;
 import com.facebook.presto.sql.tree.ArithmeticBinaryExpression;
 import com.facebook.presto.sql.tree.ArithmeticUnaryExpression;
 import com.facebook.presto.sql.tree.ArrayConstructor;
@@ -60,16 +63,20 @@ import com.facebook.presto.sql.tree.WhenClause;
 import com.facebook.presto.sql.tree.Window;
 import com.facebook.presto.sql.tree.WindowFrame;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.Multimap;
 
 import javax.annotation.Nullable;
 
+import java.util.Collection;
 import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
 
+import static com.facebook.presto.spi.StandardWarningCode.PERFORMANCE_WARNING;
+import static com.facebook.presto.spi.function.FunctionKind.AGGREGATE;
 import static com.facebook.presto.sql.NodeUtils.getSortItemsFromOrderBy;
+import static com.facebook.presto.sql.analyzer.ExpressionTreeUtils.checkAndGetColumnReferenceField;
 import static com.facebook.presto.sql.analyzer.ExpressionTreeUtils.extractAggregateFunctions;
 import static com.facebook.presto.sql.analyzer.ExpressionTreeUtils.extractWindowFunctions;
 import static com.facebook.presto.sql.analyzer.FreeLambdaReferenceExtractor.hasFreeReferencesToLambdaArgument;
@@ -98,22 +105,25 @@ class AggregationAnalyzer
     // fields and expressions in the group by clause
     private final Set<FieldId> groupingFields;
     private final List<Expression> expressions;
-    private final Map<NodeRef<Expression>, FieldId> columnReferences;
+    private final Multimap<NodeRef<Expression>, FieldId> columnReferences;
 
     private final Metadata metadata;
     private final Analysis analysis;
 
     private final Scope sourceScope;
     private final Optional<Scope> orderByScope;
+    private final WarningCollector warningCollector;
+    private final FunctionResolution functionResolution;
 
     public static void verifySourceAggregations(
             List<Expression> groupByExpressions,
             Scope sourceScope,
             Expression expression,
             Metadata metadata,
-            Analysis analysis)
+            Analysis analysis,
+            WarningCollector warningCollector)
     {
-        AggregationAnalyzer analyzer = new AggregationAnalyzer(groupByExpressions, sourceScope, Optional.empty(), metadata, analysis);
+        AggregationAnalyzer analyzer = new AggregationAnalyzer(groupByExpressions, sourceScope, Optional.empty(), metadata, analysis, warningCollector);
         analyzer.analyze(expression);
     }
 
@@ -123,24 +133,28 @@ class AggregationAnalyzer
             Scope orderByScope,
             Expression expression,
             Metadata metadata,
-            Analysis analysis)
+            Analysis analysis,
+            WarningCollector warningCollector)
     {
-        AggregationAnalyzer analyzer = new AggregationAnalyzer(groupByExpressions, sourceScope, Optional.of(orderByScope), metadata, analysis);
+        AggregationAnalyzer analyzer = new AggregationAnalyzer(groupByExpressions, sourceScope, Optional.of(orderByScope), metadata, analysis, warningCollector);
         analyzer.analyze(expression);
     }
 
-    private AggregationAnalyzer(List<Expression> groupByExpressions, Scope sourceScope, Optional<Scope> orderByScope, Metadata metadata, Analysis analysis)
+    private AggregationAnalyzer(List<Expression> groupByExpressions, Scope sourceScope, Optional<Scope> orderByScope, Metadata metadata, Analysis analysis, WarningCollector warningCollector)
     {
         requireNonNull(groupByExpressions, "groupByExpressions is null");
         requireNonNull(sourceScope, "sourceScope is null");
         requireNonNull(orderByScope, "orderByScope is null");
         requireNonNull(metadata, "metadata is null");
         requireNonNull(analysis, "analysis is null");
+        requireNonNull(warningCollector, "warningCollector is null");
 
         this.sourceScope = sourceScope;
+        this.warningCollector = warningCollector;
         this.orderByScope = orderByScope;
         this.metadata = metadata;
         this.analysis = analysis;
+        this.functionResolution = new FunctionResolution(metadata.getFunctionAndTypeManager());
         this.expressions = groupByExpressions.stream()
                 .map(e -> ExpressionTreeRewriter.rewriteWith(new ParameterRewriter(analysis.getParameters()), e))
                 .collect(toImmutableList());
@@ -151,6 +165,7 @@ class AggregationAnalyzer
                 .map(NodeRef::of)
                 .filter(columnReferences::containsKey)
                 .map(columnReferences::get)
+                .flatMap(Collection::stream)
                 .collect(toImmutableSet());
 
         this.groupingFields.forEach(fieldId -> {
@@ -313,9 +328,14 @@ class AggregationAnalyzer
         @Override
         protected Boolean visitFunctionCall(FunctionCall node, Void context)
         {
-            if (metadata.isAggregationFunction(node.getName())) {
+            if (metadata.getFunctionAndTypeManager().getFunctionMetadata(analysis.getFunctionHandle(node)).getFunctionKind() == AGGREGATE) {
+                if (functionResolution.isCountFunction(analysis.getFunctionHandle(node)) && node.isDistinct()) {
+                    warningCollector.add(new PrestoWarning(
+                            PERFORMANCE_WARNING,
+                            "COUNT(DISTINCT xxx) can be a very expensive operation when the cardinality is high for xxx. In most scenarios, using approx_distinct instead would be enough"));
+                }
                 if (!node.getWindow().isPresent()) {
-                    List<FunctionCall> aggregateFunctions = extractAggregateFunctions(node.getArguments(), metadata.getFunctionRegistry());
+                    List<FunctionCall> aggregateFunctions = extractAggregateFunctions(analysis.getFunctionHandles(), node.getArguments(), metadata.getFunctionAndTypeManager());
                     List<FunctionCall> windowFunctions = extractWindowFunctions(node.getArguments());
 
                     if (!aggregateFunctions.isEmpty()) {
@@ -343,9 +363,11 @@ class AggregationAnalyzer
                                     .map(NodeRef::of)
                                     .map(columnReferences::get)
                                     .filter(Objects::nonNull)
+                                    .flatMap(Collection::stream)
                                     .collect(toImmutableList());
                             for (Expression sortKey : sortKeys) {
-                                if (!node.getArguments().contains(sortKey) && !fieldIds.contains(columnReferences.get(NodeRef.of(sortKey)))) {
+                                if (!node.getArguments().contains(sortKey)
+                                        && !(columnReferences.containsKey(NodeRef.of(sortKey)) && fieldIds.containsAll(columnReferences.get(NodeRef.of(sortKey))))) {
                                     throw new SemanticException(
                                             ORDER_BY_MUST_BE_IN_AGGREGATE,
                                             sortKey,
@@ -482,8 +504,7 @@ class AggregationAnalyzer
 
         private boolean isGroupingKey(Expression node)
         {
-            FieldId fieldId = columnReferences.get(NodeRef.of(node));
-            requireNonNull(fieldId, () -> "No FieldId for " + node);
+            FieldId fieldId = checkAndGetColumnReferenceField(node, columnReferences);
 
             if (orderByScope.isPresent() && isFieldFromScope(fieldId, orderByScope.get())) {
                 return true;
@@ -499,7 +520,7 @@ class AggregationAnalyzer
                 return true;
             }
 
-            FieldId fieldId = requireNonNull(columnReferences.get(NodeRef.<Expression>of(node)), "No FieldId for FieldReference");
+            FieldId fieldId = checkAndGetColumnReferenceField(node, columnReferences);
             boolean inGroup = groupingFields.contains(fieldId);
             if (!inGroup) {
                 Field field = sourceScope.getRelationType().getFieldByIndex(node.getFieldIndex());

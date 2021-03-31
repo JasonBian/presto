@@ -13,10 +13,10 @@
  */
 package com.facebook.presto.rcfile.text;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.rcfile.RcFileCorruptionException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 
@@ -37,7 +37,7 @@ public class ListEncoding
     {
         byte separator = getSeparator(depth);
 
-        Block list = block.getObject(position, Block.class);
+        Block list = block.getBlock(position);
         for (int elementIndex = 0; elementIndex < list.getPositionCount(); elementIndex++) {
             if (elementIndex > 0) {
                 output.writeByte(separator);

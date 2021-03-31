@@ -16,12 +16,15 @@ package com.facebook.presto.server;
 import com.facebook.presto.execution.resourceGroups.ResourceGroupManager;
 import com.facebook.presto.spi.resourceGroups.ResourceGroupId;
 
+import javax.annotation.security.RolesAllowed;
 import javax.inject.Inject;
+import javax.ws.rs.DefaultValue;
 import javax.ws.rs.Encoded;
 import javax.ws.rs.GET;
 import javax.ws.rs.Path;
 import javax.ws.rs.PathParam;
 import javax.ws.rs.Produces;
+import javax.ws.rs.QueryParam;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.MediaType;
 
@@ -30,6 +33,7 @@ import java.net.URLDecoder;
 import java.util.Arrays;
 import java.util.NoSuchElementException;
 
+import static com.facebook.presto.server.security.RoleType.ADMIN;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.util.Objects.requireNonNull;
@@ -37,12 +41,13 @@ import static javax.ws.rs.core.Response.Status.BAD_REQUEST;
 import static javax.ws.rs.core.Response.Status.NOT_FOUND;
 
 @Path("/v1/resourceGroupState")
+@RolesAllowed(ADMIN)
 public class ResourceGroupStateInfoResource
 {
-    private final ResourceGroupManager resourceGroupManager;
+    private final ResourceGroupManager<?> resourceGroupManager;
 
     @Inject
-    public ResourceGroupStateInfoResource(ResourceGroupManager resourceGroupManager)
+    public ResourceGroupStateInfoResource(ResourceGroupManager<?> resourceGroupManager)
     {
         this.resourceGroupManager = requireNonNull(resourceGroupManager, "resourceGroupManager is null");
     }
@@ -51,7 +56,11 @@ public class ResourceGroupStateInfoResource
     @Produces(MediaType.APPLICATION_JSON)
     @Encoded
     @Path("{resourceGroupId: .+}")
-    public ResourceGroupInfo getQueryStateInfos(@PathParam("resourceGroupId") String resourceGroupIdString)
+    public ResourceGroupInfo getQueryStateInfos(
+            @PathParam("resourceGroupId") String resourceGroupIdString,
+            @QueryParam("includeQueryInfo") @DefaultValue("true") boolean includeQueryInfo,
+            @QueryParam("summarizeSubgroups") @DefaultValue("true") boolean summarizeSubgroups,
+            @QueryParam("includeStaticSubgroupsOnly") @DefaultValue("false") boolean includeStaticSubgroupsOnly)
     {
         if (!isNullOrEmpty(resourceGroupIdString)) {
             try {
@@ -59,7 +68,10 @@ public class ResourceGroupStateInfoResource
                         new ResourceGroupId(
                                 Arrays.stream(resourceGroupIdString.split("/"))
                                         .map(ResourceGroupStateInfoResource::urlDecode)
-                                        .collect(toImmutableList())));
+                                        .collect(toImmutableList())),
+                        includeQueryInfo,
+                        summarizeSubgroups,
+                        includeStaticSubgroupsOnly);
             }
             catch (NoSuchElementException e) {
                 throw new WebApplicationException(NOT_FOUND);

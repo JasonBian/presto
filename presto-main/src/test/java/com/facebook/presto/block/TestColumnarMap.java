@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.block;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.ColumnarMap;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.MapBlockBuilder;
-import com.facebook.presto.spi.block.MethodHandleUtil;
-import com.facebook.presto.spi.block.RunLengthEncodedBlock;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.ColumnarMap;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.MapBlockBuilder;
+import com.facebook.presto.common.block.MethodHandleUtil;
+import com.facebook.presto.common.block.RunLengthEncodedBlock;
 import io.airlift.slice.Slice;
 import io.airlift.slice.Slices;
 import org.testng.annotations.Test;
@@ -35,10 +35,10 @@ import static com.facebook.presto.block.ColumnarTestUtils.createTestDictionaryBl
 import static com.facebook.presto.block.ColumnarTestUtils.createTestDictionaryExpectedValues;
 import static com.facebook.presto.block.ColumnarTestUtils.createTestRleBlock;
 import static com.facebook.presto.block.ColumnarTestUtils.createTestRleExpectedValues;
-import static com.facebook.presto.spi.block.ColumnarMap.toColumnarMap;
-import static com.facebook.presto.spi.block.MethodHandleUtil.compose;
-import static com.facebook.presto.spi.block.MethodHandleUtil.nativeValueGetter;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.block.ColumnarMap.toColumnarMap;
+import static com.facebook.presto.common.block.MethodHandleUtil.compose;
+import static com.facebook.presto.common.block.MethodHandleUtil.nativeValueGetter;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
 
@@ -119,11 +119,13 @@ public class TestColumnarMap
 
         Block keysBlock = columnarMap.getKeysBlock();
         Block valuesBlock = columnarMap.getValuesBlock();
-        int keysPosition = 0;
-        int valuesPosition = 0;
+        int elementsPosition = 0;
+
         for (int position = 0; position < expectedValues.length; position++) {
             Slice[][] expectedMap = expectedValues[position];
             assertEquals(columnarMap.isNull(position), expectedMap == null);
+            assertEquals(columnarMap.getOffset(position), elementsPosition);
+
             if (expectedMap == null) {
                 assertEquals(columnarMap.getEntryCount(position), 0);
                 continue;
@@ -134,12 +136,12 @@ public class TestColumnarMap
                 Slice[] expectedEntry = expectedMap[i];
 
                 Slice expectedKey = expectedEntry[0];
-                assertBlockPosition(keysBlock, keysPosition, expectedKey);
-                keysPosition++;
+                assertBlockPosition(keysBlock, elementsPosition, expectedKey);
 
                 Slice expectedValue = expectedEntry[1];
-                assertBlockPosition(valuesBlock, valuesPosition, expectedValue);
-                valuesPosition++;
+                assertBlockPosition(valuesBlock, elementsPosition, expectedValue);
+
+                elementsPosition++;
             }
         }
     }
@@ -182,9 +184,7 @@ public class TestColumnarMap
         return new MapBlockBuilder(
                 VARCHAR,
                 VARCHAR,
-                varcharBlockNativeEquals,
                 varcharBlockEquals,
-                MethodHandleUtil.methodHandle(Slice.class, "hashCode").asType(MethodType.methodType(long.class, Slice.class)),
                 MethodHandleUtil.methodHandle(TestColumnarMap.class, "blockVarcharHashCode", Block.class, int.class),
                 null,
                 expectedEntries);

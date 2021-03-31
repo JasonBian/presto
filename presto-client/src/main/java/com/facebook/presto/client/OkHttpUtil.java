@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.client;
 
+import com.facebook.airlift.security.pem.PemReader;
 import com.google.common.base.CharMatcher;
 import com.google.common.net.HostAndPort;
-import io.airlift.security.pem.PemReader;
 import okhttp3.Call;
 import okhttp3.Callback;
 import okhttp3.Credentials;
@@ -270,5 +270,11 @@ public final class OkHttpUtil
                 credentialCache);
         clientBuilder.addInterceptor(handler);
         clientBuilder.authenticator(handler);
+    }
+
+    public static void setupGCSOauth(OkHttpClient.Builder clientBuilder, String credentialPath, Optional<String> gcsOAuthScopesString)
+    {
+        GCSOAuthInterceptor handler = new GCSOAuthInterceptor(credentialPath, gcsOAuthScopesString);
+        clientBuilder.addInterceptor(handler);
     }
 }

@@ -13,7 +13,9 @@
  */
 package com.facebook.presto.memory;
 
+import com.facebook.airlift.stats.TestingGcMonitor;
 import com.facebook.presto.Session;
+import com.facebook.presto.common.Page;
 import com.facebook.presto.execution.buffer.TestingPagesSerdeFactory;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.Driver;
@@ -23,11 +25,10 @@ import com.facebook.presto.operator.OperatorContext;
 import com.facebook.presto.operator.OutputFactory;
 import com.facebook.presto.operator.TableScanOperator;
 import com.facebook.presto.operator.TaskContext;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.memory.MemoryPoolId;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.spiller.SpillSpaceTracker;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.testing.LocalQueryRunner;
 import com.facebook.presto.testing.PageConsumerOperator.PageConsumerOutputFactory;
 import com.facebook.presto.tpch.TpchConnectorFactory;
@@ -37,13 +38,13 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
-import io.airlift.stats.TestingGcMonitor;
 import io.airlift.units.DataSize;
 import org.testng.annotations.AfterMethod;
 import org.testng.annotations.Test;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
@@ -92,9 +93,11 @@ public class TestMemoryPools
         userPool = new MemoryPool(new MemoryPoolId("test"), TEN_MEGABYTES);
         fakeQueryId = new QueryId("fake");
         SpillSpaceTracker spillSpaceTracker = new SpillSpaceTracker(new DataSize(1, GIGABYTE));
-        DefaultQueryContext queryContext = new DefaultQueryContext(new QueryId("query"),
+        QueryContext queryContext = new QueryContext(new QueryId("query"),
                 TEN_MEGABYTES,
                 new DataSize(20, MEGABYTE),
+                TEN_MEGABYTES,
+                new DataSize(1, GIGABYTE),
                 userPool,
                 new TestingGcMonitor(),
                 localQueryRunner.getExecutor(),
@@ -118,14 +121,15 @@ public class TestMemoryPools
     {
         AtomicReference<RevocableMemoryOperator> createOperator = new AtomicReference<>();
         setUp(() -> {
-            DriverContext driverContext = taskContext.addPipelineContext(0, false, false).addDriverContext();
+            DriverContext driverContext = taskContext.addPipelineContext(0, false, false, false).addDriverContext();
             OperatorContext revokableOperatorContext = driverContext.addOperatorContext(
                     Integer.MAX_VALUE,
                     new PlanNodeId("revokable_operator"),
                     TableScanOperator.class.getSimpleName());
 
             OutputFactory outputFactory = new PageConsumerOutputFactory(types -> (page -> {}));
-            Operator outputOperator = outputFactory.createOutputOperator(2, new PlanNodeId("output"), ImmutableList.of(), Function.identity(), new TestingPagesSerdeFactory()).createOperator(driverContext);
+            Operator outputOperator = outputFactory.createOutputOperator(2, new PlanNodeId("output"), ImmutableList.of(), Function.identity(), Optional.empty(), new TestingPagesSerdeFactory())
+                    .createOperator(driverContext);
             RevocableMemoryOperator revocableMemoryOperator = new RevocableMemoryOperator(revokableOperatorContext, reservedPerPage, numberOfPages);
             createOperator.set(revocableMemoryOperator);
 
@@ -236,18 +240,21 @@ public class TestMemoryPools
 
         testPool.reserve(testQuery, "test_tag", 10);
 
-        Map<String, Long> allocations = testPool.getTaggedMemoryAllocations().get(testQuery);
+        Map<String, Long> allocations = testPool.getTaggedMemoryAllocations(testQuery);
         assertEquals(allocations, ImmutableMap.of("test_tag", 10L));
 
         // free 5 bytes for test_tag
         testPool.free(testQuery, "test_tag", 5);
+        allocations = testPool.getTaggedMemoryAllocations(testQuery);
         assertEquals(allocations, ImmutableMap.of("test_tag", 5L));
 
         testPool.reserve(testQuery, "test_tag2", 20);
+        allocations = testPool.getTaggedMemoryAllocations(testQuery);
         assertEquals(allocations, ImmutableMap.of("test_tag", 5L, "test_tag2", 20L));
 
         // free the remaining 5 bytes for test_tag
         testPool.free(testQuery, "test_tag", 5);
+        allocations = testPool.getTaggedMemoryAllocations(testQuery);
         assertEquals(allocations, ImmutableMap.of("test_tag2", 20L));
 
         // free all for test_tag2
@@ -263,12 +270,12 @@ public class TestMemoryPools
         MemoryPool pool2 = new MemoryPool(new MemoryPoolId("test"), new DataSize(1000, BYTE));
         pool1.reserve(testQuery, "test_tag", 10);
 
-        Map<String, Long> allocations = pool1.getTaggedMemoryAllocations().get(testQuery);
+        Map<String, Long> allocations = pool1.getTaggedMemoryAllocations(testQuery);
         assertEquals(allocations, ImmutableMap.of("test_tag", 10L));
 
         pool1.moveQuery(testQuery, pool2);
-        assertNull(pool1.getTaggedMemoryAllocations().get(testQuery));
-        allocations = pool2.getTaggedMemoryAllocations().get(testQuery);
+        assertNull(pool1.getTaggedMemoryAllocations(testQuery));
+        allocations = pool2.getTaggedMemoryAllocations(testQuery);
         assertEquals(allocations, ImmutableMap.of("test_tag", 10L));
 
         assertEquals(pool1.getFreeBytes(), 1000);

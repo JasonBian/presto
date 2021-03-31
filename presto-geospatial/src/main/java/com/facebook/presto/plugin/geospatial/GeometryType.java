@@ -13,14 +13,17 @@
  */
 package com.facebook.presto.plugin.geospatial;
 
-import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.AbstractVariableWidthType;
-import com.facebook.presto.spi.type.TypeSignature;
+import com.esri.core.geometry.GeometryException;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.AbstractVariableWidthType;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.spi.PrestoException;
 import io.airlift.slice.Slice;
 
-import static com.facebook.presto.geospatial.serde.GeometrySerde.deserialize;
+import static com.facebook.presto.geospatial.serde.EsriGeometrySerde.deserialize;
+import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
 
 public class GeometryType
         extends AbstractVariableWidthType
@@ -59,22 +62,35 @@ public class GeometryType
     @Override
     public void writeSlice(BlockBuilder blockBuilder, Slice value)
     {
+        if (value == null) {
+            blockBuilder.appendNull();
+            return;
+        }
         writeSlice(blockBuilder, value, 0, value.length());
     }
 
     @Override
     public void writeSlice(BlockBuilder blockBuilder, Slice value, int offset, int length)
     {
+        if (value == null) {
+            blockBuilder.appendNull();
+            return;
+        }
         blockBuilder.writeBytes(value, offset, length).closeEntry();
     }
 
     @Override
-    public Object getObjectValue(ConnectorSession session, Block block, int position)
+    public Object getObjectValue(SqlFunctionProperties properties, Block block, int position)
     {
         if (block.isNull(position)) {
             return null;
         }
         Slice slice = block.getSlice(position, 0, block.getSliceLength(position));
-        return deserialize(slice).asText();
+        try {
+            return deserialize(slice).asText();
+        }
+        catch (GeometryException e) {
+            throw new PrestoException(INVALID_FUNCTION_ARGUMENT, e.getMessage(), e);
+        }
     }
 }

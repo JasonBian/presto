@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.raptor.metadata;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.raptor.RaptorColumnHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import org.skife.jdbi.v2.ResultIterator;
 
 import java.util.Collection;
@@ -30,7 +30,7 @@ public interface ShardManager
     /**
      * Create a table.
      */
-    void createTable(long tableId, List<ColumnInfo> columns, boolean bucketed, OptionalLong temporalColumnId);
+    void createTable(long tableId, List<ColumnInfo> columns, boolean bucketed, OptionalLong temporalColumnId, boolean tableSupportsDeltaDelete);
 
     /**
      * Drop a table.
@@ -53,39 +53,56 @@ public interface ShardManager
     void replaceShardUuids(long transactionId, long tableId, List<ColumnInfo> columns, Set<UUID> oldShardUuids, Collection<ShardInfo> newShards, OptionalLong updateTime);
 
     /**
+     * Replace oldShardsUuids with newShards.
+     * Used by compaction with tableSupportsDeltaDelete: Delete oldShardsUuids with their delta shards and add newShards formed by compaction
+     * @param oldShardAndDeltaUuids oldShardsUuids with their delta shards
+     * @param newShards newShards formed from compaction
+     */
+    void replaceShardUuids(long transactionId, long tableId, List<ColumnInfo> columns, Map<UUID, Optional<UUID>> oldShardAndDeltaUuids, Collection<ShardInfo> newShards, OptionalLong updateTime, boolean tableSupportsDeltaDelete);
+
+    /**
+     * Replace oldDeltaDeleteShard with newDeltaDeleteShard.
+     * Used by delta delete.
+     * @param shardMap UUID in the map is the target file. DeltaInfoPair in the map is the change of delta.
+     */
+    void replaceDeltaUuids(long transactionId, long tableId, List<ColumnInfo> columns, Map<UUID, DeltaInfoPair> shardMap, OptionalLong updateTime);
+
+    /**
      * Get shard metadata for a shard.
      */
     ShardMetadata getShard(UUID shardUuid);
 
     /**
-     * Get shard metadata for shards on a given node.
+     * Get shard and delta metadata for shards on a given node.
+     */
+    Set<ShardMetadata> getNodeShardsAndDeltas(String nodeIdentifier);
+
+    /**
+     * Get only shard metadata for shards on a given node.
+     * Note: shard metadata will contain its delta
      */
     Set<ShardMetadata> getNodeShards(String nodeIdentifier);
 
     /**
-     * Get shard metadata for shards on a given node.
+     * Get only shard metadata for shards on a given node.
+     * Note: shard metadata will contain its delta
      */
     Set<ShardMetadata> getNodeShards(String nodeIdentifier, long tableId);
 
     /**
      * Return the shard nodes for a non-bucketed table.
      */
-    ResultIterator<BucketShards> getShardNodes(long tableId, TupleDomain<RaptorColumnHandle> effectivePredicate);
+    ResultIterator<BucketShards> getShardNodes(long tableId, TupleDomain<RaptorColumnHandle> effectivePredicate, boolean tableSupportsDeltaDelete);
 
     /**
      * Return the shard nodes for a bucketed table.
      */
-    ResultIterator<BucketShards> getShardNodesBucketed(long tableId, boolean merged, Map<Integer, String> bucketToNode, TupleDomain<RaptorColumnHandle> effectivePredicate);
+    ResultIterator<BucketShards> getShardNodesBucketed(long tableId, boolean merged, List<String> bucketToNode, TupleDomain<RaptorColumnHandle> effectivePredicate, boolean tableSupportsDeltaDelete);
 
     /**
-     * Assign a shard to a node.
+     * Remove all old shard assignments and assign a shard to a node
      */
-    void assignShard(long tableId, UUID shardUuid, String nodeIdentifier, boolean gracePeriod);
-
-    /**
-     * Remove shard assignment from a node.
-     */
-    void unassignShard(long tableId, UUID shardUuid, String nodeIdentifier);
+    void replaceShardAssignment(long tableId, UUID shardUuid, Optional<UUID> deltaUuid, String nodeIdentifier, boolean gracePeriod);
 
     /**
      * Get the number of bytes used by assigned shards per node.
@@ -112,7 +129,7 @@ public interface ShardManager
     /**
      * Get map of buckets to node identifiers for a distribution.
      */
-    Map<Integer, String> getBucketAssignments(long distributionId);
+    List<String> getBucketAssignments(long distributionId);
 
     /**
      * Change the node a bucket is assigned to.

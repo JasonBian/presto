@@ -13,73 +13,57 @@
  */
 package com.facebook.presto.sql.gen;
 
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.function.OperatorType;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.relational.CallExpression;
-import com.facebook.presto.sql.relational.RowExpression;
-import com.google.common.base.Preconditions;
+import com.facebook.presto.bytecode.BytecodeBlock;
+import com.facebook.presto.bytecode.BytecodeNode;
+import com.facebook.presto.bytecode.Scope;
+import com.facebook.presto.bytecode.Variable;
+import com.facebook.presto.bytecode.control.IfStatement;
+import com.facebook.presto.bytecode.instruction.LabelNode;
+import com.facebook.presto.bytecode.instruction.VariableInstruction;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.ConstantExpression;
+import com.facebook.presto.spi.relation.RowExpression;
+import com.facebook.presto.spi.relation.SpecialFormExpression;
 import com.google.common.collect.ImmutableList;
-import com.google.common.collect.Lists;
-import io.airlift.bytecode.BytecodeBlock;
-import io.airlift.bytecode.BytecodeNode;
-import io.airlift.bytecode.Scope;
-import io.airlift.bytecode.Variable;
-import io.airlift.bytecode.control.IfStatement;
-import io.airlift.bytecode.instruction.LabelNode;
-import io.airlift.bytecode.instruction.VariableInstruction;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
 
-import static io.airlift.bytecode.expression.BytecodeExpressions.constantFalse;
-import static io.airlift.bytecode.expression.BytecodeExpressions.constantTrue;
+import static com.facebook.presto.bytecode.expression.BytecodeExpressions.constantTrue;
+import static com.facebook.presto.common.function.OperatorType.EQUAL;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.spi.relation.SpecialFormExpression.Form.WHEN;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
+import static com.facebook.presto.sql.gen.SpecialFormBytecodeGenerator.generateWrite;
+import static com.google.common.base.Preconditions.checkArgument;
 
 public class SwitchCodeGenerator
-        implements BytecodeGenerator
+        implements SpecialFormBytecodeGenerator
 {
-    @Override
-    public BytecodeNode generateExpression(Signature signature, BytecodeGeneratorContext generatorContext, Type returnType, List<RowExpression> arguments)
+    private static final String CASE_LABEL_PREFIX = "_case_";
+    private static final String RESULT_LABEL_PREFIX = "_result_";
+
+    // TODO - move this to a RowExpressionUtil class
+    private static boolean isEqualsExpression(RowExpression expression)
     {
-        // TODO: compile as
-        /*
-            hashCode = hashCode(<value>)
+        return expression instanceof CallExpression
+                && ((CallExpression) expression).getDisplayName().equals(EQUAL.getFunctionName().getObjectName())
+                && ((CallExpression) expression).getArguments().size() == 2;
+    }
 
-            // all constant expressions before a non-constant
-            switch (hashCode) {
-                case ...:
-                    if (<value> == <constant1>) {
-                       ...
-                    }
-                    else if (<value> == <constant2>) {
-                       ...
-                    }
-                    else if (...) {
-                    }
-                case ...:
-                    ...
-            }
-
-            if (<value> == <non-constant1>) {
-                ...
-            }
-            else if (<value> == <non-constant2>) {
-                ...
-            }
-            ...
-
-            // repeat with next sequence of constant expressions
-         */
-
+    @Override
+    public BytecodeNode generateExpression(BytecodeGeneratorContext generatorContext, Type returnType, List<RowExpression> arguments, Optional<Variable> outputBlockVariable)
+    {
         Scope scope = generatorContext.getScope();
-
-        // process value, else, and all when clauses
-        RowExpression value = arguments.get(0);
-        BytecodeNode valueBytecode = generatorContext.generate(value);
         BytecodeNode elseValue;
-
         List<RowExpression> whenClauses;
         RowExpression last = arguments.get(arguments.size() - 1);
-        if (last instanceof CallExpression && ((CallExpression) last).getSignature().getName().equals("WHEN")) {
+
+        if (last instanceof SpecialFormExpression && ((SpecialFormExpression) last).getForm().equals(WHEN)) {
             whenClauses = arguments.subList(1, arguments.size());
             elseValue = new BytecodeBlock()
                     .append(generatorContext.wasNull().set(constantTrue()))
@@ -87,54 +71,96 @@ public class SwitchCodeGenerator
         }
         else {
             whenClauses = arguments.subList(1, arguments.size() - 1);
-            elseValue = generatorContext.generate(last);
+            elseValue = generatorContext.generate(last, Optional.empty());
         }
 
         // determine the type of the value and result
+
+        RowExpression value = arguments.get(0);
         Class<?> valueType = value.getType().getJavaType();
 
+        // We generate SearchedCase as CASE TRUE WHEN p1 THEN v1 WHEN p2 THEN p2...
+        boolean searchedCase = (value instanceof ConstantExpression && ((ConstantExpression) value).getType() == BOOLEAN &&
+                ((ConstantExpression) value).getValue() == Boolean.TRUE);
+
         // evaluate the value and store it in a variable
-        LabelNode nullValue = new LabelNode("nullCondition");
-        Variable tempVariable = scope.createTempVariable(valueType);
-        BytecodeBlock block = new BytecodeBlock()
-                .append(valueBytecode)
-                .append(BytecodeUtils.ifWasNullClearPopAndGoto(scope, nullValue, void.class, valueType))
-                .putVariable(tempVariable);
+        LabelNode elseLabel = new LabelNode("else");
+        LabelNode endLabel = new LabelNode("end");
 
-        BytecodeNode getTempVariableNode = VariableInstruction.loadVariable(tempVariable);
-
-        // build the statements
-        elseValue = new BytecodeBlock().visitLabel(nullValue).append(elseValue);
-        // reverse list because current if statement builder doesn't support if/else so we need to build the if statements bottom up
-        for (RowExpression clause : Lists.reverse(whenClauses)) {
-            Preconditions.checkArgument(clause instanceof CallExpression && ((CallExpression) clause).getSignature().getName().equals("WHEN"));
-
-            RowExpression operand = ((CallExpression) clause).getArguments().get(0);
-            RowExpression result = ((CallExpression) clause).getArguments().get(1);
-
-            // call equals(value, operand)
-            Signature equalsFunction = generatorContext.getRegistry().resolveOperator(OperatorType.EQUAL, ImmutableList.of(value.getType(), operand.getType()));
-
-            // TODO: what if operand is null? It seems that the call will return "null" (which is cleared below)
-            // and the code only does the right thing because the value in the stack for that scenario is
-            // Java's default for boolean == false
-            // This code should probably be checking for wasNull after the call and "failing" the equality
-            // check if wasNull is true
-            BytecodeNode equalsCall = generatorContext.generateCall(
-                    equalsFunction.getName(),
-                    generatorContext.getRegistry().getScalarFunctionImplementation(equalsFunction),
-                    ImmutableList.of(generatorContext.generate(operand), getTempVariableNode));
-
-            BytecodeBlock condition = new BytecodeBlock()
-                    .append(equalsCall)
-                    .append(generatorContext.wasNull().set(constantFalse()));
-
-            elseValue = new IfStatement("when")
-                    .condition(condition)
-                    .ifTrue(generatorContext.generate(result))
-                    .ifFalse(elseValue);
+        BytecodeBlock block = new BytecodeBlock();
+        Optional<BytecodeNode> getTempVariableNode;
+        if (!searchedCase) {
+            BytecodeNode valueBytecode = generatorContext.generate(value, Optional.empty());
+            Variable tempVariable = scope.createTempVariable(valueType);
+            block.append(valueBytecode)
+                    .append(BytecodeUtils.ifWasNullClearPopAndGoto(scope, elseLabel, void.class, valueType))
+                    .putVariable(tempVariable);
+            getTempVariableNode = Optional.of(VariableInstruction.loadVariable(tempVariable));
+        }
+        else {
+            getTempVariableNode = Optional.empty();
         }
 
-        return block.append(elseValue);
+        Variable wasNull = generatorContext.wasNull();
+        block.putVariable(wasNull, false);
+
+        Map<RowExpression, LabelNode> resultLabels = new HashMap<RowExpression, LabelNode>();
+        // We already know the P1 .. Pn are all boolean just call them and search for true (false/null don't matter).
+        for (RowExpression clause : whenClauses) {
+            checkArgument(clause instanceof SpecialFormExpression && ((SpecialFormExpression) clause).getForm().equals(WHEN));
+
+            RowExpression operand = ((SpecialFormExpression) clause).getArguments().get(0);
+            BytecodeNode operandBytecode;
+
+            if (searchedCase) {
+                operandBytecode = generatorContext.generate(operand, Optional.empty());
+            }
+            else {
+                // call equals(value, operandBytecode)
+                FunctionHandle equalsFunction = generatorContext.getFunctionManager().resolveOperator(EQUAL, fromTypes(value.getType(), operand.getType()));
+                operandBytecode = generatorContext.generateCall(
+                        EQUAL.name(),
+                        generatorContext.getFunctionManager().getBuiltInScalarFunctionImplementation(equalsFunction),
+                        ImmutableList.of(
+                                generatorContext.generate(operand,
+                                Optional.empty()),
+                                getTempVariableNode.get()));
+            }
+
+            block.append(operandBytecode);
+
+            IfStatement ifWasNull = new IfStatement().condition(wasNull);
+
+            ifWasNull.ifTrue()
+                    .putVariable(wasNull, false)
+                    .pop(Boolean.class); // pop the result of the predicate eval
+
+            // Here the TOS  is the result of the predicate.
+            RowExpression result = ((SpecialFormExpression) clause).getArguments().get(1);
+            LabelNode target = resultLabels.get(result);
+            if (target == null) {
+                target = new LabelNode(RESULT_LABEL_PREFIX + resultLabels.size());
+                resultLabels.put(result, target);
+            }
+
+            ifWasNull.ifFalse().ifTrueGoto(target);
+            block.append(ifWasNull);
+        }
+
+        // Here we evaluate the else result.
+        block.visitLabel(elseLabel)
+                .append(elseValue)
+                .gotoLabel(endLabel);
+
+        // Now generate the result expression code.
+        for (Map.Entry<RowExpression, LabelNode> resultLabel : resultLabels.entrySet()) {
+            block.visitLabel(resultLabel.getValue())
+                    .append(generatorContext.generate(resultLabel.getKey(), Optional.empty()))
+                    .gotoLabel(endLabel);
+        }
+
+        block.visitLabel(endLabel);
+        outputBlockVariable.ifPresent(output -> block.append(generateWrite(generatorContext, returnType, output)));
+        return block;
     }
 }

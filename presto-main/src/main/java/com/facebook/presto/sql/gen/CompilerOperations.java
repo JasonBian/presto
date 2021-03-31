@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.sql.gen;
 
-import com.facebook.presto.spi.block.Block;
+import com.facebook.presto.common.block.Block;
 
 import javax.annotation.Nullable;
 
 import java.util.Set;
 
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
 
 // This methods are statically bound by the compiler
 @SuppressWarnings("UnusedDeclaration")
@@ -67,7 +67,8 @@ public final class CompilerOperations
     public static boolean testMask(@Nullable Block masks, int index)
     {
         if (masks != null) {
-            return BOOLEAN.getBoolean(masks, index);
+            boolean isNull = masks.mayHaveNull() && masks.isNull(index);
+            return !isNull && BOOLEAN.getBoolean(masks, index);
         }
         return true;
     }

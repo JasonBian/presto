@@ -13,39 +13,52 @@
  */
 package com.facebook.presto.sql.gen;
 
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.sql.relational.RowExpression;
+import com.facebook.presto.bytecode.BytecodeBlock;
+import com.facebook.presto.bytecode.BytecodeNode;
+import com.facebook.presto.bytecode.Variable;
+import com.facebook.presto.bytecode.control.IfStatement;
+import com.facebook.presto.bytecode.instruction.LabelNode;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.spi.relation.RowExpression;
 import com.google.common.base.Preconditions;
-import io.airlift.bytecode.BytecodeBlock;
-import io.airlift.bytecode.BytecodeNode;
-import io.airlift.bytecode.Variable;
-import io.airlift.bytecode.control.IfStatement;
 
 import java.util.List;
+import java.util.Optional;
 
-import static io.airlift.bytecode.expression.BytecodeExpressions.constantFalse;
+import static com.facebook.presto.sql.gen.SpecialFormBytecodeGenerator.generateWrite;
 
 public class IfCodeGenerator
-        implements BytecodeGenerator
+        implements SpecialFormBytecodeGenerator
 {
-    @Override
-    public BytecodeNode generateExpression(Signature signature, BytecodeGeneratorContext context, Type returnType, List<RowExpression> arguments)
+    public BytecodeNode generateExpression(BytecodeGeneratorContext context, Type returnType, List<RowExpression> arguments, Optional<Variable> outputBlockVariable)
     {
         Preconditions.checkArgument(arguments.size() == 3);
 
         Variable wasNull = context.wasNull();
-        BytecodeBlock condition = new BytecodeBlock()
-                .append(context.generate(arguments.get(0)))
-                .comment("... and condition value was not null")
-                .append(wasNull)
-                .invokeStatic(CompilerOperations.class, "not", boolean.class, boolean.class)
-                .invokeStatic(CompilerOperations.class, "and", boolean.class, boolean.class, boolean.class)
-                .append(wasNull.set(constantFalse()));
+        LabelNode falseLabel = new LabelNode("false");
+        LabelNode endLabel = new LabelNode("end");
+        BytecodeBlock block = new BytecodeBlock()
+                .append(context.generate(arguments.get(0), Optional.empty()));
 
-        return new IfStatement()
-                .condition(condition)
-                .ifTrue(context.generate(arguments.get(1)))
-                .ifFalse(context.generate(arguments.get(2)));
+        IfStatement ifStatement = new IfStatement("... and condition value was not null")
+                .condition(wasNull);
+
+        ifStatement.ifTrue()
+                .putVariable(wasNull, false)
+                .pop(boolean.class)
+                .gotoLabel(falseLabel);
+
+        ifStatement.ifFalse()
+                .ifFalseGoto(falseLabel)
+                .append(context.generate(arguments.get(1), Optional.empty()))
+                .gotoLabel(endLabel);
+
+        block.append(ifStatement)
+                .visitLabel(falseLabel)
+                .append(context.generate(arguments.get(2), Optional.empty()));
+
+        block.visitLabel(endLabel);
+        outputBlockVariable.ifPresent(output -> block.append(generateWrite(context, returnType, output)));
+        return block;
     }
 }

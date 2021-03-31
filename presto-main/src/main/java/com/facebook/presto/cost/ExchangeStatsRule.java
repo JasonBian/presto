@@ -15,15 +15,16 @@ package com.facebook.presto.cost;
 
 import com.facebook.presto.Session;
 import com.facebook.presto.matching.Pattern;
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.spi.plan.PlanNode;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.TypeProvider;
 import com.facebook.presto.sql.planner.iterative.Lookup;
 import com.facebook.presto.sql.planner.plan.ExchangeNode;
-import com.facebook.presto.sql.planner.plan.PlanNode;
 
 import java.util.List;
 import java.util.Optional;
 
+import static com.facebook.presto.cost.PlanNodeStatsEstimate.buildFrom;
 import static com.facebook.presto.cost.PlanNodeStatsEstimateMath.addStatsAndMaxDistinctValues;
 import static com.facebook.presto.sql.planner.plan.Patterns.exchange;
 import static com.google.common.base.Preconditions.checkArgument;
@@ -49,11 +50,13 @@ public class ExchangeStatsRule
     protected Optional<PlanNodeStatsEstimate> doCalculate(ExchangeNode node, StatsProvider statsProvider, Lookup lookup, Session session, TypeProvider types)
     {
         Optional<PlanNodeStatsEstimate> estimate = Optional.empty();
+        double totalSize = 0;
         for (int i = 0; i < node.getSources().size(); i++) {
             PlanNode source = node.getSources().get(i);
             PlanNodeStatsEstimate sourceStats = statsProvider.getStats(source);
+            totalSize += sourceStats.getOutputSizeInBytes();
 
-            PlanNodeStatsEstimate sourceStatsWithMappedSymbols = mapToOutputSymbols(sourceStats, node.getInputs().get(i), node.getOutputSymbols());
+            PlanNodeStatsEstimate sourceStatsWithMappedSymbols = mapToOutputVariables(sourceStats, node.getInputs().get(i), node.getOutputVariables());
 
             if (estimate.isPresent()) {
                 estimate = Optional.of(addStatsAndMaxDistinctValues(estimate.get(), sourceStatsWithMappedSymbols));
@@ -64,17 +67,19 @@ public class ExchangeStatsRule
         }
 
         verify(estimate.isPresent());
-        return estimate;
+        return Optional.of(buildFrom(estimate.get())
+                .setTotalSize(totalSize)
+                .build());
     }
 
-    private PlanNodeStatsEstimate mapToOutputSymbols(PlanNodeStatsEstimate estimate, List<Symbol> inputs, List<Symbol> outputs)
+    private PlanNodeStatsEstimate mapToOutputVariables(PlanNodeStatsEstimate estimate, List<VariableReferenceExpression> inputs, List<VariableReferenceExpression> outputs)
     {
         checkArgument(inputs.size() == outputs.size(), "Input symbols count does not match output symbols count");
         PlanNodeStatsEstimate.Builder mapped = PlanNodeStatsEstimate.builder()
                 .setOutputRowCount(estimate.getOutputRowCount());
 
         for (int i = 0; i < inputs.size(); i++) {
-            mapped.addSymbolStatistics(outputs.get(i), estimate.getSymbolStatistics(inputs.get(i)));
+            mapped.addVariableStatistics(outputs.get(i), estimate.getVariableStatistics(inputs.get(i)));
         }
 
         return mapped.build();

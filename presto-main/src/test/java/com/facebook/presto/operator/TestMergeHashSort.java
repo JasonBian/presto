@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.operator.WorkProcessorAssertion.assertFinishes;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
@@ -61,7 +61,7 @@ public class TestMergeHashSort
         Page actualPage = mergedPage.getResult();
         assertEquals(actualPage.getPositionCount(), 1);
         assertEquals(actualPage.getChannelCount(), 1);
-        assertEquals(actualPage.getBlock(0).getLong(0, 0), 42);
+        assertEquals(actualPage.getBlock(0).getLong(0), 42);
 
         assertFinishes(mergedPage);
     }
@@ -84,7 +84,7 @@ public class TestMergeHashSort
         Page actualPage = mergedPage.getResult();
         assertEquals(actualPage.getPositionCount(), 1);
         assertEquals(actualPage.getChannelCount(), 1);
-        assertEquals(actualPage.getBlock(0).getLong(0, 0), 42);
+        assertEquals(actualPage.getBlock(0).getLong(0), 42);
 
         assertFinishes(mergedPage);
     }
@@ -110,10 +110,10 @@ public class TestMergeHashSort
         assertTrue(mergedPages.process());
         Page resultPage = mergedPages.getResult();
         assertEquals(resultPage.getPositionCount(), 4);
-        assertEquals(resultPage.getBlock(0).getLong(0, 0), 42);
-        assertEquals(resultPage.getBlock(0).getLong(1, 0), 42);
-        assertEquals(resultPage.getBlock(0).getLong(2, 0), 52);
-        assertEquals(resultPage.getBlock(0).getLong(3, 0), 60);
+        assertEquals(resultPage.getBlock(0).getLong(0), 42);
+        assertEquals(resultPage.getBlock(0).getLong(1), 42);
+        assertEquals(resultPage.getBlock(0).getLong(2), 52);
+        assertEquals(resultPage.getBlock(0).getLong(3), 60);
 
         assertFinishes(mergedPages);
     }

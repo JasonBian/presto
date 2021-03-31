@@ -13,11 +13,13 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.common.NotSupportedException;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.type.TypeUtils;
 import com.google.common.collect.ImmutableList;
 import org.openjdk.jol.info.ClassLayout;
@@ -27,8 +29,10 @@ import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
 
-import static com.facebook.presto.spi.function.OperatorType.IS_DISTINCT_FROM;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.function.OperatorType.IS_DISTINCT_FROM;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.spi.StandardErrorCode.NOT_SUPPORTED;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.util.Failures.internalError;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
@@ -53,7 +57,7 @@ public class SimplePagesHashStrategy
             List<Integer> hashChannels,
             OptionalInt precomputedHashChannel,
             Optional<Integer> sortChannel,
-            FunctionRegistry functionRegistry,
+            FunctionAndTypeManager functionAndTypeManager,
             boolean groupByUsesEqualTo)
     {
         this.types = ImmutableList.copyOf(requireNonNull(types, "types is null"));
@@ -69,12 +73,12 @@ public class SimplePagesHashStrategy
             this.precomputedHashChannel = null;
         }
         this.sortChannel = requireNonNull(sortChannel, "sortChannel is null");
-        requireNonNull(functionRegistry, "functionRegistry is null");
+        requireNonNull(functionAndTypeManager, "functionManager is null");
         this.groupByUsesEqualTo = groupByUsesEqualTo;
         ImmutableList.Builder<MethodHandle> distinctFromMethodHandlesBuilder = ImmutableList.builder();
         for (Type type : types) {
             distinctFromMethodHandlesBuilder.add(
-                    functionRegistry.getScalarFunctionImplementation(functionRegistry.resolveOperator(IS_DISTINCT_FROM, ImmutableList.of(type, type))).getMethodHandle());
+                    functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionAndTypeManager.resolveOperator(IS_DISTINCT_FROM, fromTypes(type, type))).getMethodHandle());
         }
         distinctFromMethodHandles = distinctFromMethodHandlesBuilder.build();
     }
@@ -172,8 +176,13 @@ public class SimplePagesHashStrategy
             Type type = types.get(hashChannel);
             Block leftBlock = channels.get(hashChannel).get(leftBlockIndex);
             Block rightBlock = rightPage.getBlock(i);
-            if (!type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition)) {
-                return false;
+            try {
+                if (!type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition)) {
+                    return false;
+                }
+            }
+            catch (NotSupportedException e) {
+                throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
             }
         }
         return true;
@@ -240,8 +249,13 @@ public class SimplePagesHashStrategy
             List<Block> channel = channels.get(hashChannel);
             Block leftBlock = channel.get(leftBlockIndex);
             Block rightBlock = channel.get(rightBlockIndex);
-            if (!type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition)) {
-                return false;
+            try {
+                if (!type.equalTo(leftBlock, leftPosition, rightBlock, rightPosition)) {
+                    return false;
+                }
+            }
+            catch (NotSupportedException e) {
+                throw new PrestoException(NOT_SUPPORTED, e.getMessage(), e);
             }
         }
         return true;

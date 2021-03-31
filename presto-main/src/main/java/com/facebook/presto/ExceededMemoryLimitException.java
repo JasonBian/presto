@@ -19,6 +19,7 @@ import io.airlift.units.DataSize;
 
 import static com.facebook.presto.spi.StandardErrorCode.EXCEEDED_GLOBAL_MEMORY_LIMIT;
 import static com.facebook.presto.spi.StandardErrorCode.EXCEEDED_LOCAL_MEMORY_LIMIT;
+import static com.facebook.presto.spi.StandardErrorCode.EXCEEDED_REVOCABLE_MEMORY_LIMIT;
 import static java.lang.String.format;
 
 public class ExceededMemoryLimitException
@@ -34,14 +35,29 @@ public class ExceededMemoryLimitException
         return new ExceededMemoryLimitException(EXCEEDED_GLOBAL_MEMORY_LIMIT, format("Query exceeded distributed total memory limit of %s", maxMemory));
     }
 
-    public static ExceededMemoryLimitException exceededLocalUserMemoryLimit(DataSize maxMemory)
+    public static ExceededMemoryLimitException exceededLocalUserMemoryLimit(DataSize maxMemory, String additionalFailureInfo)
     {
-        return new ExceededMemoryLimitException(EXCEEDED_LOCAL_MEMORY_LIMIT, format("Query exceeded per-node user memory limit of %s", maxMemory));
+        return new ExceededMemoryLimitException(EXCEEDED_LOCAL_MEMORY_LIMIT,
+                format("Query exceeded per-node user memory limit of %s [%s]", maxMemory, additionalFailureInfo));
     }
 
-    public static ExceededMemoryLimitException exceededLocalTotalMemoryLimit(DataSize maxMemory)
+    public static ExceededMemoryLimitException exceededLocalBroadcastMemoryLimit(DataSize maxMemory, String additionalFailureInfo)
     {
-        return new ExceededMemoryLimitException(EXCEEDED_LOCAL_MEMORY_LIMIT, format("Query exceeded per-node total memory limit of %s", maxMemory));
+        return new ExceededMemoryLimitException(EXCEEDED_LOCAL_MEMORY_LIMIT,
+                format("Query exceeded per-node broadcast memory limit of %s [%s]", maxMemory, additionalFailureInfo));
+    }
+
+    public static ExceededMemoryLimitException exceededLocalTotalMemoryLimit(DataSize maxMemory, String additionalFailureInfo)
+    {
+        return new ExceededMemoryLimitException(EXCEEDED_LOCAL_MEMORY_LIMIT,
+                format("Query exceeded per-node total memory limit of %s [%s]", maxMemory, additionalFailureInfo));
+    }
+
+    public static ExceededMemoryLimitException exceededLocalRevocableMemoryLimit(DataSize maxMemory, String additionalFailureInfo)
+    {
+        return new ExceededMemoryLimitException(
+                EXCEEDED_REVOCABLE_MEMORY_LIMIT,
+                format("Query exceeded per-node revocable memory limit of %s [%s]", maxMemory, additionalFailureInfo));
     }
 
     private ExceededMemoryLimitException(StandardErrorCode errorCode, String message)

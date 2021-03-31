@@ -13,14 +13,15 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
 import io.airlift.slice.Slice;
+import io.airlift.slice.SliceOutput;
 import org.openjdk.jol.info.ClassLayout;
 
 import java.util.function.BiConsumer;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static java.util.Objects.requireNonNull;
 
@@ -62,6 +63,12 @@ public class GroupByIdBlock
     }
 
     @Override
+    public long getPositionsSizeInBytes(boolean[] positions)
+    {
+        return block.getPositionsSizeInBytes(positions);
+    }
+
+    @Override
     public Block copyRegion(int positionOffset, int length)
     {
         return block.copyRegion(positionOffset, length);
@@ -74,21 +81,27 @@ public class GroupByIdBlock
     }
 
     @Override
-    public byte getByte(int position, int offset)
+    public byte getByte(int position)
     {
-        return block.getByte(position, offset);
+        return block.getByte(position);
     }
 
     @Override
-    public short getShort(int position, int offset)
+    public short getShort(int position)
     {
-        return block.getShort(position, offset);
+        return block.getShort(position);
     }
 
     @Override
-    public int getInt(int position, int offset)
+    public int getInt(int position)
     {
-        return block.getInt(position, offset);
+        return block.getInt(position);
+    }
+
+    @Override
+    public long getLong(int position)
+    {
+        return block.getLong(position);
     }
 
     @Override
@@ -104,9 +117,9 @@ public class GroupByIdBlock
     }
 
     @Override
-    public <T> T getObject(int position, Class<T> clazz)
+    public Block getBlock(int position)
     {
-        return block.getObject(position, clazz);
+        return block.getBlock(position);
     }
 
     @Override
@@ -131,6 +144,12 @@ public class GroupByIdBlock
     public void writePositionTo(int position, BlockBuilder blockBuilder)
     {
         block.writePositionTo(position, blockBuilder);
+    }
+
+    @Override
+    public void writePositionTo(int position, SliceOutput output)
+    {
+        block.writePositionTo(position, output);
     }
 
     @Override
@@ -219,5 +238,71 @@ public class GroupByIdBlock
     public Block getLoadedBlock()
     {
         return block.getLoadedBlock();
+    }
+
+    @Override
+    public byte getByteUnchecked(int internalPosition)
+    {
+        return block.getByte(internalPosition);
+    }
+
+    @Override
+    public short getShortUnchecked(int internalPosition)
+    {
+        return block.getShort(internalPosition);
+    }
+
+    @Override
+    public int getIntUnchecked(int internalPosition)
+    {
+        return block.getInt(internalPosition);
+    }
+
+    @Override
+    public long getLongUnchecked(int internalPosition)
+    {
+        return block.getLong(internalPosition);
+    }
+
+    @Override
+    public long getLongUnchecked(int internalPosition, int offset)
+    {
+        return block.getLong(internalPosition, offset);
+    }
+
+    @Override
+    public Slice getSliceUnchecked(int internalPosition, int offset, int length)
+    {
+        return block.getSlice(internalPosition, offset, length);
+    }
+
+    @Override
+    public int getSliceLengthUnchecked(int internalPosition)
+    {
+        return block.getSliceLength(internalPosition);
+    }
+
+    @Override
+    public Block getBlockUnchecked(int internalPosition)
+    {
+        return block.getBlock(internalPosition);
+    }
+
+    @Override
+    public int getOffsetBase()
+    {
+        return 0;
+    }
+
+    @Override
+    public boolean isNullUnchecked(int internalPosition)
+    {
+        return block.isNull(internalPosition);
+    }
+
+    @Override
+    public Block appendNull()
+    {
+        throw new UnsupportedOperationException("GroupByIdBlock does not support appendNull()");
     }
 }

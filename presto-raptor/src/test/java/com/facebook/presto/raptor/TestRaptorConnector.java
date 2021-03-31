@@ -13,7 +13,13 @@
  */
 package com.facebook.presto.raptor;
 
+import com.facebook.airlift.bootstrap.LifeCycleManager;
 import com.facebook.presto.PagesIndexPageSorter;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.SqlTimestamp;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.operator.PagesIndex;
 import com.facebook.presto.plugin.base.security.AllowAllAccessControl;
 import com.facebook.presto.raptor.metadata.MetadataDao;
@@ -29,22 +35,17 @@ import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableHandle;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.NodeManager;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.PageSinkContext;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.connector.ConnectorMetadata;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.SqlTimestamp;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.TestingConnectorSession;
 import com.facebook.presto.testing.TestingNodeManager;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.io.Files;
-import io.airlift.bootstrap.LifeCycleManager;
 import io.airlift.slice.Slice;
 import org.joda.time.DateTimeZone;
 import org.skife.jdbi.v2.DBI;
@@ -57,15 +58,17 @@ import java.io.File;
 import java.util.Collection;
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.TimeZoneKey.getTimeZoneKey;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.metadata.FunctionAndTypeManager.createTestFunctionAndTypeManager;
+import static com.facebook.presto.raptor.RaptorTableProperties.TABLE_SUPPORTS_DELTA_DELETE;
 import static com.facebook.presto.raptor.RaptorTableProperties.TEMPORAL_COLUMN_PROPERTY;
 import static com.facebook.presto.raptor.metadata.SchemaDaoUtil.createTablesWithRetry;
 import static com.facebook.presto.raptor.metadata.TestDatabaseShardManager.createShardManager;
 import static com.facebook.presto.raptor.storage.TestOrcStorageManager.createOrcStorageManager;
 import static com.facebook.presto.spi.transaction.IsolationLevel.READ_COMMITTED;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.TimeZoneKey.getTimeZoneKey;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.facebook.presto.util.DateTimeUtils.parseDate;
 import static com.facebook.presto.util.DateTimeUtils.parseTimestampLiteral;
@@ -88,9 +91,9 @@ public class TestRaptorConnector
     public void setup()
             throws Exception
     {
-        TypeRegistry typeRegistry = new TypeRegistry();
+        FunctionAndTypeManager functionAndTypeManager = createTestFunctionAndTypeManager();
         DBI dbi = new DBI("jdbc:h2:mem:test" + System.nanoTime());
-        dbi.registerMapper(new TableColumn.Mapper(typeRegistry));
+        dbi.registerMapper(new TableColumn.Mapper(functionAndTypeManager));
         dummyHandle = dbi.open();
         metadataDao = dbi.onDemand(MetadataDao.class);
         createTablesWithRetry(dbi);
@@ -105,7 +108,7 @@ public class TestRaptorConnector
         connector = new RaptorConnector(
                 new LifeCycleManager(ImmutableList.of(), null),
                 new TestingNodeManager(),
-                new RaptorMetadataFactory(connectorId, dbi, shardManager),
+                new RaptorMetadataFactory(connectorId, dbi, shardManager, functionAndTypeManager),
                 new RaptorSplitManager(connectorId, nodeSupplier, shardManager, false),
                 new RaptorPageSourceProvider(storageManager),
                 new RaptorPageSinkProvider(storageManager,
@@ -114,10 +117,11 @@ public class TestRaptorConnector
                         config),
                 new RaptorNodePartitioningProvider(nodeSupplier),
                 new RaptorSessionProperties(config),
-                new RaptorTableProperties(typeRegistry),
+                new RaptorTableProperties(functionAndTypeManager),
                 ImmutableSet.of(),
                 new AllowAllAccessControl(),
-                dbi);
+                dbi,
+                ImmutableSet.of());
     }
 
     @AfterMethod(alwaysRun = true)
@@ -216,7 +220,6 @@ public class TestRaptorConnector
     {
         ConnectorSession session = new TestingConnectorSession(
                 "user",
-                "path",
                 Optional.of("test"),
                 Optional.empty(),
                 getTimeZoneKey(userTimeZone),
@@ -224,7 +227,10 @@ public class TestRaptorConnector
                 System.currentTimeMillis(),
                 new RaptorSessionProperties(new StorageManagerConfig()).getSessionProperties(),
                 ImmutableMap.of(),
-                true);
+                true,
+                Optional.empty(),
+                Optional.empty(),
+                ImmutableMap.of());
 
         ConnectorTransactionHandle transaction = connector.beginTransaction(READ_COMMITTED, false);
         connector.getMetadata(transaction).createTable(
@@ -232,14 +238,14 @@ public class TestRaptorConnector
                 new ConnectorTableMetadata(
                         new SchemaTableName("test", "test"),
                         ImmutableList.of(new ColumnMetadata("id", BIGINT), new ColumnMetadata("time", temporalType)),
-                        ImmutableMap.of(TEMPORAL_COLUMN_PROPERTY, "time")),
+                        ImmutableMap.of(TEMPORAL_COLUMN_PROPERTY, "time", TABLE_SUPPORTS_DELTA_DELETE, false)),
                 false);
         connector.commit(transaction);
 
         ConnectorTransactionHandle txn1 = connector.beginTransaction(READ_COMMITTED, false);
         ConnectorTableHandle handle1 = getTableHandle(connector.getMetadata(txn1), "test");
         ConnectorInsertTableHandle insertTableHandle = connector.getMetadata(txn1).beginInsert(session, handle1);
-        ConnectorPageSink raptorPageSink = connector.getPageSinkProvider().createPageSink(txn1, session, insertTableHandle);
+        ConnectorPageSink raptorPageSink = connector.getPageSinkProvider().createPageSink(txn1, session, insertTableHandle, PageSinkContext.defaultContext());
 
         Object timestamp1 = null;
         Object timestamp2 = null;
@@ -273,7 +279,8 @@ public class TestRaptorConnector
                 SESSION,
                 new ConnectorTableMetadata(
                         new SchemaTableName("test", name),
-                        ImmutableList.of(new ColumnMetadata("id", BIGINT))),
+                        ImmutableList.of(new ColumnMetadata("id", BIGINT)),
+                        ImmutableMap.of(TABLE_SUPPORTS_DELTA_DELETE, false)),
                 false);
         connector.commit(transaction);
 

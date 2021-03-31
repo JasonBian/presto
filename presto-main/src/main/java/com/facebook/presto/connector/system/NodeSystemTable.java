@@ -13,33 +13,32 @@
  */
 package com.facebook.presto.connector.system;
 
+import com.facebook.presto.common.predicate.TupleDomain;
 import com.facebook.presto.metadata.AllNodes;
+import com.facebook.presto.metadata.InternalNode;
 import com.facebook.presto.metadata.InternalNodeManager;
-import com.facebook.presto.metadata.PrestoNode;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.InMemoryRecordSet;
 import com.facebook.presto.spi.InMemoryRecordSet.Builder;
-import com.facebook.presto.spi.Node;
 import com.facebook.presto.spi.NodeState;
 import com.facebook.presto.spi.RecordCursor;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.SystemTable;
 import com.facebook.presto.spi.connector.ConnectorTransactionHandle;
-import com.facebook.presto.spi.predicate.TupleDomain;
 
 import javax.inject.Inject;
 
 import java.util.Locale;
 import java.util.Set;
 
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.metadata.MetadataUtil.TableMetadataBuilder.tableMetadataBuilder;
 import static com.facebook.presto.spi.NodeState.ACTIVE;
 import static com.facebook.presto.spi.NodeState.INACTIVE;
 import static com.facebook.presto.spi.NodeState.SHUTTING_DOWN;
 import static com.facebook.presto.spi.SystemTable.Distribution.SINGLE_COORDINATOR;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
 import static java.util.Objects.requireNonNull;
 
 public class NodeSystemTable
@@ -86,22 +85,19 @@ public class NodeSystemTable
         return table.build().cursor();
     }
 
-    private void addRows(Builder table, Set<Node> nodes, NodeState state)
+    private void addRows(Builder table, Set<InternalNode> nodes, NodeState state)
     {
-        for (Node node : nodes) {
-            table.addRow(node.getNodeIdentifier(), node.getHttpUri().toString(), getNodeVersion(node), isCoordinator(node), state.toString().toLowerCase(Locale.ENGLISH));
+        for (InternalNode node : nodes) {
+            table.addRow(node.getNodeIdentifier(), node.getInternalUri().toString(), getNodeVersion(node), isCoordinator(node), state.toString().toLowerCase(Locale.ENGLISH));
         }
     }
 
-    private static String getNodeVersion(Node node)
+    private static String getNodeVersion(InternalNode node)
     {
-        if (node instanceof PrestoNode) {
-            return ((PrestoNode) node).getNodeVersion().toString();
-        }
-        return "";
+        return node.getNodeVersion().toString();
     }
 
-    private boolean isCoordinator(Node node)
+    private boolean isCoordinator(InternalNode node)
     {
         return nodeManager.getCoordinators().contains(node);
     }

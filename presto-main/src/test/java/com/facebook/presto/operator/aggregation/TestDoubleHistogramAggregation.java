@@ -13,17 +13,14 @@
  */
 package com.facebook.presto.operator.aggregation;
 
-import com.facebook.presto.block.BlockEncodingManager;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.metadata.MetadataManager;
+import com.facebook.presto.operator.UpdateMemory;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.sql.analyzer.FeaturesConfig;
-import com.facebook.presto.type.TypeRegistry;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Maps;
 import org.testng.annotations.Test;
@@ -31,12 +28,11 @@ import org.testng.annotations.Test;
 import java.util.Map;
 import java.util.Optional;
 
-import static com.facebook.presto.metadata.FunctionKind.AGGREGATE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
 import static com.facebook.presto.operator.aggregation.AggregationTestUtils.getFinalBlock;
 import static com.facebook.presto.operator.aggregation.AggregationTestUtils.getIntermediateBlock;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.util.StructuralTestUtil.mapType;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertTrue;
@@ -48,32 +44,25 @@ public class TestDoubleHistogramAggregation
 
     public TestDoubleHistogramAggregation()
     {
-        TypeRegistry typeRegistry = new TypeRegistry();
-        FunctionRegistry functionRegistry = new FunctionRegistry(typeRegistry, new BlockEncodingManager(typeRegistry), new FeaturesConfig());
-        InternalAggregationFunction function = functionRegistry.getAggregateFunctionImplementation(
-                new Signature("numeric_histogram",
-                        AGGREGATE,
-                        parseTypeSignature("map(double,double)"),
-                        parseTypeSignature(StandardTypes.BIGINT),
-                        parseTypeSignature(StandardTypes.DOUBLE),
-                        parseTypeSignature(StandardTypes.DOUBLE)));
+        FunctionAndTypeManager functionAndTypeManager = MetadataManager.createTestMetadataManager().getFunctionAndTypeManager();
+        InternalAggregationFunction function = functionAndTypeManager.getAggregateFunctionImplementation(
+                functionAndTypeManager.lookupFunction("numeric_histogram", fromTypes(BIGINT, DOUBLE, DOUBLE)));
         factory = function.bind(ImmutableList.of(0, 1, 2), Optional.empty());
-
         input = makeInput(10);
     }
 
     @Test
     public void test()
     {
-        Accumulator singleStep = factory.createAccumulator();
+        Accumulator singleStep = factory.createAccumulator(UpdateMemory.NOOP);
         singleStep.addInput(input);
         Block expected = getFinalBlock(singleStep);
 
-        Accumulator partialStep = factory.createAccumulator();
+        Accumulator partialStep = factory.createAccumulator(UpdateMemory.NOOP);
         partialStep.addInput(input);
         Block partialBlock = getIntermediateBlock(partialStep);
 
-        Accumulator finalStep = factory.createAccumulator();
+        Accumulator finalStep = factory.createAccumulator(UpdateMemory.NOOP);
         finalStep.addIntermediate(partialBlock);
         Block actual = getFinalBlock(finalStep);
 
@@ -83,15 +72,15 @@ public class TestDoubleHistogramAggregation
     @Test
     public void testMerge()
     {
-        Accumulator singleStep = factory.createAccumulator();
+        Accumulator singleStep = factory.createAccumulator(UpdateMemory.NOOP);
         singleStep.addInput(input);
         Block singleStepResult = getFinalBlock(singleStep);
 
-        Accumulator partialStep = factory.createAccumulator();
+        Accumulator partialStep = factory.createAccumulator(UpdateMemory.NOOP);
         partialStep.addInput(input);
         Block intermediate = getIntermediateBlock(partialStep);
 
-        Accumulator finalStep = factory.createAccumulator();
+        Accumulator finalStep = factory.createAccumulator(UpdateMemory.NOOP);
 
         finalStep.addIntermediate(intermediate);
         finalStep.addIntermediate(intermediate);
@@ -105,7 +94,7 @@ public class TestDoubleHistogramAggregation
     @Test
     public void testNull()
     {
-        Accumulator accumulator = factory.createAccumulator();
+        Accumulator accumulator = factory.createAccumulator(UpdateMemory.NOOP);
         Block result = getFinalBlock(accumulator);
 
         assertTrue(result.getPositionCount() == 1);
@@ -115,7 +104,7 @@ public class TestDoubleHistogramAggregation
     @Test(expectedExceptions = PrestoException.class)
     public void testBadNumberOfBuckets()
     {
-        Accumulator singleStep = factory.createAccumulator();
+        Accumulator singleStep = factory.createAccumulator(UpdateMemory.NOOP);
         singleStep.addInput(makeInput(0));
         getFinalBlock(singleStep);
     }

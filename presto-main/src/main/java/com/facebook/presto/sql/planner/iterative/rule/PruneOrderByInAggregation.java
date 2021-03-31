@@ -15,16 +15,16 @@ package com.facebook.presto.sql.planner.iterative.rule;
 
 import com.facebook.presto.matching.Captures;
 import com.facebook.presto.matching.Pattern;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.sql.planner.Symbol;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.relation.VariableReferenceExpression;
 import com.facebook.presto.sql.planner.iterative.Rule;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
-import com.facebook.presto.sql.tree.FunctionCall;
 import com.google.common.collect.ImmutableMap;
 
 import java.util.Map;
+import java.util.Optional;
 
-import static com.facebook.presto.sql.planner.plan.AggregationNode.Aggregation;
+import static com.facebook.presto.spi.plan.AggregationNode.Aggregation;
 import static com.facebook.presto.sql.planner.plan.Patterns.aggregation;
 import static java.util.Objects.requireNonNull;
 
@@ -32,11 +32,11 @@ public class PruneOrderByInAggregation
         implements Rule<AggregationNode>
 {
     private static final Pattern<AggregationNode> PATTERN = aggregation();
-    private final FunctionRegistry functionRegistry;
+    private final FunctionAndTypeManager functionAndTypeManager;
 
-    public PruneOrderByInAggregation(FunctionRegistry functionRegistry)
+    public PruneOrderByInAggregation(FunctionAndTypeManager functionAndTypeManager)
     {
-        this.functionRegistry = requireNonNull(functionRegistry, "functionRegistry is null");
+        this.functionAndTypeManager = requireNonNull(functionAndTypeManager, "functionManager is null");
     }
 
     @Override
@@ -53,25 +53,25 @@ public class PruneOrderByInAggregation
         }
 
         boolean anyRewritten = false;
-        ImmutableMap.Builder<Symbol, Aggregation> aggregations = ImmutableMap.builder();
-        for (Map.Entry<Symbol, Aggregation> entry : node.getAggregations().entrySet()) {
+        ImmutableMap.Builder<VariableReferenceExpression, Aggregation> aggregations = ImmutableMap.builder();
+        for (Map.Entry<VariableReferenceExpression, Aggregation> entry : node.getAggregations().entrySet()) {
             Aggregation aggregation = entry.getValue();
-            if (!aggregation.getCall().getOrderBy().isPresent()) {
+            if (!aggregation.getOrderBy().isPresent()) {
                 aggregations.put(entry);
             }
             // getAggregateFunctionImplementation can be expensive, so check it last.
-            else if (functionRegistry.getAggregateFunctionImplementation(aggregation.getSignature()).isOrderSensitive()) {
+            else if (functionAndTypeManager.getAggregateFunctionImplementation(aggregation.getFunctionHandle()).isOrderSensitive()) {
                 aggregations.put(entry);
             }
             else {
                 anyRewritten = true;
-                FunctionCall rewritten = new FunctionCall(
-                        aggregation.getCall().getName(),
-                        aggregation.getCall().isDistinct(),
-                        aggregation.getCall().getArguments(),
-                        aggregation.getCall().getFilter());
 
-                aggregations.put(entry.getKey(), new Aggregation(rewritten, aggregation.getSignature(), aggregation.getMask()));
+                aggregations.put(entry.getKey(), new Aggregation(
+                        aggregation.getCall(),
+                        aggregation.getFilter(),
+                        Optional.empty(),
+                        aggregation.isDistinct(),
+                        aggregation.getMask()));
             }
         }
 
@@ -83,9 +83,9 @@ public class PruneOrderByInAggregation
                 node.getSource(),
                 aggregations.build(),
                 node.getGroupingSets(),
-                node.getPreGroupedSymbols(),
+                node.getPreGroupedVariables(),
                 node.getStep(),
-                node.getHashSymbol(),
-                node.getGroupIdSymbol()));
+                node.getHashVariable(),
+                node.getGroupIdVariable()));
     }
 }

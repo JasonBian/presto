@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.accumulo;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.accumulo.conf.AccumuloConfig;
 import com.facebook.presto.accumulo.conf.AccumuloSessionProperties;
 import com.facebook.presto.accumulo.conf.AccumuloTableProperties;
@@ -26,20 +27,19 @@ import com.facebook.presto.accumulo.model.AccumuloColumnConstraint;
 import com.facebook.presto.accumulo.model.AccumuloColumnHandle;
 import com.facebook.presto.accumulo.model.TabletSplitMetadata;
 import com.facebook.presto.accumulo.serializers.AccumuloRowSerializer;
+import com.facebook.presto.common.predicate.Domain;
+import com.facebook.presto.common.predicate.Marker.Bound;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.TableNotFoundException;
-import com.facebook.presto.spi.predicate.Domain;
-import com.facebook.presto.spi.predicate.Marker.Bound;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
-import io.airlift.log.Logger;
 import org.apache.accumulo.core.client.AccumuloException;
 import org.apache.accumulo.core.client.AccumuloSecurityException;
 import org.apache.accumulo.core.client.Connector;
@@ -902,14 +902,14 @@ public class AccumuloClient
         }
 
         ImmutableSet.Builder<Range> rangeBuilder = ImmutableSet.builder();
-        for (com.facebook.presto.spi.predicate.Range range : domain.get().getValues().getRanges().getOrderedRanges()) {
+        for (com.facebook.presto.common.predicate.Range range : domain.get().getValues().getRanges().getOrderedRanges()) {
             rangeBuilder.add(getRangeFromPrestoRange(range, serializer));
         }
 
         return rangeBuilder.build();
     }
 
-    private static Range getRangeFromPrestoRange(com.facebook.presto.spi.predicate.Range prestoRange, AccumuloRowSerializer serializer)
+    private static Range getRangeFromPrestoRange(com.facebook.presto.common.predicate.Range prestoRange, AccumuloRowSerializer serializer)
             throws TableNotFoundException
     {
         Range accumuloRange;

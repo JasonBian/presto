@@ -13,12 +13,16 @@
  */
 package com.facebook.presto.orc.writer;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.orc.DwrfDataEncryptor;
 import com.facebook.presto.orc.OrcEncoding;
 import com.facebook.presto.orc.checkpoint.BooleanStreamCheckpoint;
 import com.facebook.presto.orc.checkpoint.LongStreamCheckpoint;
 import com.facebook.presto.orc.metadata.ColumnEncoding;
 import com.facebook.presto.orc.metadata.CompressedMetadataWriter;
-import com.facebook.presto.orc.metadata.CompressionKind;
+import com.facebook.presto.orc.metadata.CompressionParameters;
+import com.facebook.presto.orc.metadata.MetadataWriter;
 import com.facebook.presto.orc.metadata.RowGroupIndex;
 import com.facebook.presto.orc.metadata.Stream;
 import com.facebook.presto.orc.metadata.Stream.StreamKind;
@@ -28,8 +32,6 @@ import com.facebook.presto.orc.stream.LongOutputStreamV1;
 import com.facebook.presto.orc.stream.LongOutputStreamV2;
 import com.facebook.presto.orc.stream.PresentOutputStream;
 import com.facebook.presto.orc.stream.StreamDataOutput;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import io.airlift.slice.Slice;
@@ -67,31 +69,38 @@ public class TimestampColumnWriter
     private final LongOutputStream secondsStream;
     private final LongOutputStream nanosStream;
     private final PresentOutputStream presentStream;
+    private final CompressedMetadataWriter metadataWriter;
 
     private final List<ColumnStatistics> rowGroupColumnStatistics = new ArrayList<>();
+    private long columnStatisticsRetainedSizeInBytes;
+
     private final long baseTimestampInSeconds;
 
     private int nonNullValueCount;
 
     private boolean closed;
 
-    public TimestampColumnWriter(int column, Type type, CompressionKind compression, int bufferSize, OrcEncoding orcEncoding, DateTimeZone hiveStorageTimeZone)
+    public TimestampColumnWriter(int column, Type type, CompressionParameters compressionParameters, Optional<DwrfDataEncryptor> dwrfEncryptor, OrcEncoding orcEncoding, DateTimeZone hiveStorageTimeZone, MetadataWriter metadataWriter)
     {
         checkArgument(column >= 0, "column is negative");
+        requireNonNull(compressionParameters, "compression is null");
+        requireNonNull(dwrfEncryptor, "dwrfEncryptor is null");
+        requireNonNull(metadataWriter, "metadataWriter is null");
         this.column = column;
         this.type = requireNonNull(type, "type is null");
-        this.compressed = requireNonNull(compression, "compression is null") != NONE;
+        this.compressed = compressionParameters.getKind() != NONE;
         if (orcEncoding == DWRF) {
             this.columnEncoding = new ColumnEncoding(DIRECT, 0);
-            this.secondsStream = new LongOutputStreamV1(compression, bufferSize, true, DATA);
-            this.nanosStream = new LongOutputStreamV1(compression, bufferSize, false, SECONDARY);
+            this.secondsStream = new LongOutputStreamV1(compressionParameters, dwrfEncryptor, true, DATA);
+            this.nanosStream = new LongOutputStreamV1(compressionParameters, dwrfEncryptor, false, SECONDARY);
         }
         else {
             this.columnEncoding = new ColumnEncoding(DIRECT_V2, 0);
-            this.secondsStream = new LongOutputStreamV2(compression, bufferSize, true, DATA);
-            this.nanosStream = new LongOutputStreamV2(compression, bufferSize, false, SECONDARY);
+            this.secondsStream = new LongOutputStreamV2(compressionParameters, true, DATA);
+            this.nanosStream = new LongOutputStreamV2(compressionParameters, false, SECONDARY);
         }
-        this.presentStream = new PresentOutputStream(compression, bufferSize);
+        this.presentStream = new PresentOutputStream(compressionParameters, dwrfEncryptor);
+        this.metadataWriter = new CompressedMetadataWriter(metadataWriter, compressionParameters, dwrfEncryptor);
         this.baseTimestampInSeconds = new DateTime(2015, 1, 1, 0, 0, requireNonNull(hiveStorageTimeZone, "hiveStorageTimeZone is null")).getMillis() / MILLIS_PER_SECOND;
     }
 
@@ -163,6 +172,7 @@ public class TimestampColumnWriter
         checkState(!closed);
         ColumnStatistics statistics = new ColumnStatistics((long) nonNullValueCount, 0, null, null, null, null, null, null, null, null);
         rowGroupColumnStatistics.add(statistics);
+        columnStatisticsRetainedSizeInBytes += statistics.getRetainedSizeInBytes();
         nonNullValueCount = 0;
         return ImmutableMap.of(column, statistics);
     }
@@ -184,7 +194,7 @@ public class TimestampColumnWriter
     }
 
     @Override
-    public List<StreamDataOutput> getIndexStreams(CompressedMetadataWriter metadataWriter)
+    public List<StreamDataOutput> getIndexStreams()
             throws IOException
     {
         checkState(closed);
@@ -243,11 +253,7 @@ public class TimestampColumnWriter
     @Override
     public long getRetainedBytes()
     {
-        long retainedBytes = secondsStream.getRetainedBytes() + nanosStream.getRetainedBytes() + presentStream.getRetainedBytes();
-        for (ColumnStatistics statistics : rowGroupColumnStatistics) {
-            retainedBytes += statistics.getRetainedSizeInBytes();
-        }
-        return retainedBytes;
+        return INSTANCE_SIZE + secondsStream.getRetainedBytes() + nanosStream.getRetainedBytes() + presentStream.getRetainedBytes() + columnStatisticsRetainedSizeInBytes;
     }
 
     @Override
@@ -258,6 +264,7 @@ public class TimestampColumnWriter
         nanosStream.reset();
         presentStream.reset();
         rowGroupColumnStatistics.clear();
+        columnStatisticsRetainedSizeInBytes = 0;
         nonNullValueCount = 0;
     }
 }

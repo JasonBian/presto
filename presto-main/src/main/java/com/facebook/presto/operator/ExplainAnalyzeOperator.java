@@ -13,24 +13,20 @@
  */
 package com.facebook.presto.operator;
 
-import com.facebook.presto.cost.CostCalculator;
-import com.facebook.presto.cost.StatsCalculator;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.BlockBuilder;
 import com.facebook.presto.execution.QueryInfo;
 import com.facebook.presto.execution.QueryPerformanceFetcher;
 import com.facebook.presto.execution.StageId;
 import com.facebook.presto.execution.StageInfo;
-import com.facebook.presto.execution.scheduler.NodeSchedulerConfig;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.InternalNodeManager;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.sql.planner.planPrinter.PlanPrinter.textDistributedPlan;
 import static com.google.common.base.Preconditions.checkState;
 import static java.util.Objects.requireNonNull;
@@ -44,11 +40,7 @@ public class ExplainAnalyzeOperator
         private final int operatorId;
         private final PlanNodeId planNodeId;
         private final QueryPerformanceFetcher queryPerformanceFetcher;
-        private final FunctionRegistry functionRegistry;
-        private final StatsCalculator statsCalculator;
-        private final CostCalculator costCalculator;
-        private final InternalNodeManager nodeManager;
-        private final NodeSchedulerConfig nodeSchedulerConfig;
+        private final FunctionAndTypeManager functionAndTypeManager;
         private final boolean verbose;
         private boolean closed;
 
@@ -56,21 +48,13 @@ public class ExplainAnalyzeOperator
                 int operatorId,
                 PlanNodeId planNodeId,
                 QueryPerformanceFetcher queryPerformanceFetcher,
-                FunctionRegistry functionRegistry,
-                StatsCalculator statsCalculator,
-                CostCalculator costCalculator,
-                InternalNodeManager nodeManager,
-                NodeSchedulerConfig nodeSchedulerConfig,
+                FunctionAndTypeManager functionAndTypeManager,
                 boolean verbose)
         {
             this.operatorId = operatorId;
             this.planNodeId = requireNonNull(planNodeId, "planNodeId is null");
             this.queryPerformanceFetcher = requireNonNull(queryPerformanceFetcher, "queryPerformanceFetcher is null");
-            this.functionRegistry = requireNonNull(functionRegistry, "functionRegistry is null");
-            this.statsCalculator = requireNonNull(statsCalculator, "statsCalculator is null");
-            this.costCalculator = requireNonNull(costCalculator, "costCalculator is null");
-            this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
-            this.nodeSchedulerConfig = requireNonNull(nodeSchedulerConfig, "nodeSchedulerConfig is null");
+            this.functionAndTypeManager = requireNonNull(functionAndTypeManager, "functionManager is null");
             this.verbose = verbose;
         }
 
@@ -79,7 +63,7 @@ public class ExplainAnalyzeOperator
         {
             checkState(!closed, "Factory is already closed");
             OperatorContext operatorContext = driverContext.addOperatorContext(operatorId, planNodeId, ExplainAnalyzeOperator.class.getSimpleName());
-            return new ExplainAnalyzeOperator(operatorContext, queryPerformanceFetcher, functionRegistry, statsCalculator, costCalculator, nodeManager, nodeSchedulerConfig, verbose);
+            return new ExplainAnalyzeOperator(operatorContext, queryPerformanceFetcher, functionAndTypeManager, verbose);
         }
 
         @Override
@@ -91,17 +75,13 @@ public class ExplainAnalyzeOperator
         @Override
         public OperatorFactory duplicate()
         {
-            return new ExplainAnalyzeOperatorFactory(operatorId, planNodeId, queryPerformanceFetcher, functionRegistry, statsCalculator, costCalculator, nodeManager, nodeSchedulerConfig, verbose);
+            return new ExplainAnalyzeOperatorFactory(operatorId, planNodeId, queryPerformanceFetcher, functionAndTypeManager, verbose);
         }
     }
 
     private final OperatorContext operatorContext;
     private final QueryPerformanceFetcher queryPerformanceFetcher;
-    private final FunctionRegistry functionRegistry;
-    private final StatsCalculator statsCalculator;
-    private final CostCalculator costCalculator;
-    private final InternalNodeManager nodeManager;
-    private final NodeSchedulerConfig nodeSchedulerConfig;
+    private final FunctionAndTypeManager functionAndTypeManager;
     private final boolean verbose;
     private boolean finishing;
     private boolean outputConsumed;
@@ -109,20 +89,12 @@ public class ExplainAnalyzeOperator
     public ExplainAnalyzeOperator(
             OperatorContext operatorContext,
             QueryPerformanceFetcher queryPerformanceFetcher,
-            FunctionRegistry functionRegistry,
-            StatsCalculator statsCalculator,
-            CostCalculator costCalculator,
-            InternalNodeManager nodeManager,
-            NodeSchedulerConfig nodeSchedulerConfig,
+            FunctionAndTypeManager functionAndTypeManager,
             boolean verbose)
     {
         this.operatorContext = requireNonNull(operatorContext, "operatorContext is null");
         this.queryPerformanceFetcher = requireNonNull(queryPerformanceFetcher, "queryPerformanceFetcher is null");
-        this.functionRegistry = requireNonNull(functionRegistry, "functionRegistry is null");
-        this.statsCalculator = requireNonNull(statsCalculator, "statsCalculator is null");
-        this.costCalculator = requireNonNull(costCalculator, "costCalculator is null");
-        this.nodeManager = requireNonNull(nodeManager, "nodeManager is null");
-        this.nodeSchedulerConfig = requireNonNull(nodeSchedulerConfig, "nodeSchedulerConfig is null");
+        this.functionAndTypeManager = requireNonNull(functionAndTypeManager, "functionManager is null");
         this.verbose = verbose;
     }
 
@@ -173,7 +145,7 @@ public class ExplainAnalyzeOperator
             return null;
         }
 
-        String plan = textDistributedPlan(queryInfo.getOutputStage().get().getSubStages().get(0), functionRegistry, statsCalculator, costCalculator, nodeManager, nodeSchedulerConfig, operatorContext.getSession(), verbose);
+        String plan = textDistributedPlan(queryInfo.getOutputStage().get().getSubStages().get(0), functionAndTypeManager, operatorContext.getSession(), verbose);
         BlockBuilder builder = VARCHAR.createBlockBuilder(null, 1);
         VARCHAR.writeString(builder, plan);
 
@@ -197,7 +169,7 @@ public class ExplainAnalyzeOperator
 
     private boolean isFinalStageInfo(StageInfo stageInfo)
     {
-        List<StageInfo> subStages = getSubStagesOf(operatorContext.getDriverContext().getTaskId().getStageId(), stageInfo);
+        List<StageInfo> subStages = getSubStagesOf(operatorContext.getDriverContext().getTaskId().getStageExecutionId().getStageId(), stageInfo);
         return subStages.stream().allMatch(StageInfo::isFinalStageInfo);
     }
 

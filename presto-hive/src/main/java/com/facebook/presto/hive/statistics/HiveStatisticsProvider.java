@@ -14,23 +14,25 @@
 
 package com.facebook.presto.hive.statistics;
 
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.hive.HivePartition;
 import com.facebook.presto.spi.ColumnHandle;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.ConnectorTableHandle;
+import com.facebook.presto.spi.SchemaTableName;
 import com.facebook.presto.spi.statistics.TableStatistics;
 
 import java.util.List;
 import java.util.Map;
 
-/**
- * @param tableColumns must be Hive columns, not hidden (Presto-internal) columns
- */
 public interface HiveStatisticsProvider
 {
+    /**
+     * @param columns must be Hive columns, not hidden (Presto-internal) columns
+     */
     TableStatistics getTableStatistics(
             ConnectorSession session,
-            ConnectorTableHandle tableHandle,
-            List<HivePartition> hivePartitions,
-            Map<String, ColumnHandle> tableColumns);
+            SchemaTableName table,
+            Map<String, ColumnHandle> columns,
+            Map<String, Type> columnTypes,
+            List<HivePartition> partitions);
 }

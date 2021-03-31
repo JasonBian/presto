@@ -14,8 +14,8 @@
 package com.facebook.presto.plugin.geospatial.aggregation;
 
 import com.esri.core.geometry.ogc.OGCGeometry;
-import com.facebook.presto.geospatial.serde.GeometrySerde;
-import com.facebook.presto.spi.block.BlockBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.geospatial.serde.EsriGeometrySerde;
 import com.facebook.presto.spi.function.AggregationFunction;
 import com.facebook.presto.spi.function.AggregationState;
 import com.facebook.presto.spi.function.CombineFunction;
@@ -29,8 +29,8 @@ import static com.facebook.presto.plugin.geospatial.GeometryType.GEOMETRY;
 import static com.facebook.presto.plugin.geospatial.GeometryType.GEOMETRY_TYPE_NAME;
 
 /**
- * Aggregate form of ST_Union which takes a set of geometries and unions them into a single geometry, resulting in no intersecting
- * regions.  The output may be a multi-geometry, a single geometry or a geometry collection.
+ * Aggregate form of ST_Union which takes a set of geometries and unions them into a single geometry using an iterative approach,
+ * resulting in no intersecting regions.  The output may be a multi-geometry, a single geometry or a geometry collection.
  */
 @Description("Returns a geometry that represents the point set union of the input geometries.")
 @AggregationFunction("geometry_union_agg")
@@ -41,12 +41,13 @@ public class GeometryUnionAgg
     @InputFunction
     public static void input(@AggregationState GeometryState state, @SqlType(GEOMETRY_TYPE_NAME) Slice input)
     {
-        OGCGeometry geometry = GeometrySerde.deserialize(input);
+        OGCGeometry geometry = EsriGeometrySerde.deserialize(input);
         if (state.getGeometry() == null) {
-            state.setGeometry(geometry);
+            state.setGeometry(geometry, 0);
         }
         else if (!geometry.isEmpty()) {
-            state.setGeometry(state.getGeometry().union(geometry));
+            long previousMemorySize = state.getGeometry().estimateMemorySize();
+            state.setGeometry(state.getGeometry().union(geometry), previousMemorySize);
         }
     }
 
@@ -54,10 +55,11 @@ public class GeometryUnionAgg
     public static void combine(@AggregationState GeometryState state, @AggregationState GeometryState otherState)
     {
         if (state.getGeometry() == null) {
-            state.setGeometry(otherState.getGeometry());
+            state.setGeometry(otherState.getGeometry(), 0);
         }
         else if (otherState.getGeometry() != null && !otherState.getGeometry().isEmpty()) {
-            state.setGeometry(state.getGeometry().union(otherState.getGeometry()));
+            long previousMemorySize = state.getGeometry().estimateMemorySize();
+            state.setGeometry(state.getGeometry().union(otherState.getGeometry()), previousMemorySize);
         }
     }
 
@@ -68,7 +70,7 @@ public class GeometryUnionAgg
             out.appendNull();
         }
         else {
-            GEOMETRY.writeSlice(out, GeometrySerde.serialize(state.getGeometry()));
+            GEOMETRY.writeSlice(out, EsriGeometrySerde.serialize(state.getGeometry()));
         }
     }
 }

@@ -13,28 +13,32 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.airlift.concurrent.MoreFutures;
+import com.facebook.airlift.json.JsonCodec;
+import com.facebook.airlift.log.Logger;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.IntArrayBlockBuilder;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
+import com.facebook.presto.hive.filesystem.ExtendedFileSystem;
 import com.facebook.presto.spi.ConnectorPageSink;
 import com.facebook.presto.spi.ConnectorSession;
-import com.facebook.presto.spi.Page;
 import com.facebook.presto.spi.PageIndexer;
 import com.facebook.presto.spi.PageIndexerFactory;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.IntArrayBlockBuilder;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
-import io.airlift.concurrent.MoreFutures;
-import io.airlift.json.JsonCodec;
-import io.airlift.log.Logger;
+import com.google.common.util.concurrent.SettableFuture;
 import io.airlift.slice.Slice;
 import it.unimi.dsi.fastutil.objects.Object2IntMap;
 import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
+import org.apache.hadoop.fs.Path;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.HashMap;
@@ -44,12 +48,22 @@ import java.util.Optional;
 import java.util.OptionalInt;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.Executors;
 
+import static com.facebook.airlift.concurrent.MoreFutures.addSuccessCallback;
+import static com.facebook.airlift.concurrent.MoreFutures.toListenableFuture;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.hive.HiveBucketFunction.createHiveCompatibleBucketFunction;
+import static com.facebook.presto.hive.HiveBucketFunction.createPrestoNativeBucketFunction;
+import static com.facebook.presto.hive.HiveErrorCode.HIVE_FILESYSTEM_ERROR;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_TOO_MANY_OPEN_PARTITIONS;
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
+import static com.facebook.presto.hive.HiveSessionProperties.isFileRenamingEnabled;
+import static com.facebook.presto.hive.PartitionUpdate.FileWriteInfo;
+import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Verify.verify;
+import static com.google.common.collect.ImmutableList.toImmutableList;
 import static com.google.common.util.concurrent.MoreExecutors.directExecutor;
 import static io.airlift.slice.Slices.wrappedBuffer;
 import static java.lang.String.format;
@@ -64,6 +78,9 @@ public class HivePageSink
     private static final int MAX_PAGE_POSITIONS = 4096;
 
     private final HiveWriterFactory writerFactory;
+
+    private final String schemaName;
+    private final String tableName;
 
     private final int[] dataColumnInputIndex; // ordinal of columns (not counting sample weight column)
     private final int[] partitionColumnsInputIndex; // ordinal of columns (not counting sample weight column)
@@ -82,25 +99,36 @@ public class HivePageSink
     private final List<HiveWriter> writers = new ArrayList<>();
 
     private final ConnectorSession session;
+    private final HiveMetadataUpdater hiveMetadataUpdater;
+    private final boolean fileRenamingEnabled;
 
     private long writtenBytes;
     private long systemMemoryUsage;
+    private long validationCpuNanos;
+
+    private boolean waitForFileRenaming;
 
     public HivePageSink(
             HiveWriterFactory writerFactory,
             List<HiveColumnHandle> inputColumns,
             Optional<HiveBucketProperty> bucketProperty,
+            String schemaName,
+            String tableName,
             PageIndexerFactory pageIndexerFactory,
             TypeManager typeManager,
             HdfsEnvironment hdfsEnvironment,
             int maxOpenWriters,
             ListeningExecutorService writeVerificationExecutor,
             JsonCodec<PartitionUpdate> partitionUpdateCodec,
-            ConnectorSession session)
+            ConnectorSession session,
+            HiveMetadataUpdater hiveMetadataUpdater)
     {
         this.writerFactory = requireNonNull(writerFactory, "writerFactory is null");
 
         requireNonNull(inputColumns, "inputColumns is null");
+
+        this.schemaName = requireNonNull(schemaName, "schemaName is null");
+        this.tableName = requireNonNull(tableName, "tableName is null");
 
         requireNonNull(pageIndexerFactory, "pageIndexerFactory is null");
 
@@ -121,7 +149,7 @@ public class HivePageSink
         ImmutableList.Builder<Integer> partitionColumns = ImmutableList.builder();
         ImmutableList.Builder<Integer> dataColumnsInputIndex = ImmutableList.builder();
         Object2IntMap<String> dataColumnNameToIdMap = new Object2IntOpenHashMap<>();
-        Map<String, HiveType> dataColumnNameToTypeMap = new HashMap<>();
+        Map<String, HiveType> dataColumnNameToHiveTypeMap = new HashMap<>();
         // sample weight column is passed separately, so index must be calculated without this column
         for (int inputIndex = 0; inputIndex < inputColumns.size(); inputIndex++) {
             HiveColumnHandle column = inputColumns.get(inputIndex);
@@ -131,7 +159,7 @@ public class HivePageSink
             else {
                 dataColumnsInputIndex.add(inputIndex);
                 dataColumnNameToIdMap.put(column.getName(), inputIndex);
-                dataColumnNameToTypeMap.put(column.getName(), column.getHiveType());
+                dataColumnNameToHiveTypeMap.put(column.getName(), column.getHiveType());
             }
         }
         this.partitionColumnsInputIndex = Ints.toArray(partitionColumns.build());
@@ -142,10 +170,20 @@ public class HivePageSink
             bucketColumns = bucketProperty.get().getBucketedBy().stream()
                     .mapToInt(dataColumnNameToIdMap::get)
                     .toArray();
-            List<HiveType> bucketColumnTypes = bucketProperty.get().getBucketedBy().stream()
-                    .map(dataColumnNameToTypeMap::get)
-                    .collect(toList());
-            bucketFunction = new HiveBucketFunction(bucketCount, bucketColumnTypes);
+            BucketFunctionType bucketFunctionType = bucketProperty.get().getBucketFunctionType();
+            switch (bucketFunctionType) {
+                case HIVE_COMPATIBLE:
+                    List<HiveType> bucketColumnHiveTypes = bucketProperty.get().getBucketedBy().stream()
+                            .map(dataColumnNameToHiveTypeMap::get)
+                            .collect(toImmutableList());
+                    bucketFunction = createHiveCompatibleBucketFunction(bucketCount, bucketColumnHiveTypes);
+                    break;
+                case PRESTO_NATIVE:
+                    bucketFunction = createPrestoNativeBucketFunction(bucketCount, bucketProperty.get().getTypes().get());
+                    break;
+                default:
+                    throw new IllegalArgumentException("Unsupported bucket function type " + bucketFunctionType);
+            }
         }
         else {
             bucketColumns = null;
@@ -153,6 +191,8 @@ public class HivePageSink
         }
 
         this.session = requireNonNull(session, "session is null");
+        this.hiveMetadataUpdater = requireNonNull(hiveMetadataUpdater, "hiveMetadataUpdater is null");
+        this.fileRenamingEnabled = isFileRenamingEnabled(session);
     }
 
     @Override
@@ -165,6 +205,12 @@ public class HivePageSink
     public long getSystemMemoryUsage()
     {
         return systemMemoryUsage;
+    }
+
+    @Override
+    public long getValidationCpuNanos()
+    {
+        return validationCpuNanos;
     }
 
     @Override
@@ -193,6 +239,23 @@ public class HivePageSink
         writtenBytes = writers.stream()
                 .mapToLong(HiveWriter::getWrittenBytes)
                 .sum();
+        validationCpuNanos = writers.stream()
+                .mapToLong(HiveWriter::getValidationCpuNanos)
+                .sum();
+
+        if (waitForFileRenaming && verificationTasks.isEmpty()) {
+            // Use CopyOnWriteArrayList to prevent race condition when callbacks try to add partitionUpdates to this list
+            List<Slice> partitionUpdatesWithRenamedFileNames = new CopyOnWriteArrayList<>();
+            List<ListenableFuture<?>> futures = new ArrayList<>();
+            for (int i = 0; i < writers.size(); i++) {
+                int writerIndex = i;
+                ListenableFuture<?> fileNameFuture = toListenableFuture(hiveMetadataUpdater.getMetadataResult(writerIndex));
+                SettableFuture renamingFuture = SettableFuture.create();
+                futures.add(renamingFuture);
+                addSuccessCallback(fileNameFuture, obj -> renameFiles((String) obj, writerIndex, renamingFuture, partitionUpdatesWithRenamedFileNames));
+            }
+            return Futures.transform(Futures.allAsList(futures), input -> partitionUpdatesWithRenamedFileNames, directExecutor());
+        }
 
         if (verificationTasks.isEmpty()) {
             return Futures.immediateFuture(result);
@@ -313,6 +376,62 @@ public class HivePageSink
         }
     }
 
+    private void sendMetadataUpdateRequest(Optional<String> partitionName, int writerIndex, boolean writeTempData)
+    {
+        // Bucketed tables already have unique bucket number as part of fileName. So no need to rename.
+        if (writeTempData || !fileRenamingEnabled || bucketFunction != null) {
+            return;
+        }
+        hiveMetadataUpdater.addMetadataUpdateRequest(schemaName, tableName, partitionName, writerIndex);
+        waitForFileRenaming = true;
+    }
+
+    private void renameFiles(String fileName, int writerIndex, SettableFuture<?> renamingFuture, List<Slice> partitionUpdatesWithRenamedFileNames)
+    {
+        HdfsContext context = new HdfsContext(
+                session,
+                schemaName,
+                tableName,
+                writerFactory.getLocationHandle().getTargetPath().toString(),
+                writerFactory.isCreateTable());
+        HiveWriter writer = writers.get(writerIndex);
+        PartitionUpdate partitionUpdate = writer.getPartitionUpdate();
+
+        // Check that only one file is written by a writer
+        checkArgument(partitionUpdate.getFileWriteInfos().size() == 1, "HiveWriter wrote data to more than one file");
+
+        FileWriteInfo fileWriteInfo = partitionUpdate.getFileWriteInfos().get(0);
+        Path fromPath = new Path(partitionUpdate.getWritePath(), fileWriteInfo.getWriteFileName());
+        Path toPath = new Path(partitionUpdate.getWritePath(), fileName);
+        try {
+            ExtendedFileSystem fileSystem = hdfsEnvironment.getFileSystem(context, fromPath);
+            ListenableFuture<Void> asyncFuture = fileSystem.renameFileAsync(fromPath, toPath);
+            addSuccessCallback(asyncFuture, () -> updateFileInfo(partitionUpdatesWithRenamedFileNames, renamingFuture, partitionUpdate, fileName, fileWriteInfo, writerIndex));
+        }
+        catch (IOException e) {
+            throw new PrestoException(HIVE_FILESYSTEM_ERROR, format("Error renaming file. fromPath: %s toPath: %s", fromPath, toPath), e);
+        }
+    }
+
+    private void updateFileInfo(List<Slice> partitionUpdatesWithRenamedFileNames, SettableFuture<?> renamingFuture, PartitionUpdate partitionUpdate, String fileName, FileWriteInfo fileWriteInfo, int writerIndex)
+    {
+        // Update the file info in partitionUpdate with new filename
+        FileWriteInfo fileInfoWithRenamedFileName = new FileWriteInfo(fileName, fileName, fileWriteInfo.getFileSize());
+        PartitionUpdate partitionUpdateWithRenamedFileName = new PartitionUpdate(partitionUpdate.getName(),
+                partitionUpdate.getUpdateMode(),
+                partitionUpdate.getWritePath(),
+                partitionUpdate.getTargetPath(),
+                ImmutableList.of(fileInfoWithRenamedFileName),
+                partitionUpdate.getRowCount(),
+                partitionUpdate.getInMemoryDataSizeInBytes(),
+                partitionUpdate.getOnDiskDataSizeInBytes(),
+                true);
+        partitionUpdatesWithRenamedFileNames.add(wrappedBuffer(partitionUpdateCodec.toJsonBytes(partitionUpdateWithRenamedFileName)));
+
+        hiveMetadataUpdater.removeResultFuture(writerIndex);
+        renamingFuture.set(null);
+    }
+
     private int[] getWriterIndexes(Page page)
     {
         Page partitionColumns = extractColumns(page, partitionColumnsInputIndex);
@@ -336,10 +455,13 @@ public class HivePageSink
 
             OptionalInt bucketNumber = OptionalInt.empty();
             if (bucketBlock != null) {
-                bucketNumber = OptionalInt.of(bucketBlock.getInt(position, 0));
+                bucketNumber = OptionalInt.of(bucketBlock.getInt(position));
             }
             HiveWriter writer = writerFactory.createWriter(partitionColumns, position, bucketNumber);
             writers.set(writerIndex, writer);
+
+            // Send metadata update request if needed
+            sendMetadataUpdateRequest(writer.getPartitionName(), writerIndex, writer.isWriteTempData());
         }
         verify(writers.size() == pagePartitioner.getMaxIndex() + 1);
         verify(!writers.contains(null));

@@ -14,10 +14,11 @@
 package com.facebook.presto.execution;
 
 import com.facebook.presto.Session;
+import com.facebook.presto.common.QualifiedObjectName;
 import com.facebook.presto.metadata.Metadata;
-import com.facebook.presto.metadata.QualifiedObjectName;
-import com.facebook.presto.metadata.TableHandle;
 import com.facebook.presto.security.AccessControl;
+import com.facebook.presto.spi.ConnectorMaterializedViewDefinition;
+import com.facebook.presto.spi.TableHandle;
 import com.facebook.presto.sql.analyzer.SemanticException;
 import com.facebook.presto.sql.tree.DropTable;
 import com.facebook.presto.sql.tree.Expression;
@@ -29,6 +30,7 @@ import java.util.Optional;
 
 import static com.facebook.presto.metadata.MetadataUtil.createQualifiedObjectName;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.MISSING_TABLE;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NOT_SUPPORTED;
 import static com.google.common.util.concurrent.Futures.immediateFuture;
 
 public class DropTableTask
@@ -54,7 +56,15 @@ public class DropTableTask
             return immediateFuture(null);
         }
 
-        accessControl.checkCanDropTable(session.getRequiredTransactionId(), session.getIdentity(), tableName);
+        Optional<ConnectorMaterializedViewDefinition> optionalMaterializedView = metadata.getMaterializedView(session, tableName);
+        if (optionalMaterializedView.isPresent()) {
+            if (!statement.isExists()) {
+                throw new SemanticException(NOT_SUPPORTED, statement, "'%s' is a materialized view, not a table. Use DROP MATERIALIZED VIEW to drop.", tableName);
+            }
+            return immediateFuture(null);
+        }
+
+        accessControl.checkCanDropTable(session.getRequiredTransactionId(), session.getIdentity(), session.getAccessControlContext(), tableName);
 
         metadata.dropTable(session, tableHandle.get());
 

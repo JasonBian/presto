@@ -46,7 +46,7 @@ types. Below is a sample function which implements ``is_null``:
 
     public class ExampleNullFunction
     {
-        @ScalarFunction("is_null")
+        @ScalarFunction("is_null", calledOnNullInput = true)
         @Description("Returns TRUE if the argument is NULL")
         @SqlType(StandardTypes.BOOLEAN)
         public static boolean isNull(@SqlNullable @SqlType(StandardTypes.VARCHAR) Slice string)
@@ -83,7 +83,7 @@ To make our previous example work with any type we need the following:
 
 .. code-block:: java
 
-    @ScalarFunction(name = "is_null")
+    @ScalarFunction(name = "is_null", calledOnNullInput = true)
     @Description("Returns TRUE if the argument is NULL")
     public final class IsNullFunction
     {
@@ -116,14 +116,17 @@ To make our previous example work with any type we need the following:
   The ``@TypeParameter`` annotation is used to declare a type parameter which can
   be used in the argument types ``@SqlType`` annotation, or return type of the function.
   It can also be used to annotate a parameter of type ``Type``. At runtime, the engine
-  will bind the concrete type to this parameter. ``@OperatorDependency`` may be used
-  to declare that an additional function for operating on the given type parameter is needed.
+  will bind the concrete type to this parameter. Optionally, the type parameter
+  can be constrained to descendants of a particular type by providing a ``boundedBy``
+  type class to ``@TypeParameter``.
+  ``@OperatorDependency`` may be used to declare that an additional function
+  for operating on the given type parameter is needed.
   For example, the following function will only bind to types which have an equals function
   defined:
 
 .. code-block:: java
 
-    @ScalarFunction(name = "is_equal_or_null")
+    @ScalarFunction(name = "is_equal_or_null", calledOnNullInput = true)
     @Description("Returns TRUE if arguments are equal or both NULL")
     public final class IsEqualOrNullFunction
     {

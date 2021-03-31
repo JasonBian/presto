@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.rcfile.text;
 
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.rcfile.RcFileCorruptionException;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.StandardErrorCode;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
 
@@ -46,7 +46,7 @@ public class MapEncoding
         byte elementSeparator = getSeparator(depth);
         byte keyValueSeparator = getSeparator(depth + 1);
 
-        Block map = block.getObject(position, Block.class);
+        Block map = block.getBlock(position);
         boolean first = true;
         for (int elementIndex = 0; elementIndex < map.getPositionCount(); elementIndex += 2) {
             if (map.isNull(elementIndex)) {

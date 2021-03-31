@@ -13,14 +13,14 @@
  */
 package com.facebook.presto.mongodb;
 
+import com.facebook.airlift.bootstrap.Bootstrap;
+import com.facebook.airlift.json.JsonModule;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.spi.ConnectorHandleResolver;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorContext;
 import com.facebook.presto.spi.connector.ConnectorFactory;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.inject.Injector;
-import io.airlift.bootstrap.Bootstrap;
-import io.airlift.json.JsonModule;
 
 import java.util.Map;
 
@@ -63,7 +63,7 @@ public class MongoConnectorFactory
                     new MongoClientModule(),
                     binder -> binder.bind(TypeManager.class).toInstance(context.getTypeManager()));
 
-            Injector injector = app.strictConfig().doNotInitializeLogging()
+            Injector injector = app.doNotInitializeLogging()
                     .setRequiredConfigurationProperties(config)
                     .initialize();
 

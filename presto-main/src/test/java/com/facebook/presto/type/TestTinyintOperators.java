@@ -16,17 +16,17 @@ package com.facebook.presto.type;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
 import org.testng.annotations.Test;
 
+import static com.facebook.presto.common.function.OperatorType.INDETERMINATE;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static com.facebook.presto.spi.StandardErrorCode.DIVISION_BY_ZERO;
-import static com.facebook.presto.spi.StandardErrorCode.INVALID_CAST_ARGUMENT;
-import static com.facebook.presto.spi.function.OperatorType.INDETERMINATE;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_LITERAL;
 import static java.lang.String.format;
 
 public class TestTinyintOperators
@@ -37,7 +37,7 @@ public class TestTinyintOperators
     {
         assertFunction("TINYINT'37'", TINYINT, (byte) 37);
         assertFunction("TINYINT'17'", TINYINT, (byte) 17);
-        assertInvalidCast("TINYINT'" + ((long) Byte.MAX_VALUE + 1L) + "'");
+        assertInvalidFunction("TINYINT'" + ((long) Byte.MAX_VALUE + 1L) + "'", INVALID_LITERAL);
     }
 
     @Test
@@ -52,7 +52,7 @@ public class TestTinyintOperators
     {
         assertFunction("TINYINT'-37'", TINYINT, (byte) -37);
         assertFunction("TINYINT'-17'", TINYINT, (byte) -17);
-        assertInvalidFunction("TINYINT'-" + Byte.MIN_VALUE + "'", INVALID_CAST_ARGUMENT);
+        assertInvalidFunction("TINYINT'-" + Byte.MIN_VALUE + "'", INVALID_LITERAL);
     }
 
     @Test

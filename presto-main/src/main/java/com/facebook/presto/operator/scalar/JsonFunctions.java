@@ -13,18 +13,19 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.airlift.json.ObjectMapperProvider;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.function.OperatorType;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.SqlDecimal;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
 import com.facebook.presto.spi.function.LiteralParameters;
-import com.facebook.presto.spi.function.OperatorType;
 import com.facebook.presto.spi.function.ScalarFunction;
 import com.facebook.presto.spi.function.ScalarOperator;
 import com.facebook.presto.spi.function.SqlNullable;
 import com.facebook.presto.spi.function.SqlType;
-import com.facebook.presto.spi.type.SqlDecimal;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.type.JsonPathType;
 import com.facebook.presto.type.LiteralParameter;
 import com.fasterxml.jackson.core.JsonFactory;
@@ -33,7 +34,6 @@ import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.databind.MappingJsonFactory;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.google.common.primitives.Doubles;
-import io.airlift.json.ObjectMapperProvider;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
 import io.airlift.slice.SliceOutput;
@@ -43,8 +43,8 @@ import java.io.OutputStream;
 import java.util.LinkedList;
 import java.util.List;
 
+import static com.facebook.presto.common.type.Chars.padSpaces;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_FUNCTION_ARGUMENT;
-import static com.facebook.presto.spi.type.Chars.padSpaces;
 import static com.facebook.presto.util.JsonUtil.createJsonParser;
 import static com.facebook.presto.util.JsonUtil.truncateIfNecessaryForErrorMessage;
 import static com.fasterxml.jackson.core.JsonFactory.Feature.CANONICALIZE_FIELD_NAMES;
@@ -143,8 +143,7 @@ public final class JsonFunctions
         // If you make changes to this function (e.g. use parse JSON string into some internal representation),
         // make sure `$internal$json_string_to_array/map/row_cast` is changed accordingly.
         try (JsonParser parser = createJsonParser(JSON_FACTORY, slice)) {
-            byte[] in = slice.getBytes();
-            SliceOutput dynamicSliceOutput = new DynamicSliceOutput(in.length);
+            SliceOutput dynamicSliceOutput = new DynamicSliceOutput(slice.length());
             SORTED_MAPPER.writeValue((OutputStream) dynamicSliceOutput, SORTED_MAPPER.readValue(parser, Object.class));
             // nextToken() returns null if the input is parsed correctly,
             // but will throw an exception if there are trailing characters.
@@ -483,9 +482,9 @@ public final class JsonFunctions
         return JsonExtract.extract(json, jsonPath.getSizeExtractor());
     }
 
-    public static Object getJsonObjectValue(Type valueType, ConnectorSession session, Block block, int position)
+    public static Object getJsonObjectValue(Type valueType, SqlFunctionProperties properties, Block block, int position)
     {
-        Object objectValue = valueType.getObjectValue(session, block, position);
+        Object objectValue = valueType.getObjectValue(properties, block, position);
         if (objectValue instanceof SqlDecimal) {
             objectValue = ((SqlDecimal) objectValue).toBigDecimal();
         }

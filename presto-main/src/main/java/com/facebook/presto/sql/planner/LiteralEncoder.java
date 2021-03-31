@@ -13,24 +13,33 @@
  */
 package com.facebook.presto.sql.planner;
 
-import com.facebook.presto.block.BlockSerdeUtil;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockEncodingSerde;
+import com.facebook.presto.common.block.BlockSerdeUtil;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.CharType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.Decimals;
+import com.facebook.presto.common.type.EnumType;
+import com.facebook.presto.common.type.FunctionType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.SqlDate;
+import com.facebook.presto.common.type.StandardTypes;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeSignature;
+import com.facebook.presto.common.type.VarcharEnumType;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.operator.scalar.VarbinaryFunctions;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockEncodingSerde;
-import com.facebook.presto.spi.type.CharType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.Decimals;
-import com.facebook.presto.spi.type.SqlDate;
-import com.facebook.presto.spi.type.StandardTypes;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.spi.function.Signature;
+import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.sql.tree.ArithmeticUnaryExpression;
 import com.facebook.presto.sql.tree.BooleanLiteral;
 import com.facebook.presto.sql.tree.Cast;
 import com.facebook.presto.sql.tree.DecimalLiteral;
 import com.facebook.presto.sql.tree.DoubleLiteral;
+import com.facebook.presto.sql.tree.EnumLiteral;
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.FunctionCall;
 import com.facebook.presto.sql.tree.GenericLiteral;
@@ -39,6 +48,7 @@ import com.facebook.presto.sql.tree.NullLiteral;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.facebook.presto.sql.tree.StringLiteral;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.primitives.Primitives;
 import io.airlift.slice.DynamicSliceOutput;
 import io.airlift.slice.Slice;
@@ -46,15 +56,23 @@ import io.airlift.slice.SliceOutput;
 import io.airlift.slice.SliceUtf8;
 
 import java.util.List;
+import java.util.Set;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.Decimals.isShortDecimal;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.type.UnknownType.UNKNOWN;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.Decimals.isShortDecimal;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.UnknownType.UNKNOWN;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.metadata.BuiltInTypeAndFunctionNamespaceManager.DEFAULT_NAMESPACE;
+import static com.facebook.presto.spi.function.FunctionKind.SCALAR;
+import static com.facebook.presto.sql.relational.Expressions.constant;
+import static com.facebook.presto.sql.relational.Expressions.constantNull;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.lang.Float.intBitsToFloat;
 import static java.lang.Math.toIntExact;
@@ -62,6 +80,10 @@ import static java.util.Objects.requireNonNull;
 
 public final class LiteralEncoder
 {
+    // hack: java classes for types that can be used with magic literals
+    public static final String MAGIC_LITERAL_FUNCTION_PREFIX = "$literal$";
+
+    private static final Set<Class<?>> SUPPORTED_LITERAL_TYPES = ImmutableSet.of(long.class, double.class, Slice.class, boolean.class);
     private final BlockEncodingSerde blockEncodingSerde;
 
     public LiteralEncoder(BlockEncodingSerde blockEncodingSerde)
@@ -84,6 +106,23 @@ public final class LiteralEncoder
         return expressions.build();
     }
 
+    // Unlike toExpression, toRowExpression should be very straightforward given object is serializable
+    public static RowExpression toRowExpression(Object object, Type type)
+    {
+        requireNonNull(type, "type is null");
+
+        if (object instanceof RowExpression) {
+            return (RowExpression) object;
+        }
+
+        if (object == null) {
+            return constantNull(type);
+        }
+
+        return constant(object, type);
+    }
+
+    @Deprecated
     public Expression toExpression(Object object, Type type)
     {
         requireNonNull(type, "type is null");
@@ -97,6 +136,14 @@ public final class LiteralEncoder
                 return new NullLiteral();
             }
             return new Cast(new NullLiteral(), type.getTypeSignature().toString(), false, true);
+        }
+
+        if (type.equals(TINYINT)) {
+            return new GenericLiteral("TINYINT", object.toString());
+        }
+
+        if (type.equals(SMALLINT)) {
+            return new GenericLiteral("SMALLINT", object.toString());
         }
 
         if (type.equals(INTEGER)) {
@@ -187,18 +234,101 @@ public final class LiteralEncoder
             // This if condition will evaluate to true: object instanceof Slice && !type.equals(VARCHAR)
         }
 
+        if (type instanceof EnumType) {
+            return new EnumLiteral(type.getTypeSignature().toString(), object);
+        }
+
+        Signature signature = getMagicLiteralFunctionSignature(type);
         if (object instanceof Slice) {
             // HACK: we need to serialize VARBINARY in a format that can be embedded in an expression to be
             // able to encode it in the plan that gets sent to workers.
             // We do this by transforming the in-memory varbinary into a call to from_base64(<base64-encoded value>)
             FunctionCall fromBase64 = new FunctionCall(QualifiedName.of("from_base64"), ImmutableList.of(new StringLiteral(VarbinaryFunctions.toBase64((Slice) object).toStringUtf8())));
-            Signature signature = FunctionRegistry.getMagicLiteralFunctionSignature(type);
-            return new FunctionCall(QualifiedName.of(signature.getName()), ImmutableList.of(fromBase64));
+            return new FunctionCall(QualifiedName.of(signature.getNameSuffix()), ImmutableList.of(fromBase64));
         }
+        Expression rawLiteral = toExpression(object, typeForMagicLiteral(type));
 
-        Signature signature = FunctionRegistry.getMagicLiteralFunctionSignature(type);
-        Expression rawLiteral = toExpression(object, FunctionRegistry.typeForMagicLiteral(type));
+        return new FunctionCall(QualifiedName.of(signature.getNameSuffix()), ImmutableList.of(rawLiteral));
+    }
 
-        return new FunctionCall(QualifiedName.of(signature.getName()), ImmutableList.of(rawLiteral));
+    public static boolean isSupportedLiteralType(Type type)
+    {
+        if (type instanceof FunctionType) {
+            // FunctionType contains compiled lambda thus not serializable.
+            return false;
+        }
+        if (type instanceof ArrayType) {
+            return isSupportedLiteralType(((ArrayType) type).getElementType());
+        }
+        else if (type instanceof RowType) {
+            RowType rowType = (RowType) type;
+            return rowType.getTypeParameters().stream()
+                    .allMatch(LiteralEncoder::isSupportedLiteralType);
+        }
+        else if (type instanceof MapType) {
+            MapType mapType = (MapType) type;
+            return isSupportedLiteralType(mapType.getKeyType()) && isSupportedLiteralType(mapType.getValueType());
+        }
+        return SUPPORTED_LITERAL_TYPES.contains(type.getJavaType());
+    }
+
+    public static long estimatedSizeInBytes(Object object)
+    {
+        if (object == null) {
+            return 1;
+        }
+        Class<?> javaType = object.getClass();
+        if (javaType == Long.class) {
+            return Long.BYTES;
+        }
+        else if (javaType == Double.class) {
+            return Double.BYTES;
+        }
+        else if (javaType == Boolean.class) {
+            return 1;
+        }
+        else if (object instanceof Block) {
+            return ((Block) object).getSizeInBytes();
+        }
+        else if (object instanceof Slice) {
+            return ((Slice) object).length();
+        }
+        // unknown for rest of types
+        return Integer.MAX_VALUE;
+    }
+
+    public static Signature getMagicLiteralFunctionSignature(Type type)
+    {
+        TypeSignature argumentType = typeForMagicLiteral(type).getTypeSignature();
+
+        return new Signature(QualifiedObjectName.valueOf(DEFAULT_NAMESPACE, MAGIC_LITERAL_FUNCTION_PREFIX + type.getTypeSignature()),
+                SCALAR,
+                type.getTypeSignature(),
+                argumentType);
+    }
+
+    private static Type typeForMagicLiteral(Type type)
+    {
+        Class<?> clazz = type.getJavaType();
+        clazz = Primitives.unwrap(clazz);
+
+        if (clazz == long.class) {
+            return BIGINT;
+        }
+        if (clazz == double.class) {
+            return DOUBLE;
+        }
+        if (!clazz.isPrimitive()) {
+            if (type instanceof VarcharType || type instanceof VarcharEnumType) {
+                return type;
+            }
+            else {
+                return VARBINARY;
+            }
+        }
+        if (clazz == boolean.class) {
+            return BOOLEAN;
+        }
+        throw new IllegalArgumentException("Unhandled Java type: " + clazz.getName());
     }
 }

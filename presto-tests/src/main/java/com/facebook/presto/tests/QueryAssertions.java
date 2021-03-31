@@ -13,23 +13,29 @@
  */
 package com.facebook.presto.tests;
 
+import com.facebook.airlift.log.Logger;
 import com.facebook.presto.Session;
-import com.facebook.presto.metadata.QualifiedObjectName;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.spi.WarningCollector;
+import com.facebook.presto.sql.planner.Plan;
+import com.facebook.presto.testing.ExpectedQueryRunner;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
 import com.facebook.presto.testing.QueryRunner;
+import com.facebook.presto.testing.QueryRunner.MaterializedResultWithPlan;
 import com.google.common.base.Joiner;
 import com.google.common.collect.ImmutableMultiset;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.Multiset;
 import com.google.common.collect.Multisets;
-import io.airlift.log.Logger;
 import io.airlift.tpch.TpchTable;
 import io.airlift.units.Duration;
 import org.intellij.lang.annotations.Language;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.OptionalLong;
+import java.util.function.Consumer;
 import java.util.function.Supplier;
 
 import static com.google.common.base.Strings.nullToEmpty;
@@ -51,11 +57,28 @@ public final class QueryAssertions
     {
     }
 
-    public static void assertUpdate(QueryRunner queryRunner, Session session, @Language("SQL") String sql, OptionalLong count)
+    public static void assertUpdate(QueryRunner queryRunner, Session session, @Language("SQL") String sql, OptionalLong count, Optional<Consumer<Plan>> planAssertion)
     {
         long start = System.nanoTime();
-        MaterializedResult results = queryRunner.execute(session, sql);
-        log.info("FINISHED in presto: %s", nanosSince(start));
+        MaterializedResult results;
+        Plan queryPlan;
+        if (planAssertion.isPresent()) {
+            MaterializedResultWithPlan resultWithPlan = queryRunner.executeWithPlan(session, sql, WarningCollector.NOOP);
+            queryPlan = resultWithPlan.getQueryPlan();
+            results = resultWithPlan.getMaterializedResult().toTestTypes();
+        }
+        else {
+            queryPlan = null;
+            results = queryRunner.execute(session, sql);
+        }
+        Duration queryTime = nanosSince(start);
+        if (queryTime.compareTo(Duration.succinctDuration(1, SECONDS)) > 0) {
+            log.info("FINISHED in presto: %s", queryTime);
+        }
+
+        if (planAssertion.isPresent()) {
+            planAssertion.get().accept(queryPlan);
+        }
 
         if (!results.getUpdateType().isPresent()) {
             fail("update type is not set");
@@ -72,33 +95,79 @@ public final class QueryAssertions
         }
     }
 
-    public static void assertQuery(QueryRunner actualQueryRunner,
+    public static void assertQuery(
+            QueryRunner actualQueryRunner,
             Session session,
             @Language("SQL") String actual,
-            H2QueryRunner h2QueryRunner,
+            ExpectedQueryRunner expectedQueryRunner,
             @Language("SQL") String expected,
             boolean ensureOrdering,
             boolean compareUpdate)
     {
+        assertQuery(actualQueryRunner, session, actual, expectedQueryRunner, expected, ensureOrdering, compareUpdate, Optional.empty());
+    }
+
+    public static void assertQuery(
+            QueryRunner actualQueryRunner,
+            Session session,
+            @Language("SQL") String actual,
+            ExpectedQueryRunner expectedQueryRunner,
+            @Language("SQL") String expected,
+            boolean ensureOrdering,
+            boolean compareUpdate,
+            Consumer<Plan> planAssertion)
+    {
+        assertQuery(actualQueryRunner, session, actual, expectedQueryRunner, expected, ensureOrdering, compareUpdate, Optional.of(planAssertion));
+    }
+
+    private static void assertQuery(
+            QueryRunner actualQueryRunner,
+            Session session,
+            @Language("SQL") String actual,
+            ExpectedQueryRunner expectedQueryRunner,
+            @Language("SQL") String expected,
+            boolean ensureOrdering,
+            boolean compareUpdate,
+            Optional<Consumer<Plan>> planAssertion)
+    {
         long start = System.nanoTime();
         MaterializedResult actualResults = null;
-        try {
-            actualResults = actualQueryRunner.execute(session, actual).toTestTypes();
+        Plan queryPlan = null;
+        if (planAssertion.isPresent()) {
+            try {
+                MaterializedResultWithPlan resultWithPlan = actualQueryRunner.executeWithPlan(session, actual, WarningCollector.NOOP);
+                queryPlan = resultWithPlan.getQueryPlan();
+                actualResults = resultWithPlan.getMaterializedResult().toTestTypes();
+            }
+            catch (RuntimeException ex) {
+                fail("Execution of 'actual' query failed: " + actual, ex);
+            }
         }
-        catch (RuntimeException ex) {
-            fail("Execution of 'actual' query failed: " + actual, ex);
+        else {
+            try {
+                actualResults = actualQueryRunner.execute(session, actual).toTestTypes();
+            }
+            catch (RuntimeException ex) {
+                fail("Execution of 'actual' query failed: " + actual, ex);
+            }
+        }
+        if (planAssertion.isPresent()) {
+            planAssertion.get().accept(queryPlan);
         }
         Duration actualTime = nanosSince(start);
 
         long expectedStart = System.nanoTime();
         MaterializedResult expectedResults = null;
         try {
-            expectedResults = h2QueryRunner.execute(session, expected, actualResults.getTypes());
+            expectedResults = expectedQueryRunner.execute(session, expected, actualResults.getTypes());
         }
         catch (RuntimeException ex) {
             fail("Execution of 'expected' query failed: " + expected, ex);
         }
-        log.info("FINISHED in presto: %s, h2: %s, total: %s", actualTime, nanosSince(expectedStart), nanosSince(start));
+        Duration totalTime = nanosSince(start);
+        if (totalTime.compareTo(Duration.succinctDuration(1, SECONDS)) > 0) {
+            log.info("FINISHED in presto: %s, expected: %s, total: %s", actualTime, nanosSince(expectedStart), totalTime);
+        }
 
         if (actualResults.getUpdateType().isPresent() || actualResults.getUpdateCount().isPresent()) {
             if (!actualResults.getUpdateType().isPresent()) {
@@ -154,8 +223,8 @@ public final class QueryAssertions
             int limit = 100;
             fail(format(
                     "%snot equal\n" +
-                            "Actual rows (up to %s of %s extra rows shown, %s matching and extra rows in total):\n    %s\n" +
-                            "Expected rows (up to %s of %s missing rows shown, %s matching and missing rows in total):\n    %s\n",
+                            "Actual rows (up to %s of %s extra rows shown, %s rows in total):\n    %s\n" +
+                            "Expected rows (up to %s of %s missing rows shown, %s rows in total):\n    %s\n",
                     message == null ? "" : (message + "\n"),
                     limit,
                     unexpectedRows.size(),
@@ -196,6 +265,16 @@ public final class QueryAssertions
                         expectedSubset.getMaterializedRows().size(),
                         Joiner.on("\n    ").join(Iterables.limit(expectedSubset, 100))));
             }
+        }
+    }
+
+    protected static void assertQuerySucceeds(QueryRunner queryRunner, Session session, @Language("SQL") String sql)
+    {
+        try {
+            queryRunner.execute(session, sql);
+        }
+        catch (RuntimeException e) {
+            fail(format("Expected query to succeed: %s", sql), e);
         }
     }
 
@@ -253,25 +332,36 @@ public final class QueryAssertions
             Session session,
             Iterable<TpchTable<?>> tables)
     {
+        copyTpchTables(queryRunner, sourceCatalog, sourceSchema, session, tables, false);
+    }
+
+    public static void copyTpchTables(
+            QueryRunner queryRunner,
+            String sourceCatalog,
+            String sourceSchema,
+            Session session,
+            Iterable<TpchTable<?>> tables,
+            boolean ifNotExists)
+    {
         log.info("Loading data from %s.%s...", sourceCatalog, sourceSchema);
         long startTime = System.nanoTime();
         for (TpchTable<?> table : tables) {
-            copyTable(queryRunner, sourceCatalog, sourceSchema, table.getTableName().toLowerCase(ENGLISH), session);
+            copyTable(queryRunner, sourceCatalog, sourceSchema, table.getTableName().toLowerCase(ENGLISH), session, ifNotExists);
         }
         log.info("Loading from %s.%s complete in %s", sourceCatalog, sourceSchema, nanosSince(startTime).toString(SECONDS));
     }
 
-    public static void copyTable(QueryRunner queryRunner, String sourceCatalog, String sourceSchema, String sourceTable, Session session)
+    private static void copyTable(QueryRunner queryRunner, String sourceCatalog, String sourceSchema, String sourceTable, Session session, boolean ifNotExists)
     {
         QualifiedObjectName table = new QualifiedObjectName(sourceCatalog, sourceSchema, sourceTable);
-        copyTable(queryRunner, table, session);
+        copyTable(queryRunner, table, session, ifNotExists);
     }
 
-    public static void copyTable(QueryRunner queryRunner, QualifiedObjectName table, Session session)
+    private static void copyTable(QueryRunner queryRunner, QualifiedObjectName table, Session session, boolean ifNotExists)
     {
         long start = System.nanoTime();
         log.info("Running import for %s", table.getObjectName());
-        @Language("SQL") String sql = format("CREATE TABLE %s AS SELECT * FROM %s", table.getObjectName(), table);
+        @Language("SQL") String sql = format("CREATE TABLE %s %s AS SELECT * FROM %s", ifNotExists ? "IF NOT EXISTS" : "", table.getObjectName(), table);
         long rows = (Long) queryRunner.execute(session, sql).getMaterializedRows().get(0).getField(0);
         log.info("Imported %s rows for %s in %s", rows, table.getObjectName(), nanosSince(start).convertToMostSuccinctTimeUnit());
     }

@@ -13,13 +13,14 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.HiveWriteUtils.FieldSetter;
 import com.facebook.presto.hive.metastore.StorageFormat;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.spi.ConnectorSession;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.base.Splitter;
 import com.google.common.collect.ImmutableList;
 import io.airlift.units.DataSize;
@@ -38,6 +39,7 @@ import org.openjdk.jol.info.ClassLayout;
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 
 import static com.facebook.presto.hive.HiveErrorCode.HIVE_WRITER_CLOSE_ERROR;
@@ -62,7 +64,6 @@ public class RecordFileWriter
     private final Path path;
     private final JobConf conf;
     private final int fieldCount;
-    @SuppressWarnings("deprecation")
     private final Serializer serializer;
     private final RecordWriter recordWriter;
     private final SettableStructObjectInspector tableInspector;
@@ -80,7 +81,8 @@ public class RecordFileWriter
             Properties schema,
             DataSize estimatedWriterSystemMemoryUsage,
             JobConf conf,
-            TypeManager typeManager)
+            TypeManager typeManager,
+            ConnectorSession session)
     {
         this.path = requireNonNull(path, "path is null");
         this.conf = requireNonNull(conf, "conf is null");
@@ -98,7 +100,7 @@ public class RecordFileWriter
             serDe = OptimizedLazyBinaryColumnarSerde.class.getName();
         }
         serializer = initializeSerializer(conf, schema, serDe);
-        recordWriter = createRecordWriter(path, conf, schema, storageFormat.getOutputFormat());
+        recordWriter = createRecordWriter(path, conf, schema, storageFormat.getOutputFormat(), session);
 
         List<ObjectInspector> objectInspectors = getRowColumnInspectors(fileColumnTypes);
         tableInspector = getStandardStructObjectInspector(fileColumnNames, objectInspectors);
@@ -173,11 +175,12 @@ public class RecordFileWriter
     }
 
     @Override
-    public void commit()
+    public Optional<Page> commit()
     {
         try {
             recordWriter.close(false);
             committed = true;
+            return Optional.empty();
         }
         catch (IOException e) {
             throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error committing write to Hive", e);
@@ -199,6 +202,19 @@ public class RecordFileWriter
         catch (IOException e) {
             throw new PrestoException(HIVE_WRITER_CLOSE_ERROR, "Error rolling back write to Hive", e);
         }
+    }
+
+    @Override
+    public long getValidationCpuNanos()
+    {
+        // RecordFileWriter delegates to Hive RecordWriter and there is no validation
+        return 0;
+    }
+
+    @Override
+    public long getFileSizeInBytes()
+    {
+        return getWrittenBytes();
     }
 
     @Override

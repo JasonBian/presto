@@ -14,6 +14,10 @@
 package com.facebook.presto.operator.aggregation.builder;
 
 import com.facebook.presto.array.IntBigArray;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.PageBuilder;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.memory.context.LocalMemoryContext;
 import com.facebook.presto.operator.GroupByHash;
 import com.facebook.presto.operator.GroupByIdBlock;
@@ -23,16 +27,12 @@ import com.facebook.presto.operator.TransformWork;
 import com.facebook.presto.operator.UpdateMemory;
 import com.facebook.presto.operator.Work;
 import com.facebook.presto.operator.WorkProcessor;
-import com.facebook.presto.operator.WorkProcessor.ProcessorState;
+import com.facebook.presto.operator.WorkProcessor.ProcessState;
 import com.facebook.presto.operator.aggregation.AccumulatorFactory;
 import com.facebook.presto.operator.aggregation.GroupedAccumulator;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.PageBuilder;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.plan.AggregationNode;
+import com.facebook.presto.spi.plan.AggregationNode.Step;
 import com.facebook.presto.sql.gen.JoinCompiler;
-import com.facebook.presto.sql.planner.plan.AggregationNode;
-import com.facebook.presto.sql.planner.plan.AggregationNode.Step;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
 import com.google.common.primitives.Ints;
@@ -45,10 +45,11 @@ import it.unimi.dsi.fastutil.ints.IntIterators;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 
 import static com.facebook.presto.SystemSessionProperties.isDictionaryAggregationEnabled;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
 import static com.facebook.presto.operator.GroupByHash.createGroupByHash;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
 import static com.google.common.base.Preconditions.checkArgument;
 import static java.util.Objects.requireNonNull;
 
@@ -59,9 +60,10 @@ public class InMemoryHashAggregationBuilder
     private final List<Aggregator> aggregators;
     private final OperatorContext operatorContext;
     private final boolean partial;
-    private final long maxPartialMemory;
+    private final OptionalLong maxPartialMemory;
     private final LocalMemoryContext systemMemoryContext;
     private final LocalMemoryContext localUserMemoryContext;
+    private final boolean useSystemMemory;
 
     private boolean full;
 
@@ -73,9 +75,10 @@ public class InMemoryHashAggregationBuilder
             List<Integer> groupByChannels,
             Optional<Integer> hashChannel,
             OperatorContext operatorContext,
-            DataSize maxPartialMemory,
+            Optional<DataSize> maxPartialMemory,
             JoinCompiler joinCompiler,
-            boolean yieldForMemoryReservation)
+            boolean yieldForMemoryReservation,
+            boolean useSystemMemory)
     {
         this(accumulatorFactories,
                 step,
@@ -87,21 +90,23 @@ public class InMemoryHashAggregationBuilder
                 maxPartialMemory,
                 Optional.empty(),
                 joinCompiler,
-                yieldForMemoryReservation);
+                yieldForMemoryReservation,
+                useSystemMemory);
     }
 
     public InMemoryHashAggregationBuilder(
             List<AccumulatorFactory> accumulatorFactories,
-            AggregationNode.Step step,
+            Step step,
             int expectedGroups,
             List<Type> groupByTypes,
             List<Integer> groupByChannels,
             Optional<Integer> hashChannel,
             OperatorContext operatorContext,
-            DataSize maxPartialMemory,
+            Optional<DataSize> maxPartialMemory,
             Optional<Integer> overwriteIntermediateChannelOffset,
             JoinCompiler joinCompiler,
-            boolean yieldForMemoryReservation)
+            boolean yieldForMemoryReservation,
+            boolean useSystemMemory)
     {
         UpdateMemory updateMemory;
         if (yieldForMemoryReservation) {
@@ -126,9 +131,10 @@ public class InMemoryHashAggregationBuilder
                 updateMemory);
         this.operatorContext = operatorContext;
         this.partial = step.isOutputPartial();
-        this.maxPartialMemory = maxPartialMemory.toBytes();
+        this.maxPartialMemory = maxPartialMemory.map(dataSize -> OptionalLong.of(dataSize.toBytes())).orElseGet(OptionalLong::empty);
         this.systemMemoryContext = operatorContext.newLocalSystemMemoryContext(InMemoryHashAggregationBuilder.class.getSimpleName());
         this.localUserMemoryContext = operatorContext.localUserMemoryContext();
+        this.useSystemMemory = useSystemMemory;
 
         // wrapper each function with an aggregator
         ImmutableList.Builder<Aggregator> builder = ImmutableList.builder();
@@ -139,7 +145,7 @@ public class InMemoryHashAggregationBuilder
             if (overwriteIntermediateChannelOffset.isPresent()) {
                 overwriteIntermediateChannel = Optional.of(overwriteIntermediateChannelOffset.get() + i);
             }
-            builder.add(new Aggregator(accumulatorFactory, step, overwriteIntermediateChannel));
+            builder.add(new Aggregator(accumulatorFactory, step, overwriteIntermediateChannel, updateMemory));
         }
         aggregators = builder.build();
     }
@@ -147,12 +153,7 @@ public class InMemoryHashAggregationBuilder
     @Override
     public void close()
     {
-        if (partial) {
-            systemMemoryContext.setBytes(0);
-        }
-        else {
-            localUserMemoryContext.setBytes(0);
-        }
+        updateMemory(0);
     }
 
     @Override
@@ -283,7 +284,7 @@ public class InMemoryHashAggregationBuilder
         final PageBuilder pageBuilder = new PageBuilder(buildTypes());
         return WorkProcessor.create(() -> {
             if (!groupIds.hasNext()) {
-                return ProcessorState.finished();
+                return ProcessState.finished();
             }
 
             pageBuilder.reset();
@@ -302,7 +303,7 @@ public class InMemoryHashAggregationBuilder
                 }
             }
 
-            return ProcessorState.ofResult(pageBuilder.build());
+            return ProcessState.ofResult(pageBuilder.build());
         });
     }
 
@@ -326,16 +327,26 @@ public class InMemoryHashAggregationBuilder
     private boolean updateMemoryWithYieldInfo()
     {
         long memorySize = getSizeInMemory();
-        if (partial) {
-            systemMemoryContext.setBytes(memorySize);
-            full = (memorySize > maxPartialMemory);
+        if (partial && maxPartialMemory.isPresent()) {
+            updateMemory(memorySize);
+            full = (memorySize > maxPartialMemory.getAsLong());
             return true;
         }
         // Operator/driver will be blocked on memory after we call setBytes.
         // If memory is not available, once we return, this operator will be blocked until memory is available.
-        localUserMemoryContext.setBytes(memorySize);
+        updateMemory(memorySize);
         // If memory is not available, inform the caller that we cannot proceed for allocation.
         return operatorContext.isWaitingForMemory().isDone();
+    }
+
+    private void updateMemory(long memorySize)
+    {
+        if (useSystemMemory) {
+            systemMemoryContext.setBytes(memorySize);
+        }
+        else {
+            localUserMemoryContext.setBytes(memorySize);
+        }
     }
 
     private IntIterator consecutiveGroupIds()
@@ -379,20 +390,24 @@ public class InMemoryHashAggregationBuilder
         private AggregationNode.Step step;
         private final int intermediateChannel;
 
-        private Aggregator(AccumulatorFactory accumulatorFactory, AggregationNode.Step step, Optional<Integer> overwriteIntermediateChannel)
+        private Aggregator(
+                AccumulatorFactory accumulatorFactory,
+                AggregationNode.Step step,
+                Optional<Integer> overwriteIntermediateChannel,
+                UpdateMemory updateMemory)
         {
             if (step.isInputRaw()) {
                 this.intermediateChannel = -1;
-                this.aggregation = accumulatorFactory.createGroupedAccumulator();
+                this.aggregation = accumulatorFactory.createGroupedAccumulator(updateMemory);
             }
             else if (overwriteIntermediateChannel.isPresent()) {
                 this.intermediateChannel = overwriteIntermediateChannel.get();
-                this.aggregation = accumulatorFactory.createGroupedIntermediateAccumulator();
+                this.aggregation = accumulatorFactory.createGroupedIntermediateAccumulator(updateMemory);
             }
             else {
                 checkArgument(accumulatorFactory.getInputChannels().size() == 1, "expected 1 input channel for intermediate aggregation");
                 this.intermediateChannel = accumulatorFactory.getInputChannels().get(0);
-                this.aggregation = accumulatorFactory.createGroupedIntermediateAccumulator();
+                this.aggregation = accumulatorFactory.createGroupedIntermediateAccumulator(updateMemory);
             }
             this.step = step;
         }
@@ -456,7 +471,9 @@ public class InMemoryHashAggregationBuilder
             types.add(BIGINT);
         }
         for (AccumulatorFactory factory : factories) {
-            types.add(new Aggregator(factory, step, Optional.empty()).getType());
+            // Create an aggregator just to figure out the output type
+            // It is fine not to specify a memory reservation callback as it doesn't accept any input
+            types.add(new Aggregator(factory, step, Optional.empty(), UpdateMemory.NOOP).getType());
         }
         return types.build();
     }

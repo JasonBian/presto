@@ -18,22 +18,26 @@ import com.facebook.presto.client.IntervalDayTime;
 import com.facebook.presto.client.IntervalYearMonth;
 import com.facebook.presto.client.QueryData;
 import com.facebook.presto.client.QueryStatusInfo;
+import com.facebook.presto.common.type.ArrayType;
+import com.facebook.presto.common.type.BigintEnumType;
+import com.facebook.presto.common.type.DecimalType;
+import com.facebook.presto.common.type.JsonType;
+import com.facebook.presto.common.type.MapType;
+import com.facebook.presto.common.type.RowType;
+import com.facebook.presto.common.type.SqlTimestamp;
+import com.facebook.presto.common.type.SqlTimestampWithTimeZone;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.common.type.TypeWithName;
+import com.facebook.presto.common.type.VarcharEnumType;
+import com.facebook.presto.common.type.VarcharType;
 import com.facebook.presto.server.testing.TestingPrestoServer;
-import com.facebook.presto.spi.type.ArrayType;
-import com.facebook.presto.spi.type.DecimalType;
-import com.facebook.presto.spi.type.MapType;
-import com.facebook.presto.spi.type.SqlTimestamp;
-import com.facebook.presto.spi.type.SqlTimestampWithTimeZone;
-import com.facebook.presto.spi.type.TimeZoneKey;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.VarcharType;
+import com.facebook.presto.spi.PrestoWarning;
 import com.facebook.presto.testing.MaterializedResult;
 import com.facebook.presto.testing.MaterializedRow;
 import com.facebook.presto.type.SqlIntervalDayTime;
 import com.facebook.presto.type.SqlIntervalYearMonth;
 import com.google.common.base.Function;
 import com.google.common.collect.ImmutableList;
-import io.airlift.log.Logger;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -50,27 +54,27 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.stream.Collectors;
 
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.Chars.isCharType;
-import static com.facebook.presto.spi.type.DateType.DATE;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.IntegerType.INTEGER;
-import static com.facebook.presto.spi.type.RealType.REAL;
-import static com.facebook.presto.spi.type.SmallintType.SMALLINT;
-import static com.facebook.presto.spi.type.TimeType.TIME;
-import static com.facebook.presto.spi.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.TimestampType.TIMESTAMP;
-import static com.facebook.presto.spi.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
-import static com.facebook.presto.spi.type.TinyintType.TINYINT;
-import static com.facebook.presto.spi.type.VarbinaryType.VARBINARY;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.Chars.isCharType;
+import static com.facebook.presto.common.type.DateType.DATE;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.IntegerType.INTEGER;
+import static com.facebook.presto.common.type.RealType.REAL;
+import static com.facebook.presto.common.type.SmallintType.SMALLINT;
+import static com.facebook.presto.common.type.TimeType.TIME;
+import static com.facebook.presto.common.type.TimeWithTimeZoneType.TIME_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.TimestampType.TIMESTAMP;
+import static com.facebook.presto.common.type.TimestampWithTimeZoneType.TIMESTAMP_WITH_TIME_ZONE;
+import static com.facebook.presto.common.type.TinyintType.TINYINT;
+import static com.facebook.presto.common.type.VarbinaryType.VARBINARY;
 import static com.facebook.presto.testing.MaterializedResult.DEFAULT_PRECISION;
 import static com.facebook.presto.type.IntervalDayTimeType.INTERVAL_DAY_TIME;
 import static com.facebook.presto.type.IntervalYearMonthType.INTERVAL_YEAR_MONTH;
+import static com.facebook.presto.type.IpAddressType.IPADDRESS;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.collect.Iterables.transform;
@@ -79,8 +83,6 @@ import static java.util.stream.Collectors.toList;
 public class TestingPrestoClient
         extends AbstractTestingPrestoClient<MaterializedResult>
 {
-    private static final Logger log = Logger.get("TestQueries");
-
     private static final DateTimeFormatter timeWithUtcZoneFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS 'UTC'"); // UTC zone would be printed as "Z" in "XXX" format
     private static final DateTimeFormatter timeWithZoneOffsetFormat = DateTimeFormatter.ofPattern("HH:mm:ss.SSS XXX");
 
@@ -94,26 +96,19 @@ public class TestingPrestoClient
     @Override
     protected ResultsSession<MaterializedResult> getResultSession(Session session)
     {
-        return new MaterializedResultSession(session);
+        return new MaterializedResultSession();
     }
 
     private class MaterializedResultSession
             implements ResultsSession<MaterializedResult>
     {
         private final ImmutableList.Builder<MaterializedRow> rows = ImmutableList.builder();
-        private final AtomicBoolean loggedUri = new AtomicBoolean(false);
 
         private final AtomicReference<List<Type>> types = new AtomicReference<>();
 
         private final AtomicReference<Optional<String>> updateType = new AtomicReference<>(Optional.empty());
         private final AtomicReference<OptionalLong> updateCount = new AtomicReference<>(OptionalLong.empty());
-
-        private final TimeZoneKey timeZoneKey;
-
-        private MaterializedResultSession(Session session)
-        {
-            this.timeZoneKey = session.getTimeZoneKey();
-        }
+        private final AtomicReference<List<PrestoWarning>> warnings = new AtomicReference<>(ImmutableList.of());
 
         @Override
         public void setUpdateType(String type)
@@ -128,19 +123,21 @@ public class TestingPrestoClient
         }
 
         @Override
+        public void setWarnings(List<PrestoWarning> warnings)
+        {
+            this.warnings.set(warnings);
+        }
+
+        @Override
         public void addResults(QueryStatusInfo statusInfo, QueryData data)
         {
-            if (!loggedUri.getAndSet(true)) {
-                log.info("Query %s: %s", statusInfo.getId(), statusInfo.getInfoUri());
-            }
-
             if (types.get() == null && statusInfo.getColumns() != null) {
                 types.set(getTypes(statusInfo.getColumns()));
             }
 
             if (data.getData() != null) {
                 checkState(types.get() != null, "data received without types");
-                rows.addAll(transform(data.getData(), dataToRow(timeZoneKey, types.get())));
+                rows.addAll(transform(data.getData(), dataToRow(types.get())));
             }
         }
 
@@ -154,11 +151,12 @@ public class TestingPrestoClient
                     setSessionProperties,
                     resetSessionProperties,
                     updateType.get(),
-                    updateCount.get());
+                    updateCount.get(),
+                    warnings.get());
         }
     }
 
-    private static Function<List<Object>, MaterializedRow> dataToRow(final TimeZoneKey timeZoneKey, final List<Type> types)
+    private static Function<List<Object>, MaterializedRow> dataToRow(final List<Type> types)
     {
         return data -> {
             checkArgument(data.size() == types.size(), "columns size does not match types size");
@@ -166,13 +164,13 @@ public class TestingPrestoClient
             for (int i = 0; i < data.size(); i++) {
                 Object value = data.get(i);
                 Type type = types.get(i);
-                row.add(convertToRowValue(type, value, timeZoneKey));
+                row.add(convertToRowValue(type, value));
             }
             return new MaterializedRow(DEFAULT_PRECISION, row);
         };
     }
 
-    private static Object convertToRowValue(Type type, Object value, TimeZoneKey timeZoneKey)
+    private static Object convertToRowValue(Type type, Object value)
     {
         if (value == null) {
             return null;
@@ -235,19 +233,42 @@ public class TestingPrestoClient
         else if (INTERVAL_YEAR_MONTH.equals(type)) {
             return new SqlIntervalYearMonth(IntervalYearMonth.parseMonths(String.valueOf(value)));
         }
+        else if (IPADDRESS.equals(type)) {
+            return value;
+        }
         else if (type instanceof ArrayType) {
             return ((List<Object>) value).stream()
-                    .map(element -> convertToRowValue(((ArrayType) type).getElementType(), element, timeZoneKey))
+                    .map(element -> convertToRowValue(((ArrayType) type).getElementType(), element))
                     .collect(toList());
         }
         else if (type instanceof MapType) {
             return ((Map<Object, Object>) value).entrySet().stream()
                     .collect(Collectors.toMap(
-                            e -> convertToRowValue(((MapType) type).getKeyType(), e.getKey(), timeZoneKey),
-                            e -> convertToRowValue(((MapType) type).getValueType(), e.getValue(), timeZoneKey)));
+                            e -> convertToRowValue(((MapType) type).getKeyType(), e.getKey()),
+                            e -> convertToRowValue(((MapType) type).getValueType(), e.getValue())));
+        }
+        else if (type instanceof RowType) {
+            Map<String, Object> data = (Map<String, Object>) value;
+            RowType rowType = (RowType) type;
+
+            return rowType.getFields().stream()
+                    .map(field -> convertToRowValue(field.getType(), data.get(field.getName().get())))
+                    .collect(toList());
         }
         else if (type instanceof DecimalType) {
             return new BigDecimal((String) value);
+        }
+        else if (type instanceof JsonType) {
+            return value;
+        }
+        else if (type instanceof VarcharEnumType) {
+            return value;
+        }
+        else if (type instanceof BigintEnumType) {
+            return ((Number) value).longValue();
+        }
+        else if (type instanceof TypeWithName) {
+            return convertToRowValue(((TypeWithName) type).getType(), value);
         }
         else if (type.getTypeSignature().getBase().equals("ObjectId")) {
             return value;

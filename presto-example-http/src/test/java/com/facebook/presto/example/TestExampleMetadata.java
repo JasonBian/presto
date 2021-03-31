@@ -28,9 +28,9 @@ import org.testng.annotations.Test;
 import java.net.URL;
 import java.util.Optional;
 
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.example.MetadataUtil.CATALOG_CODEC;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertNotNull;
@@ -144,9 +144,11 @@ public class TestExampleMetadata
     @Test(expectedExceptions = PrestoException.class)
     public void testCreateTable()
     {
-        metadata.createTable(SESSION, new ConnectorTableMetadata(
-                new SchemaTableName("example", "foo"),
-                ImmutableList.of(new ColumnMetadata("text", createUnboundedVarcharType()))),
+        metadata.createTable(
+                SESSION,
+                new ConnectorTableMetadata(
+                        new SchemaTableName("example", "foo"),
+                        ImmutableList.of(new ColumnMetadata("text", createUnboundedVarcharType()))),
                 false);
     }
 

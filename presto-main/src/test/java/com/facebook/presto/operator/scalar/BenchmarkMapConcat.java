@@ -13,20 +13,19 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.metadata.FunctionKind;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.type.MapType;
 import com.facebook.presto.metadata.MetadataManager;
-import com.facebook.presto.metadata.Signature;
 import com.facebook.presto.operator.DriverYieldSignal;
 import com.facebook.presto.operator.project.PageProcessor;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.type.MapType;
+import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.relation.CallExpression;
+import com.facebook.presto.spi.relation.RowExpression;
 import com.facebook.presto.sql.gen.ExpressionCompiler;
 import com.facebook.presto.sql.gen.PageFunctionCompiler;
-import com.facebook.presto.sql.relational.CallExpression;
-import com.facebook.presto.sql.relational.RowExpression;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -47,14 +46,19 @@ import org.openjdk.jmh.runner.options.OptionsBuilder;
 import org.openjdk.jmh.runner.options.VerboseMode;
 import org.openjdk.jmh.runner.options.WarmupMode;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
+import java.util.Random;
 import java.util.concurrent.ThreadLocalRandom;
 import java.util.concurrent.TimeUnit;
 
 import static com.facebook.presto.block.BlockAssertions.createSlicesBlock;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
+import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 import static com.facebook.presto.sql.relational.Expressions.field;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.facebook.presto.util.StructuralTestUtil.mapType;
@@ -69,13 +73,18 @@ import static io.airlift.slice.Slices.utf8Slice;
 @BenchmarkMode(Mode.AverageTime)
 public class BenchmarkMapConcat
 {
-    private static final int POSITIONS = 10_000;
+    private static final int POSITIONS = 1000;
 
     @Benchmark
     @OperationsPerInvocation(POSITIONS)
     public List<Optional<Page>> mapConcat(BenchmarkData data)
     {
-        return ImmutableList.copyOf(data.getPageProcessor().process(SESSION, new DriverYieldSignal(), data.getPage()));
+        return ImmutableList.copyOf(
+                data.getPageProcessor().process(
+                        SESSION.getSqlFunctionProperties(),
+                        new DriverYieldSignal(),
+                        newSimpleAggregatedMemoryContext().newLocalMemoryContext(PageProcessor.class.getSimpleName()),
+                        data.getPage()));
     }
 
     @SuppressWarnings("FieldMayBeFinal")
@@ -85,7 +94,10 @@ public class BenchmarkMapConcat
         private String name = "map_concat";
 
         @Param({"left_empty", "right_empty", "both_empty", "non_empty"})
-        private String mapConfig = "left_empty";
+        private String mapConfig = "non_empty";
+
+        @Param({"10", "100", "1000"})
+        private int keyCount = 100;
 
         private Page page;
         private PageProcessor pageProcessor;
@@ -93,18 +105,21 @@ public class BenchmarkMapConcat
         @Setup
         public void setup()
         {
-            MetadataManager metadata = MetadataManager.createTestMetadataManager();
+            MetadataManager metadata = createTestMetadataManager();
             ExpressionCompiler compiler = new ExpressionCompiler(metadata, new PageFunctionCompiler(metadata, 0));
+
+            List<String> keyList1 = createRandomStringListFromSet(keyCount);
+            List<String> keyList2 = createRandomStringListFromSet(keyCount);
 
             List<String> leftKeys;
             List<String> rightKeys;
             switch (mapConfig) {
                 case "left_empty":
                     leftKeys = ImmutableList.of();
-                    rightKeys = ImmutableList.of("a", "b", "c");
+                    rightKeys = keyList1;
                     break;
                 case "right_empty":
-                    leftKeys = ImmutableList.of("a", "b", "c");
+                    leftKeys = keyList1;
                     rightKeys = ImmutableList.of();
                     break;
                 case "both_empty":
@@ -112,8 +127,8 @@ public class BenchmarkMapConcat
                     rightKeys = ImmutableList.of();
                     break;
                 case "non_empty":
-                    leftKeys = ImmutableList.of("a", "b", "c");
-                    rightKeys = ImmutableList.of("d", "b", "c");
+                    leftKeys = keyList1;
+                    rightKeys = keyList2;
                     break;
                 default:
                     throw new UnsupportedOperationException();
@@ -131,19 +146,15 @@ public class BenchmarkMapConcat
 
             ImmutableList.Builder<RowExpression> projectionsBuilder = ImmutableList.builder();
 
-            Signature signature = new Signature(
-                    name,
-                    FunctionKind.SCALAR,
-                    mapType.getTypeSignature(),
-                    mapType.getTypeSignature(),
-                    mapType.getTypeSignature());
+            FunctionHandle functionHandle = metadata.getFunctionAndTypeManager().lookupFunction(name, fromTypes(mapType, mapType));
             projectionsBuilder.add(new CallExpression(
-                    signature,
+                    name,
+                    functionHandle,
                     mapType,
                     ImmutableList.of(field(0, mapType), field(1, mapType))));
 
             ImmutableList<RowExpression> projections = projectionsBuilder.build();
-            pageProcessor = compiler.compilePageProcessor(Optional.empty(), projections).get();
+            pageProcessor = compiler.compilePageProcessor(SESSION.getSqlFunctionProperties(), Optional.empty(), projections).get();
             page = new Page(leftBlock, rightBlock);
         }
 
@@ -164,7 +175,7 @@ public class BenchmarkMapConcat
             for (int i = 0; i < offsets.length; i++) {
                 offsets[i] = mapSize * i;
             }
-            return mapType.createBlockFromKeyValue(new boolean[positionCount], offsets, keyBlock, valueBlock);
+            return mapType.createBlockFromKeyValue(positionCount, Optional.empty(), offsets, keyBlock, valueBlock);
         }
 
         private static Block createKeyBlock(int positionCount, List<String> keys)
@@ -194,6 +205,16 @@ public class BenchmarkMapConcat
                 sliceArray[i] = utf8Slice(keys.get(i));
             }
             return createSlicesBlock(sliceArray);
+        }
+
+        private static List<String> createRandomStringListFromSet(int keyCount)
+        {
+            Random random = new Random(0);
+            List<String> keyList = new ArrayList<>();
+            for (int i = 0; i < keyCount; i++) {
+                keyList.add(Integer.toString(random.nextInt(keyCount)));
+            }
+            return keyList;
         }
     }
 

@@ -13,6 +13,15 @@
  */
 package com.facebook.presto.proxy;
 
+import com.facebook.airlift.bootstrap.Bootstrap;
+import com.facebook.airlift.bootstrap.LifeCycleManager;
+import com.facebook.airlift.http.server.HttpServerInfo;
+import com.facebook.airlift.http.server.testing.TestingHttpServerModule;
+import com.facebook.airlift.jaxrs.JaxrsModule;
+import com.facebook.airlift.jmx.testing.TestingJmxModule;
+import com.facebook.airlift.json.JsonModule;
+import com.facebook.airlift.log.Logging;
+import com.facebook.airlift.node.testing.TestingNodeModule;
 import com.facebook.presto.execution.QueryState;
 import com.facebook.presto.jdbc.PrestoResultSet;
 import com.facebook.presto.jdbc.PrestoStatement;
@@ -20,15 +29,6 @@ import com.facebook.presto.plugin.blackhole.BlackHolePlugin;
 import com.facebook.presto.server.testing.TestingPrestoServer;
 import com.facebook.presto.tpch.TpchPlugin;
 import com.google.inject.Injector;
-import io.airlift.bootstrap.Bootstrap;
-import io.airlift.bootstrap.LifeCycleManager;
-import io.airlift.http.server.HttpServerInfo;
-import io.airlift.http.server.testing.TestingHttpServerModule;
-import io.airlift.jaxrs.JaxrsModule;
-import io.airlift.jmx.testing.TestingJmxModule;
-import io.airlift.json.JsonModule;
-import io.airlift.log.Logging;
-import io.airlift.node.testing.TestingNodeModule;
 import org.testng.annotations.AfterClass;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
@@ -46,8 +46,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.atomic.AtomicReference;
 
+import static com.facebook.airlift.concurrent.Threads.daemonThreadsNamed;
 import static com.facebook.presto.execution.QueryState.FAILED;
-import static io.airlift.concurrent.Threads.daemonThreadsNamed;
 import static java.lang.String.format;
 import static java.nio.charset.StandardCharsets.US_ASCII;
 import static java.util.concurrent.Executors.newCachedThreadPool;
@@ -90,7 +90,6 @@ public class TestProxyServer
                 new ProxyModule());
 
         Injector injector = app
-                .strictConfig()
                 .doNotInitializeLogging()
                 .setRequiredConfigurationProperty("proxy.uri", server.getBaseUrl().toString())
                 .setRequiredConfigurationProperty("proxy.shared-secret-file", sharedSecretFile.toString())
@@ -139,6 +138,26 @@ public class TestProxyServer
             }
             assertEquals(count, 15000);
             assertEquals(sum, (count / 2) * (1 + count));
+        }
+    }
+
+    @Test
+    public void testSetSession()
+            throws Exception
+    {
+        try (Connection connection = createConnection();
+                Statement statement = connection.createStatement()) {
+            assertFalse(statement.execute("SET SESSION query_max_stage_count = 10"));
+            try (ResultSet rs = statement.executeQuery("SELECT row_number() OVER () n FROM tpch.tiny.orders")) {
+                long count = 0;
+                long sum = 0;
+                while (rs.next()) {
+                    count++;
+                    sum += rs.getLong("n");
+                }
+                assertEquals(count, 15000);
+                assertEquals(sum, (count / 2) * (1 + count));
+            }
         }
     }
 

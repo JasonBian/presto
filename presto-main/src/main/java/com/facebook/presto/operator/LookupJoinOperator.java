@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.operator;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.JoinProbe.JoinProbeFactory;
 import com.facebook.presto.operator.LookupJoinOperators.JoinType;
 import com.facebook.presto.operator.LookupSourceProvider.LookupSourceLease;
 import com.facebook.presto.operator.PartitionedConsumption.Partition;
 import com.facebook.presto.operator.exchange.LocalPartitionGenerator;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
 import com.facebook.presto.spiller.PartitioningSpiller;
 import com.facebook.presto.spiller.PartitioningSpiller.PartitioningSpillResult;
 import com.facebook.presto.spiller.PartitioningSpillerFactory;
@@ -39,13 +39,13 @@ import java.util.OptionalInt;
 import java.util.function.IntPredicate;
 import java.util.function.Supplier;
 
+import static com.facebook.airlift.concurrent.MoreFutures.addSuccessCallback;
+import static com.facebook.airlift.concurrent.MoreFutures.getDone;
 import static com.facebook.presto.operator.LookupJoinOperators.JoinType.FULL_OUTER;
 import static com.facebook.presto.operator.LookupJoinOperators.JoinType.PROBE_OUTER;
+import static com.facebook.presto.operator.SpillingUtils.checkSpillSucceeded;
 import static com.google.common.base.Preconditions.checkState;
 import static com.google.common.base.Verify.verify;
-import static io.airlift.concurrent.MoreFutures.addSuccessCallback;
-import static io.airlift.concurrent.MoreFutures.checkSuccess;
-import static io.airlift.concurrent.MoreFutures.getDone;
 import static java.lang.String.format;
 import static java.util.Collections.emptyIterator;
 import static java.util.Objects.requireNonNull;
@@ -146,7 +146,7 @@ public class LookupJoinOperator
             return;
         }
 
-        checkSuccess(spillInProgress, "spilling failed");
+        checkSpillSucceeded(spillInProgress);
         finishing = true;
     }
 
@@ -237,7 +237,7 @@ public class LookupJoinOperator
     private Page spillAndMaskSpilledPositions(Page page, IntPredicate spillMask)
     {
         checkState(spillInProgress.isDone(), "Previous spill still in progress");
-        checkSuccess(spillInProgress, "spilling failed");
+        checkSpillSucceeded(spillInProgress);
 
         if (!spiller.isPresent()) {
             spiller = Optional.of(partitioningSpillerFactory.create(
@@ -272,7 +272,8 @@ public class LookupJoinOperator
              */
             return null;
         }
-        checkSuccess(spillInProgress, "spilling failed");
+
+        checkSpillSucceeded(spillInProgress);
 
         if (probe == null && pageBuilder.isEmpty() && !finishing) {
             return null;

@@ -15,21 +15,33 @@ package com.facebook.presto.hive.s3;
 
 import com.amazonaws.services.s3.AbstractAmazonS3;
 import com.amazonaws.services.s3.model.AmazonS3Exception;
+import com.amazonaws.services.s3.model.CannedAccessControlList;
 import com.amazonaws.services.s3.model.GetObjectMetadataRequest;
 import com.amazonaws.services.s3.model.GetObjectRequest;
+import com.amazonaws.services.s3.model.ListObjectsRequest;
+import com.amazonaws.services.s3.model.ObjectListing;
 import com.amazonaws.services.s3.model.ObjectMetadata;
 import com.amazonaws.services.s3.model.PutObjectRequest;
 import com.amazonaws.services.s3.model.PutObjectResult;
 import com.amazonaws.services.s3.model.S3Object;
+import com.amazonaws.services.s3.model.S3ObjectSummary;
+import com.amazonaws.services.s3.model.StorageClass;
 
-import static org.apache.http.HttpStatus.SC_OK;
+import java.util.Date;
+
+import static java.net.HttpURLConnection.HTTP_OK;
 
 public class MockAmazonS3
         extends AbstractAmazonS3
 {
-    private int getObjectHttpCode = SC_OK;
-    private int getObjectMetadataHttpCode = SC_OK;
+    private static final String STANDARD_OBJECT_KEY = "test/standard";
+    private static final String GLACIER_OBJECT_KEY = "test/glacier";
+
+    private int getObjectHttpCode = HTTP_OK;
+    private int getObjectMetadataHttpCode = HTTP_OK;
     private GetObjectMetadataRequest getObjectMetadataRequest;
+    private CannedAccessControlList acl;
+    private boolean hasGlacierObjects;
 
     public void setGetObjectHttpErrorCode(int getObjectHttpErrorCode)
     {
@@ -41,6 +53,16 @@ public class MockAmazonS3
         this.getObjectMetadataHttpCode = getObjectMetadataHttpCode;
     }
 
+    public CannedAccessControlList getAcl()
+    {
+        return this.acl;
+    }
+
+    public void setHasGlacierObjects(boolean hasGlacierObjects)
+    {
+        this.hasGlacierObjects = hasGlacierObjects;
+    }
+
     public GetObjectMetadataRequest getGetObjectMetadataRequest()
     {
         return getObjectMetadataRequest;
@@ -50,7 +72,7 @@ public class MockAmazonS3
     public ObjectMetadata getObjectMetadata(GetObjectMetadataRequest getObjectMetadataRequest)
     {
         this.getObjectMetadataRequest = getObjectMetadataRequest;
-        if (getObjectMetadataHttpCode != SC_OK) {
+        if (getObjectMetadataHttpCode != HTTP_OK) {
             AmazonS3Exception exception = new AmazonS3Exception("Failing getObjectMetadata call with " + getObjectMetadataHttpCode);
             exception.setStatusCode(getObjectMetadataHttpCode);
             throw exception;
@@ -61,7 +83,7 @@ public class MockAmazonS3
     @Override
     public S3Object getObject(GetObjectRequest getObjectRequest)
     {
-        if (getObjectHttpCode != SC_OK) {
+        if (getObjectHttpCode != HTTP_OK) {
             AmazonS3Exception exception = new AmazonS3Exception("Failing getObject call with " + getObjectHttpCode);
             exception.setStatusCode(getObjectHttpCode);
             throw exception;
@@ -72,6 +94,7 @@ public class MockAmazonS3
     @Override
     public PutObjectResult putObject(PutObjectRequest putObjectRequest)
     {
+        this.acl = putObjectRequest.getCannedAcl();
         return new PutObjectResult();
     }
 
@@ -79,6 +102,28 @@ public class MockAmazonS3
     public PutObjectResult putObject(String bucketName, String key, String content)
     {
         return new PutObjectResult();
+    }
+
+    @Override
+    public ObjectListing listObjects(ListObjectsRequest listObjectsRequest)
+    {
+        ObjectListing listing = new ObjectListing();
+
+        S3ObjectSummary standard = new S3ObjectSummary();
+        standard.setStorageClass(StorageClass.Standard.toString());
+        standard.setKey(STANDARD_OBJECT_KEY);
+        standard.setLastModified(new Date());
+        listing.getObjectSummaries().add(standard);
+
+        if (hasGlacierObjects) {
+            S3ObjectSummary glacier = new S3ObjectSummary();
+            glacier.setStorageClass(StorageClass.Glacier.toString());
+            glacier.setKey(GLACIER_OBJECT_KEY);
+            glacier.setLastModified(new Date());
+            listing.getObjectSummaries().add(glacier);
+        }
+
+        return listing;
     }
 
     @Override

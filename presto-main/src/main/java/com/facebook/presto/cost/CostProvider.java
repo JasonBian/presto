@@ -13,9 +13,9 @@
  */
 package com.facebook.presto.cost;
 
-import com.facebook.presto.sql.planner.plan.PlanNode;
+import com.facebook.presto.spi.plan.PlanNode;
 
 public interface CostProvider
 {
-    PlanNodeCostEstimate getCumulativeCost(PlanNode node);
+    PlanCostEstimate getCost(PlanNode node);
 }

@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.execution.buffer;
 
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.collect.ImmutableList;
 
 import java.util.List;
@@ -36,7 +37,12 @@ public class BufferResult
     private final boolean bufferComplete;
     private final List<SerializedPage> serializedPages;
 
-    public BufferResult(String taskInstanceId, long token, long nextToken, boolean bufferComplete, List<SerializedPage> serializedPages)
+    public BufferResult(
+            String taskInstanceId,
+            long token,
+            long nextToken,
+            boolean bufferComplete,
+            List<SerializedPage> serializedPages)
     {
         checkArgument(!isNullOrEmpty(taskInstanceId), "taskInstanceId is null");
 
@@ -45,6 +51,11 @@ public class BufferResult
         this.nextToken = nextToken;
         this.bufferComplete = bufferComplete;
         this.serializedPages = ImmutableList.copyOf(requireNonNull(serializedPages, "serializedPages is null"));
+    }
+
+    public String getTaskInstanceId()
+    {
+        return taskInstanceId;
     }
 
     public long getToken()
@@ -75,11 +86,6 @@ public class BufferResult
     public boolean isEmpty()
     {
         return serializedPages.isEmpty();
-    }
-
-    public String getTaskInstanceId()
-    {
-        return taskInstanceId;
     }
 
     @Override

@@ -81,6 +81,9 @@ String Functions
 
     Replaces all instances of ``search`` with ``replace`` in ``string``.
 
+    If ``search`` is an empty string, inserts ``replace`` in front of every
+    character and at the end of the ``string``.
+
 .. function:: reverse(string) -> varchar
 
     Returns ``string`` with the characters in reverse order.
@@ -96,11 +99,11 @@ String Functions
 
     Removes trailing whitespace from ``string``.
 
-.. function:: split(string, delimiter) -> array<varchar>
+.. function:: split(string, delimiter) -> array(varchar)
 
     Splits ``string`` on ``delimiter`` and returns an array.
 
-.. function:: split(string, delimiter, limit) -> array<varchar>
+.. function:: split(string, delimiter, limit) -> array(varchar)
 
     Splits ``string`` on ``delimiter`` and returns an array of size at most
     ``limit``. The last element in the array always contain everything
@@ -116,19 +119,50 @@ String Functions
 
     Splits ``string`` by ``entryDelimiter`` and ``keyValueDelimiter`` and returns a map.
     ``entryDelimiter`` splits ``string`` into key-value pairs. ``keyValueDelimiter`` splits
-    each pair into key and value.
+    each pair into key and value. Note that ``entryDelimiter`` and ``keyValueDelimiter`` are
+    interpreted literally, i.e., as full string matches.
 
-.. function:: split_to_multimap(string, entryDelimiter, keyValueDelimiter) -> map<varchar, array<varchar>>
+.. function:: split_to_map(string, entryDelimiter, keyValueDelimiter, function(K,V1,V2,R)) -> map<varchar, varchar>
+
+    Splits ``string`` by ``entryDelimiter`` and ``keyValueDelimiter`` and returns a map.
+    ``entryDelimiter`` splits ``string`` into key-value pairs. ``keyValueDelimiter`` splits
+    each pair into key and value. Note that ``entryDelimiter`` and ``keyValueDelimiter`` are
+    interpreted literally, i.e., as full string matches. ``function(K,V1,V2,R)``
+    is invoked in cases of duplicate keys to resolve the value that should be in the map.
+
+        SELECT(split_to_map('a:1;b:2;a:3', ';', ':', (k, v1, v2) -> v1)); -- {"a": "1", "b": "2"}
+        SELECT(split_to_map('a:1;b:2;a:3', ';', ':', (k, v1, v2) -> CONCAT(v1, v2))); -- {"a": "13", "b": "2"}
+
+.. function:: split_to_multimap(string, entryDelimiter, keyValueDelimiter) -> map(varchar, array(varchar))
 
     Splits ``string`` by ``entryDelimiter`` and ``keyValueDelimiter`` and returns a map
     containing an array of values for each unique key. ``entryDelimiter`` splits ``string``
     into key-value pairs. ``keyValueDelimiter`` splits each pair into key and value. The
     values for each key will be in the same order as they appeared in ``string``.
+    Note that ``entryDelimiter`` and ``keyValueDelimiter`` are interpreted literally,
+    i.e., as full string matches.
 
 .. function:: strpos(string, substring) -> bigint
 
     Returns the starting position of the first instance of ``substring`` in
     ``string``. Positions start with ``1``. If not found, ``0`` is returned.
+
+.. function:: strpos(string, substring, instance) -> bigint
+
+    Returns the position of the N-th ``instance`` of ``substring`` in ``string``.
+    ``instance`` must be a positive number.
+    Positions start with ``1``. If not found, ``0`` is returned.
+
+.. function:: strrpos(string, substring) -> bigint
+
+    Returns the starting position of the last instance of ``substring`` in ``string``.
+    Positions start with ``1``. If not found, ``0`` is returned.
+
+.. function:: strrpos(string, substring, instance) -> bigint
+
+    Returns the position of the N-th ``instance`` of ``substring`` in ``string`` starting from the end of the string.
+    ``instance`` must be a positive number.
+    Positions start with ``1``. If not found, ``0`` is returned.
 
 .. function:: position(substring IN string) -> bigint
 

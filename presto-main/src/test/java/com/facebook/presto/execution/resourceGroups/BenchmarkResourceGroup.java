@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.execution.resourceGroups;
 
-import com.facebook.presto.execution.MockQueryExecution;
+import com.facebook.presto.execution.MockManagedQueryExecution;
 import com.facebook.presto.execution.resourceGroups.InternalResourceGroup.RootInternalResourceGroup;
 import io.airlift.units.DataSize;
 import org.openjdk.jmh.annotations.Benchmark;
@@ -77,13 +77,13 @@ public class BenchmarkResourceGroup
             root.setHardConcurrencyLimit(queries);
             InternalResourceGroup group = root;
             for (int i = 0; i < children; i++) {
-                group = root.getOrCreateSubGroup(String.valueOf(i));
+                group = root.getOrCreateSubGroup(String.valueOf(i), true);
                 group.setSoftMemoryLimit(new DataSize(1, MEGABYTE));
                 group.setMaxQueuedQueries(queries);
                 group.setHardConcurrencyLimit(queries);
             }
             for (int i = 0; i < queries; i++) {
-                group.run(new MockQueryExecution(10));
+                group.run(new MockManagedQueryExecution(10));
             }
         }
 

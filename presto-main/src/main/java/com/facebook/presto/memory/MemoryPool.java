@@ -13,12 +13,12 @@
  */
 package com.facebook.presto.memory;
 
+import com.facebook.presto.execution.TaskId;
 import com.facebook.presto.spi.QueryId;
 import com.facebook.presto.spi.memory.MemoryAllocation;
 import com.facebook.presto.spi.memory.MemoryPoolId;
 import com.facebook.presto.spi.memory.MemoryPoolInfo;
 import com.google.common.annotations.VisibleForTesting;
-import com.google.common.collect.ImmutableMap;
 import com.google.common.util.concurrent.AbstractFuture;
 import com.google.common.util.concurrent.ListenableFuture;
 import io.airlift.units.DataSize;
@@ -34,11 +34,14 @@ import java.util.Map;
 import java.util.Map.Entry;
 import java.util.concurrent.CopyOnWriteArrayList;
 
+import static com.facebook.presto.memory.context.AbstractAggregatedMemoryContext.FORCE_FREE_TAG;
 import static com.facebook.presto.operator.Operator.NOT_BLOCKED;
 import static com.google.common.base.MoreObjects.toStringHelper;
 import static com.google.common.base.Preconditions.checkArgument;
 import static com.google.common.base.Preconditions.checkState;
+import static com.google.common.collect.ImmutableMap.toImmutableMap;
 import static java.util.Objects.requireNonNull;
+import static java.util.function.Function.identity;
 
 public class MemoryPool
 {
@@ -68,6 +71,8 @@ public class MemoryPool
     private final Map<QueryId, Long> queryMemoryRevocableReservations = new HashMap<>();
 
     private final List<MemoryPoolListener> listeners = new CopyOnWriteArrayList<>();
+
+    private final List<TaskRevocableMemoryListener> taskRevocableMemoryListeners = new CopyOnWriteArrayList<>();
 
     public MemoryPool(MemoryPoolId id, DataSize size)
     {
@@ -104,6 +109,16 @@ public class MemoryPool
         listeners.remove(requireNonNull(listener, "listener cannot be null"));
     }
 
+    public void addTaskRevocableMemoryListener(TaskRevocableMemoryListener listener)
+    {
+        taskRevocableMemoryListeners.add(requireNonNull(listener, "listener cannot be null"));
+    }
+
+    public void removeTaskRevocableMemoryListener(TaskRevocableMemoryListener listener)
+    {
+        taskRevocableMemoryListeners.remove(requireNonNull(listener, "listener cannot be null"));
+    }
+
     /**
      * Reserves the given number of bytes. Caller should wait on the returned future, before allocating more memory.
      */
@@ -137,6 +152,11 @@ public class MemoryPool
     private void onMemoryReserved()
     {
         listeners.forEach(listener -> listener.onMemoryReserved(this));
+    }
+
+    public void onTaskMemoryReserved(TaskId taskId)
+    {
+        taskRevocableMemoryListeners.forEach(listener -> listener.onMemoryReserved(taskId, this));
     }
 
     public ListenableFuture<?> reserveRevocable(QueryId queryId, long bytes)
@@ -268,7 +288,7 @@ public class MemoryPool
     }
 
     @Managed
-    public synchronized long getMaxBytes()
+    public long getMaxBytes()
     {
         return maxBytes;
     }
@@ -351,6 +371,19 @@ public class MemoryPool
     @VisibleForTesting
     synchronized Map<QueryId, Map<String, Long>> getTaggedMemoryAllocations()
     {
-        return ImmutableMap.copyOf(taggedMemoryAllocations);
+        return taggedMemoryAllocations.keySet().stream()
+                .collect(toImmutableMap(identity(), this::getTaggedMemoryAllocations));
+    }
+
+    @VisibleForTesting
+    synchronized Map<String, Long> getTaggedMemoryAllocations(QueryId targetQueryId)
+    {
+        if (taggedMemoryAllocations.get(targetQueryId) == null) {
+            return null;
+        }
+        return taggedMemoryAllocations.get(targetQueryId)
+                .entrySet().stream()
+                .filter(entry -> !entry.getKey().equals(FORCE_FREE_TAG))
+                .collect(toImmutableMap(Map.Entry::getKey, Map.Entry::getValue));
     }
 }

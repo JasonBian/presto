@@ -13,25 +13,28 @@
  */
 package com.facebook.presto.operator.index;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.DriverYieldSignal;
 import com.facebook.presto.operator.project.PageProcessor;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.sql.gen.PageFunctionCompiler;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.Iterables;
 import org.testng.annotations.Test;
 
 import java.util.List;
+import java.util.OptionalInt;
 
 import static com.facebook.presto.RowPagesBuilder.rowPagesBuilder;
+import static com.facebook.presto.common.type.BigintType.BIGINT;
+import static com.facebook.presto.common.type.BooleanType.BOOLEAN;
+import static com.facebook.presto.common.type.DoubleType.DOUBLE;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
+import static com.facebook.presto.memory.context.AggregatedMemoryContext.newSimpleAggregatedMemoryContext;
 import static com.facebook.presto.metadata.MetadataManager.createTestMetadataManager;
 import static com.facebook.presto.operator.PageAssertions.assertPageEquals;
-import static com.facebook.presto.spi.type.BigintType.BIGINT;
-import static com.facebook.presto.spi.type.BooleanType.BOOLEAN;
-import static com.facebook.presto.spi.type.DoubleType.DOUBLE;
-import static com.facebook.presto.spi.type.VarcharType.VARCHAR;
+import static com.facebook.presto.operator.project.PageProcessor.MAX_BATCH_SIZE;
 import static com.facebook.presto.testing.TestingConnectorSession.SESSION;
 import static com.google.common.collect.Iterators.getOnlyElement;
 
@@ -59,9 +62,17 @@ public class TestTupleFilterProcessor
                 new int[] {0, 1, 2},
                 new int[] {1, 0, 3},
                 outputTypes,
+                SESSION.getSqlFunctionProperties(),
+                SESSION.getSessionFunctions(),
                 new PageFunctionCompiler(createTestMetadataManager(), 0));
-        PageProcessor tupleFilterProcessor = filterFactory.createPageProcessor(tuplePage).get();
-        Page actualPage = getOnlyElement(tupleFilterProcessor.process(SESSION, new DriverYieldSignal(), inputPage)).orElseThrow(() -> new AssertionError("page is not present"));
+        PageProcessor tupleFilterProcessor = filterFactory.createPageProcessor(tuplePage, OptionalInt.of(MAX_BATCH_SIZE)).get();
+        Page actualPage = getOnlyElement(
+                tupleFilterProcessor.process(
+                        SESSION.getSqlFunctionProperties(),
+                        new DriverYieldSignal(),
+                        newSimpleAggregatedMemoryContext().newLocalMemoryContext(PageProcessor.class.getSimpleName()),
+                        inputPage))
+                .orElseThrow(() -> new AssertionError("page is not present"));
 
         Page expectedPage = Iterables.getOnlyElement(rowPagesBuilder(outputTypes)
                 .row("a", 1L, true, 0.1, 0.0)

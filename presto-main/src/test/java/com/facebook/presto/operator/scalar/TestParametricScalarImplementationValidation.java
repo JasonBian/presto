@@ -13,15 +13,15 @@
  */
 package com.facebook.presto.operator.scalar;
 
-import com.facebook.presto.spi.ConnectorSession;
+import com.facebook.presto.common.function.SqlFunctionProperties;
 import com.google.common.collect.ImmutableList;
 import org.testng.annotations.Test;
 
 import java.lang.invoke.MethodHandle;
 import java.util.Optional;
 
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
-import static com.facebook.presto.operator.scalar.ScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.ArgumentProperty.valueTypeArgumentProperty;
+import static com.facebook.presto.operator.scalar.BuiltInScalarFunctionImplementation.NullConvention.RETURN_NULL_ON_NULL;
 import static com.facebook.presto.util.Reflection.methodHandle;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.fail;
@@ -31,58 +31,54 @@ public class TestParametricScalarImplementationValidation
     private static final MethodHandle STATE_FACTORY = methodHandle(TestParametricScalarImplementationValidation.class, "createState");
 
     @Test
-    public void testConnectorSessionPosition()
+    public void testSqlFunctionPropertiesPosition()
     {
         // Without cached instance factory
-        MethodHandle validFunctionMethodHandle = methodHandle(TestParametricScalarImplementationValidation.class, "validConnectorSessionParameterPosition", ConnectorSession.class, long.class, long.class);
-        ScalarFunctionImplementation validFunction = new ScalarFunctionImplementation(
+        MethodHandle validFunctionMethodHandle = methodHandle(TestParametricScalarImplementationValidation.class, "validSqlFunctionPropertiesParameterPosition", SqlFunctionProperties.class, long.class, long.class);
+        BuiltInScalarFunctionImplementation validFunction = new BuiltInScalarFunctionImplementation(
                 false,
                 ImmutableList.of(
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL),
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
-                validFunctionMethodHandle,
-                false);
+                validFunctionMethodHandle);
         assertEquals(validFunction.getMethodHandle(), validFunctionMethodHandle);
 
         try {
-            ScalarFunctionImplementation invalidFunction = new ScalarFunctionImplementation(
+            BuiltInScalarFunctionImplementation invalidFunction = new BuiltInScalarFunctionImplementation(
                     false,
                     ImmutableList.of(
                             valueTypeArgumentProperty(RETURN_NULL_ON_NULL),
                             valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
-                    methodHandle(TestParametricScalarImplementationValidation.class, "invalidConnectorSessionParameterPosition", long.class, long.class, ConnectorSession.class),
-                    false);
+                    methodHandle(TestParametricScalarImplementationValidation.class, "invalidSqlFunctionPropertiesParameterPosition", long.class, long.class, SqlFunctionProperties.class));
             fail("expected exception");
         }
         catch (IllegalArgumentException e) {
-            assertEquals(e.getMessage(), "ConnectorSession must be the first argument when instanceFactory is not present");
+            assertEquals(e.getMessage(), "SqlFunctionProperties must be the first argument when instanceFactory is not present");
         }
 
         // With cached instance factory
-        MethodHandle validFunctionWithInstanceFactoryMethodHandle = methodHandle(TestParametricScalarImplementationValidation.class, "validConnectorSessionParameterPosition", Object.class, ConnectorSession.class, long.class, long.class);
-        ScalarFunctionImplementation validFunctionWithInstanceFactory = new ScalarFunctionImplementation(
+        MethodHandle validFunctionWithInstanceFactoryMethodHandle = methodHandle(TestParametricScalarImplementationValidation.class, "validSqlFunctionPropertiesParameterPosition", Object.class, SqlFunctionProperties.class, long.class, long.class);
+        BuiltInScalarFunctionImplementation validFunctionWithInstanceFactory = new BuiltInScalarFunctionImplementation(
                 false,
                 ImmutableList.of(
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL),
                         valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
                 validFunctionWithInstanceFactoryMethodHandle,
-                Optional.of(STATE_FACTORY),
-                false);
+                Optional.of(STATE_FACTORY));
         assertEquals(validFunctionWithInstanceFactory.getMethodHandle(), validFunctionWithInstanceFactoryMethodHandle);
 
         try {
-            ScalarFunctionImplementation invalidFunctionWithInstanceFactory = new ScalarFunctionImplementation(
+            BuiltInScalarFunctionImplementation invalidFunctionWithInstanceFactory = new BuiltInScalarFunctionImplementation(
                     false,
                     ImmutableList.of(
                             valueTypeArgumentProperty(RETURN_NULL_ON_NULL),
                             valueTypeArgumentProperty(RETURN_NULL_ON_NULL)),
-                    methodHandle(TestParametricScalarImplementationValidation.class, "invalidConnectorSessionParameterPosition", Object.class, long.class, long.class, ConnectorSession.class),
-                    Optional.of(STATE_FACTORY),
-                    false);
+                    methodHandle(TestParametricScalarImplementationValidation.class, "invalidSqlFunctionPropertiesParameterPosition", Object.class, long.class, long.class, SqlFunctionProperties.class),
+                    Optional.of(STATE_FACTORY));
             fail("expected exception");
         }
         catch (IllegalArgumentException e) {
-            assertEquals(e.getMessage(), "ConnectorSession must be the second argument when instanceFactory is present");
+            assertEquals(e.getMessage(), "SqlFunctionProperties must be the second argument when instanceFactory is present");
         }
     }
 
@@ -91,22 +87,22 @@ public class TestParametricScalarImplementationValidation
         return null;
     }
 
-    public static long validConnectorSessionParameterPosition(ConnectorSession session, long arg1, long arg2)
+    public static long validSqlFunctionPropertiesParameterPosition(SqlFunctionProperties properties, long arg1, long arg2)
     {
         return arg1 + arg2;
     }
 
-    public static long validConnectorSessionParameterPosition(Object state, ConnectorSession session, long arg1, long arg2)
+    public static long validSqlFunctionPropertiesParameterPosition(Object state, SqlFunctionProperties properties, long arg1, long arg2)
     {
         return arg1 + arg2;
     }
 
-    public static long invalidConnectorSessionParameterPosition(long arg1, long arg2, ConnectorSession session)
+    public static long invalidSqlFunctionPropertiesParameterPosition(long arg1, long arg2, SqlFunctionProperties properties)
     {
         return arg1 + arg2;
     }
 
-    public static long invalidConnectorSessionParameterPosition(Object state, long arg1, long arg2, ConnectorSession session)
+    public static long invalidSqlFunctionPropertiesParameterPosition(Object state, long arg1, long arg2, SqlFunctionProperties properties)
     {
         return arg1 + arg2;
     }

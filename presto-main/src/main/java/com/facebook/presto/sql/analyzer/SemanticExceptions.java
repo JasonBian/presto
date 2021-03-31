@@ -15,11 +15,13 @@ package com.facebook.presto.sql.analyzer;
 
 import com.facebook.presto.sql.tree.Expression;
 import com.facebook.presto.sql.tree.Node;
+import com.facebook.presto.sql.tree.NodeLocation;
 import com.facebook.presto.sql.tree.QualifiedName;
 
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.AMBIGUOUS_ATTRIBUTE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.MISSING_ATTRIBUTE;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.NOT_SUPPORTED;
+import static java.lang.String.format;
 
 public final class SemanticExceptions
 {
@@ -27,7 +29,11 @@ public final class SemanticExceptions
 
     public static SemanticException missingAttributeException(Expression node, QualifiedName name)
     {
-        throw new SemanticException(MISSING_ATTRIBUTE, node, "Column '%s' cannot be resolved", name);
+        throw new SemanticException(
+                MISSING_ATTRIBUTE,
+                node,
+                name.getPrefix().isPresent() ? "'%s' cannot be resolved" : "Column '%s' cannot be resolved",
+                name);
     }
 
     /**
@@ -47,5 +53,14 @@ public final class SemanticExceptions
     public static SemanticException notSupportedException(Node node, String notSupportedFeatureDescription)
     {
         throw new SemanticException(NOT_SUPPORTED, node, notSupportedFeatureDescription + " is not supported");
+    }
+
+    public static String subQueryNotSupportedError(Node node, String notSupportedFeatureDescription)
+    {
+        if (node.getLocation().isPresent()) {
+            NodeLocation nodeLocation = node.getLocation().get();
+            return format("line %s:%s: %s", nodeLocation.getLineNumber(), nodeLocation.getColumnNumber(), notSupportedFeatureDescription + " is not supported");
+        }
+        return notSupportedFeatureDescription + " is not supported";
     }
 }

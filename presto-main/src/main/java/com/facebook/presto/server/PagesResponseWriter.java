@@ -13,8 +13,8 @@
  */
 package com.facebook.presto.server;
 
-import com.facebook.presto.execution.buffer.SerializedPage;
-import com.facebook.presto.spi.Page;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.spi.page.SerializedPage;
 import com.google.common.reflect.TypeToken;
 import io.airlift.slice.OutputStreamSliceOutput;
 import io.airlift.slice.SliceOutput;
@@ -35,7 +35,7 @@ import java.lang.reflect.Type;
 import java.util.List;
 
 import static com.facebook.presto.PrestoMediaTypes.PRESTO_PAGES;
-import static com.facebook.presto.execution.buffer.PagesSerdeUtil.writeSerializedPages;
+import static com.facebook.presto.spi.page.PagesSerdeUtil.writeSerializedPages;
 
 @Provider
 @Produces(PRESTO_PAGES)

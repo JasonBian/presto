@@ -15,16 +15,13 @@ package com.facebook.presto.plugin.geospatial.aggregation;
 
 import com.esri.core.geometry.ogc.OGCGeometry;
 import com.facebook.presto.block.BlockAssertions;
-import com.facebook.presto.geospatial.serde.GeometrySerde;
-import com.facebook.presto.metadata.FunctionKind;
-import com.facebook.presto.metadata.Signature;
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.type.Type;
+import com.facebook.presto.geospatial.serde.EsriGeometrySerde;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
 import com.facebook.presto.operator.aggregation.InternalAggregationFunction;
 import com.facebook.presto.operator.scalar.AbstractTestFunctions;
 import com.facebook.presto.plugin.geospatial.GeoPlugin;
-import com.facebook.presto.plugin.geospatial.GeometryType;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.type.Type;
-import com.facebook.presto.spi.type.TypeSignature;
 import io.airlift.slice.Slice;
 import org.testng.annotations.BeforeClass;
 
@@ -36,6 +33,8 @@ import java.util.stream.Collectors;
 
 import static com.facebook.presto.metadata.FunctionExtractor.extractFunctions;
 import static com.facebook.presto.operator.aggregation.AggregationTestUtils.assertAggregation;
+import static com.facebook.presto.plugin.geospatial.GeometryType.GEOMETRY;
+import static com.facebook.presto.sql.analyzer.TypeSignatureProvider.fromTypes;
 
 public abstract class AbstractTestGeoAggregationFunctions
         extends AbstractTestFunctions
@@ -47,23 +46,19 @@ public abstract class AbstractTestGeoAggregationFunctions
     {
         GeoPlugin plugin = new GeoPlugin();
         for (Type type : plugin.getTypes()) {
-            functionAssertions.getTypeRegistry().addType(type);
+            functionAssertions.getFunctionAndTypeManager().addType(type);
         }
-        functionAssertions.getMetadata().addFunctions(extractFunctions(plugin.getFunctions()));
-        function = functionAssertions
-                .getMetadata()
-                .getFunctionRegistry()
-                .getAggregateFunctionImplementation(new Signature(getFunctionName(),
-                                                    FunctionKind.AGGREGATE,
-                TypeSignature.parseTypeSignature(GeometryType.GEOMETRY_TYPE_NAME),
-                TypeSignature.parseTypeSignature(GeometryType.GEOMETRY_TYPE_NAME)));
+        functionAssertions.getMetadata().registerBuiltInFunctions(extractFunctions(plugin.getFunctions()));
+        FunctionAndTypeManager functionAndTypeManager = functionAssertions.getMetadata().getFunctionAndTypeManager();
+        function = functionAndTypeManager.getAggregateFunctionImplementation(
+                functionAndTypeManager.lookupFunction(getFunctionName(), fromTypes(GEOMETRY)));
     }
 
     protected void assertAggregatedGeometries(String testDescription, String expectedWkt, String... wkts)
     {
         List<Slice> geometrySlices = Arrays.stream(wkts)
                 .map(text -> text == null ? null : OGCGeometry.fromText(text))
-                .map(input -> input == null ? null : GeometrySerde.serialize(input))
+                .map(input -> input == null ? null : EsriGeometrySerde.serialize(input))
                 .collect(Collectors.toList());
 
         // Add a custom equality assertion because the resulting geometry may have

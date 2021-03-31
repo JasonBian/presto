@@ -13,6 +13,7 @@
  */
 package com.facebook.presto.server;
 
+import javax.annotation.security.RolesAllowed;
 import javax.ws.rs.GET;
 import javax.ws.rs.HeaderParam;
 import javax.ws.rs.Path;
@@ -20,12 +21,13 @@ import javax.ws.rs.core.Context;
 import javax.ws.rs.core.Response;
 import javax.ws.rs.core.UriInfo;
 
+import static com.facebook.presto.server.security.RoleType.ADMIN;
 import static com.google.common.base.Strings.isNullOrEmpty;
 import static com.google.common.net.HttpHeaders.X_FORWARDED_PROTO;
 import static javax.ws.rs.core.Response.Status.MOVED_PERMANENTLY;
-import static javax.ws.rs.core.UriBuilder.fromPath;
 
 @Path("/")
+@RolesAllowed(ADMIN)
 public class WebUiResource
 {
     @GET
@@ -38,7 +40,7 @@ public class WebUiResource
         }
 
         return Response.status(MOVED_PERMANENTLY)
-                .location(fromPath("/ui/").scheme(proto).build())
+                .location(uriInfo.getRequestUriBuilder().scheme(proto).path("/ui/").build())
                 .build();
     }
 }

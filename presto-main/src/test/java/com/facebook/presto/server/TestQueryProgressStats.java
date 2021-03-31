@@ -13,7 +13,7 @@
  */
 package com.facebook.presto.server;
 
-import io.airlift.json.JsonCodec;
+import com.facebook.airlift.json.JsonCodec;
 import org.testng.annotations.Test;
 
 import java.util.OptionalDouble;
@@ -33,6 +33,8 @@ public class TestQueryProgressStats
                 3333,
                 100000,
                 34230492,
+                34230493,
+                34230494,
                 1000,
                 100000,
                 false,
@@ -48,6 +50,8 @@ public class TestQueryProgressStats
         assertEquals(actual.getScheduledTimeMillis(), 3333);
         assertEquals(actual.getCurrentMemoryBytes(), 100000);
         assertEquals(actual.getPeakMemoryBytes(), 34230492);
+        assertEquals(actual.getPeakTotalMemoryBytes(), 34230493);
+        assertEquals(actual.getPeakTaskTotalMemoryBytes(), 34230494);
         assertEquals(actual.getInputRows(), 1000);
         assertEquals(actual.getInputBytes(), 100000);
         assertFalse(actual.isBlocked());

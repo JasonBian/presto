@@ -13,9 +13,12 @@
  */
 package com.facebook.presto.client;
 
-import com.facebook.presto.spi.type.NamedTypeSignature;
-import com.facebook.presto.spi.type.ParameterKind;
-import com.facebook.presto.spi.type.TypeSignatureParameter;
+import com.facebook.airlift.json.ObjectMapperProvider;
+import com.facebook.presto.common.type.BigintEnumType.LongEnumMap;
+import com.facebook.presto.common.type.NamedTypeSignature;
+import com.facebook.presto.common.type.ParameterKind;
+import com.facebook.presto.common.type.TypeSignatureParameter;
+import com.facebook.presto.common.type.VarcharEnumType.VarcharEnumMap;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.core.JsonParser;
@@ -24,7 +27,6 @@ import com.fasterxml.jackson.databind.JsonDeserializer;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
-import io.airlift.json.ObjectMapperProvider;
 
 import javax.annotation.concurrent.Immutable;
 
@@ -52,6 +54,12 @@ public class ClientTypeSignatureParameter
                 break;
             case NAMED_TYPE:
                 value = typeParameterSignature.getNamedTypeSignature();
+                break;
+            case LONG_ENUM:
+                value = typeParameterSignature.getLongEnumMap();
+                break;
+            case VARCHAR_ENUM:
+                value = typeParameterSignature.getVarcharEnumMap();
                 break;
             default:
                 throw new UnsupportedOperationException(format("Unknown kind [%s]", kind));
@@ -152,6 +160,12 @@ public class ClientTypeSignatureParameter
                     break;
                 case LONG:
                     value = MAPPER.readValue(jsonValue, Long.class);
+                    break;
+                case LONG_ENUM:
+                    value = MAPPER.readValue(jsonValue, LongEnumMap.class);
+                    break;
+                case VARCHAR_ENUM:
+                    value = MAPPER.readValue(jsonValue, VarcharEnumMap.class);
                     break;
                 default:
                     throw new UnsupportedOperationException(format("Unsupported kind [%s]", kind));

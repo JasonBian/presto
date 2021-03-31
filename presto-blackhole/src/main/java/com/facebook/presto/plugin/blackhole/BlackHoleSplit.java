@@ -15,6 +15,7 @@ package com.facebook.presto.plugin.blackhole;
 
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.HostAddress;
+import com.facebook.presto.spi.schedule.NodeSelectionStrategy;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.google.common.collect.ImmutableList;
@@ -23,6 +24,7 @@ import io.airlift.units.Duration;
 import java.util.List;
 import java.util.Objects;
 
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.NO_PREFERENCE;
 import static java.util.Objects.requireNonNull;
 
 public final class BlackHoleSplit
@@ -40,9 +42,9 @@ public final class BlackHoleSplit
             @JsonProperty("fieldsLength") int fieldsLength,
             @JsonProperty("pageProcessingDelay") Duration pageProcessingDelay)
     {
-        this.rowsPerPage = requireNonNull(rowsPerPage, "rowsPerPage is null");
-        this.pagesCount = requireNonNull(pagesCount, "pagesCount is null");
-        this.fieldsLength = requireNonNull(fieldsLength, "fieldsLength is null");
+        this.rowsPerPage = rowsPerPage;
+        this.pagesCount = pagesCount;
+        this.fieldsLength = fieldsLength;
         this.pageProcessingDelay = requireNonNull(pageProcessingDelay, "pageProcessingDelay is null");
     }
 
@@ -71,13 +73,13 @@ public final class BlackHoleSplit
     }
 
     @Override
-    public boolean isRemotelyAccessible()
+    public NodeSelectionStrategy getNodeSelectionStrategy()
     {
-        return true;
+        return NO_PREFERENCE;
     }
 
     @Override
-    public List<HostAddress> getAddresses()
+    public List<HostAddress> getPreferredNodes(List<HostAddress> sortedCandidates)
     {
         return ImmutableList.of();
     }

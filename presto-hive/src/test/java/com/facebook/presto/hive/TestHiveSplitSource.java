@@ -13,37 +13,52 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.airlift.stats.CounterStat;
+import com.facebook.presto.hive.metastore.Storage;
+import com.facebook.presto.hive.metastore.StorageFormat;
 import com.facebook.presto.spi.ConnectorSplit;
 import com.facebook.presto.spi.ConnectorSplitSource;
 import com.facebook.presto.spi.PrestoException;
-import com.facebook.presto.spi.predicate.TupleDomain;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.util.concurrent.SettableFuture;
-import io.airlift.stats.CounterStat;
 import io.airlift.units.DataSize;
+import org.apache.hadoop.fs.Path;
 import org.testng.annotations.Test;
 
 import java.util.List;
 import java.util.Optional;
 import java.util.OptionalInt;
-import java.util.Properties;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
 
+import static com.facebook.airlift.concurrent.MoreFutures.getFutureValue;
+import static com.facebook.airlift.testing.Assertions.assertContains;
+import static com.facebook.presto.hive.CacheQuotaScope.GLOBAL;
+import static com.facebook.presto.hive.CacheQuotaScope.PARTITION;
+import static com.facebook.presto.hive.CacheQuotaScope.TABLE;
+import static com.facebook.presto.hive.HiveSessionProperties.getMaxInitialSplitSize;
 import static com.facebook.presto.hive.HiveTestUtils.SESSION;
 import static com.facebook.presto.spi.connector.NotPartitionedPartitionHandle.NOT_PARTITIONED;
-import static io.airlift.concurrent.MoreFutures.getFutureValue;
-import static io.airlift.testing.Assertions.assertContains;
+import static com.facebook.presto.spi.schedule.NodeSelectionStrategy.NO_PREFERENCE;
+import static io.airlift.units.DataSize.Unit.BYTE;
+import static io.airlift.units.DataSize.Unit.GIGABYTE;
 import static io.airlift.units.DataSize.Unit.MEGABYTE;
 import static java.lang.Math.toIntExact;
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.testng.Assert.assertEquals;
+import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertTrue;
 import static org.testng.Assert.fail;
 
 public class TestHiveSplitSource
 {
+    private static final Executor EXECUTOR = Executors.newFixedThreadPool(5);
+    private static final Optional<DataSize> DEFAULT_QUOTA_SIZE = Optional.of(DataSize.succinctDataSize(2, GIGABYTE));
+
     @Test
     public void testOutstandingSplitCount()
     {
@@ -51,12 +66,12 @@ public class TestHiveSplitSource
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
+                new CacheQuotaRequirement(TABLE, DEFAULT_QUOTA_SIZE),
                 10,
                 10,
                 new DataSize(1, MEGABYTE),
                 new TestingHiveSplitLoader(),
-                Executors.newFixedThreadPool(5),
+                EXECUTOR,
                 new CounterStat());
 
         // add 10 splits
@@ -79,18 +94,98 @@ public class TestHiveSplitSource
     }
 
     @Test
+    public void testEvenlySizedSplitRemainder()
+    {
+        DataSize initialSplitSize = getMaxInitialSplitSize(SESSION);
+        HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
+                SESSION,
+                "database",
+                "table",
+                new CacheQuotaRequirement(TABLE, DEFAULT_QUOTA_SIZE),
+                10,
+                10,
+                new DataSize(1, MEGABYTE),
+                new TestingHiveSplitLoader(),
+                EXECUTOR,
+                new CounterStat());
+
+        // One byte larger than the initial split max size
+        DataSize fileSize = new DataSize(initialSplitSize.toBytes() + 1, BYTE);
+        long halfOfSize = fileSize.toBytes() / 2;
+        hiveSplitSource.addToQueue(new TestSplit(1, OptionalInt.empty(), fileSize));
+
+        HiveSplit first = (HiveSplit) getSplits(hiveSplitSource, 1).get(0);
+        assertEquals(first.getLength(), halfOfSize);
+
+        HiveSplit second = (HiveSplit) getSplits(hiveSplitSource, 1).get(0);
+        assertEquals(second.getLength(), fileSize.toBytes() - halfOfSize);
+    }
+
+    @Test
+    public void testSplitCacheQuota()
+    {
+        // CacheQuota: TABLE 1G for unbucked splits
+        HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
+                SESSION,
+                "database",
+                "table",
+                new CacheQuotaRequirement(TABLE, DEFAULT_QUOTA_SIZE),
+                10,
+                10,
+                new DataSize(1, MEGABYTE),
+                new TestingHiveSplitLoader(),
+                EXECUTOR,
+                new CounterStat());
+
+        // add 10 splits
+        for (int i = 0; i < 10; i++) {
+            hiveSplitSource.addToQueue(new TestSplit(i));
+            assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), i + 1);
+        }
+
+        HiveSplit hiveSplit = (HiveSplit) getSplits(hiveSplitSource, 1).get(0);
+        CacheQuotaRequirement cacheQuotaRequirement = new CacheQuotaRequirement(TABLE, DEFAULT_QUOTA_SIZE);
+        assertEquals(hiveSplit.getCacheQuotaRequirement().getQuota(), cacheQuotaRequirement.getQuota());
+        assertEquals(hiveSplit.getCacheQuotaRequirement().getCacheQuotaScope(), cacheQuotaRequirement.getCacheQuotaScope());
+
+        // CacheQuota: PARTITION Optional.empty() for bucketed splits
+        hiveSplitSource = HiveSplitSource.bucketed(
+                SESSION,
+                "database",
+                "table",
+                new CacheQuotaRequirement(PARTITION, Optional.empty()),
+                10,
+                10,
+                new DataSize(1, MEGABYTE),
+                new TestingHiveSplitLoader(),
+                EXECUTOR,
+                new CounterStat());
+
+        // add 10 splits
+        for (int i = 0; i < 10; i++) {
+            hiveSplitSource.addToQueue(new TestSplit(i, OptionalInt.of(2)));
+            assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), i + 1);
+        }
+
+        hiveSplit = (HiveSplit) getSplits(hiveSplitSource, OptionalInt.of(2), 1).get(0);
+        cacheQuotaRequirement = new CacheQuotaRequirement(PARTITION, Optional.empty());
+        assertEquals(hiveSplit.getCacheQuotaRequirement().getQuota(), cacheQuotaRequirement.getQuota());
+        assertEquals(hiveSplit.getCacheQuotaRequirement().getCacheQuotaScope(), cacheQuotaRequirement.getCacheQuotaScope());
+    }
+
+    @Test
     public void testFail()
     {
         HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
+                new CacheQuotaRequirement(GLOBAL, Optional.empty()),
                 10,
                 10,
                 new DataSize(1, MEGABYTE),
                 new TestingHiveSplitLoader(),
-                Executors.newFixedThreadPool(5),
+                EXECUTOR,
                 new CounterStat());
 
         // add some splits
@@ -139,54 +234,49 @@ public class TestHiveSplitSource
     public void testReaderWaitsForSplits()
             throws Exception
     {
-        final HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
+        HiveSplitSource hiveSplitSource = HiveSplitSource.allAtOnce(
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
+                new CacheQuotaRequirement(GLOBAL, Optional.empty()),
                 10,
                 10,
                 new DataSize(1, MEGABYTE),
                 new TestingHiveSplitLoader(),
-                Executors.newFixedThreadPool(5),
+                EXECUTOR,
                 new CounterStat());
 
-        final SettableFuture<ConnectorSplit> splits = SettableFuture.create();
+        SettableFuture<ConnectorSplit> splits = SettableFuture.create();
 
         // create a thread that will get a split
-        final CountDownLatch started = new CountDownLatch(1);
-        Thread getterThread = new Thread(new Runnable()
-        {
-            @Override
-            public void run()
-            {
-                try {
-                    started.countDown();
-                    List<ConnectorSplit> batch = getSplits(hiveSplitSource, 1);
-                    assertEquals(batch.size(), 1);
-                    splits.set(batch.get(0));
-                }
-                catch (Throwable e) {
-                    splits.setException(e);
-                }
+        CountDownLatch started = new CountDownLatch(1);
+        Thread getterThread = new Thread(() -> {
+            try {
+                started.countDown();
+                List<ConnectorSplit> batch = getSplits(hiveSplitSource, 1);
+                assertEquals(batch.size(), 1);
+                splits.set(batch.get(0));
+            }
+            catch (Throwable e) {
+                splits.setException(e);
             }
         });
         getterThread.start();
 
         try {
             // wait for the thread to be started
-            assertTrue(started.await(1, TimeUnit.SECONDS));
+            assertTrue(started.await(10, SECONDS));
 
             // sleep for a bit, and assure the thread is blocked
-            TimeUnit.MILLISECONDS.sleep(200);
+            MILLISECONDS.sleep(200);
             assertTrue(!splits.isDone());
 
             // add a split
             hiveSplitSource.addToQueue(new TestSplit(33));
 
             // wait for thread to get the split
-            ConnectorSplit split = splits.get(800, TimeUnit.MILLISECONDS);
-            assertEquals(((HiveSplit) split).getSchema().getProperty("id"), "33");
+            ConnectorSplit split = splits.get(10, SECONDS);
+            assertEquals(((HiveSplit) split).getPartitionDataColumnCount(), 33);
         }
         finally {
             // make sure the thread exits
@@ -202,14 +292,16 @@ public class TestHiveSplitSource
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
+                new CacheQuotaRequirement(GLOBAL, Optional.empty()),
                 10,
                 10000,
                 maxOutstandingSplitsSize,
                 new TestingHiveSplitLoader(),
-                Executors.newFixedThreadPool(5),
+                EXECUTOR,
                 new CounterStat());
-        int testSplitSizeInBytes = new TestSplit(0).getEstimatedSizeInBytes();
+
+        TestSplit testSplit = new TestSplit(0);
+        int testSplitSizeInBytes = testSplit.getEstimatedSizeInBytes() + testSplit.getPartitionInfo().getEstimatedSizeInBytes();
 
         int maxSplitCount = toIntExact(maxOutstandingSplitsSize.toBytes()) / testSplitSizeInBytes;
         for (int i = 0; i < maxSplitCount; i++) {
@@ -232,19 +324,19 @@ public class TestHiveSplitSource
         }
     }
 
-    @Test
+    @Test(timeOut = 10_000)
     public void testEmptyBucket()
     {
         final HiveSplitSource hiveSplitSource = HiveSplitSource.bucketed(
                 SESSION,
                 "database",
                 "table",
-                TupleDomain.all(),
+                new CacheQuotaRequirement(GLOBAL, Optional.empty()),
                 10,
                 10,
                 new DataSize(1, MEGABYTE),
                 new TestingHiveSplitLoader(),
-                Executors.newFixedThreadPool(5),
+                EXECUTOR,
                 new CounterStat());
         hiveSplitSource.addToQueue(new TestSplit(0, OptionalInt.of(2)));
         hiveSplitSource.noMoreSplits();
@@ -252,6 +344,135 @@ public class TestHiveSplitSource
         assertEquals(getSplits(hiveSplitSource, OptionalInt.of(1), 10).size(), 0);
         assertEquals(getSplits(hiveSplitSource, OptionalInt.of(2), 10).size(), 1);
         assertEquals(getSplits(hiveSplitSource, OptionalInt.of(3), 10).size(), 0);
+    }
+
+    @Test
+    public void testPreloadSplitsForRewindableSplitSource()
+            throws Exception
+    {
+        HiveSplitSource hiveSplitSource = HiveSplitSource.bucketedRewindable(
+                SESSION,
+                "database",
+                "table",
+                new CacheQuotaRequirement(GLOBAL, Optional.empty()),
+                10,
+                new DataSize(1, MEGABYTE),
+                new TestingHiveSplitLoader(),
+                EXECUTOR,
+                new CounterStat());
+        for (int i = 0; i < 10; i++) {
+            hiveSplitSource.addToQueue(new TestSplit(i, OptionalInt.of(0)));
+            assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), i + 1);
+        }
+
+        SettableFuture<List<ConnectorSplit>> splits = SettableFuture.create();
+
+        // create a thread that will get the splits
+        CountDownLatch started = new CountDownLatch(1);
+        Thread getterThread = new Thread(() -> {
+            try {
+                started.countDown();
+                List<ConnectorSplit> batch = getSplits(hiveSplitSource, OptionalInt.of(0), 10);
+                splits.set(batch);
+            }
+            catch (Throwable e) {
+                splits.setException(e);
+            }
+        });
+        getterThread.start();
+
+        try {
+            // wait for the thread to be started
+            assertTrue(started.await(10, SECONDS));
+
+            // scheduling will not start before noMoreSplits is called to ensure we preload all splits.
+            MILLISECONDS.sleep(200);
+            assertFalse(splits.isDone());
+
+            // wait for thread to get the splits after noMoreSplit signal is sent
+            hiveSplitSource.noMoreSplits();
+            List<ConnectorSplit> connectorSplits = splits.get(10, SECONDS);
+            assertEquals(connectorSplits.size(), 0);
+            assertFalse(hiveSplitSource.isFinished());
+
+            connectorSplits = getSplits(hiveSplitSource, OptionalInt.of(0), 10);
+            for (int i = 0; i < 10; i++) {
+                assertEquals(((HiveSplit) connectorSplits.get(i)).getPartitionDataColumnCount(), i);
+            }
+            assertTrue(hiveSplitSource.isFinished());
+        }
+        finally {
+            getterThread.interrupt();
+        }
+    }
+
+    @Test
+    public void testRewindOneBucket()
+    {
+        HiveSplitSource hiveSplitSource = HiveSplitSource.bucketedRewindable(
+                SESSION,
+                "database",
+                "table",
+                new CacheQuotaRequirement(GLOBAL, Optional.empty()),
+                10,
+                new DataSize(1, MEGABYTE),
+                new TestingHiveSplitLoader(),
+                EXECUTOR,
+                new CounterStat());
+        for (int i = 0; i < 10; i++) {
+            hiveSplitSource.addToQueue(new TestSplit(i, OptionalInt.of(0)));
+            assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), i + 1);
+        }
+        hiveSplitSource.noMoreSplits();
+
+        // Rewind when split is not retrieved.
+        hiveSplitSource.rewind(new HivePartitionHandle(0));
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 10);
+
+        // Rewind when split is partially retrieved.
+        assertEquals(getSplits(hiveSplitSource, OptionalInt.of(0), 5).size(), 5);
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 5);
+        hiveSplitSource.rewind(new HivePartitionHandle(0));
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 10);
+
+        // Rewind when split is fully retrieved
+        assertEquals(getSplits(hiveSplitSource, OptionalInt.of(0), 10).size(), 10);
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 0);
+        hiveSplitSource.rewind(new HivePartitionHandle(0));
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 10);
+    }
+
+    @Test
+    public void testRewindMultipleBuckets()
+    {
+        HiveSplitSource hiveSplitSource = HiveSplitSource.bucketedRewindable(
+                SESSION,
+                "database",
+                "table",
+                new CacheQuotaRequirement(GLOBAL, Optional.empty()),
+                10,
+                new DataSize(1, MEGABYTE),
+                new TestingHiveSplitLoader(),
+                EXECUTOR,
+                new CounterStat());
+        for (int i = 0; i < 10; i++) {
+            hiveSplitSource.addToQueue(new TestSplit(i, OptionalInt.of(1)));
+            hiveSplitSource.addToQueue(new TestSplit(i, OptionalInt.of(2)));
+            assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 2 * (i + 1));
+        }
+        hiveSplitSource.noMoreSplits();
+        assertEquals(getSplits(hiveSplitSource, OptionalInt.of(1), 1).size(), 1);
+        assertEquals(getSplits(hiveSplitSource, OptionalInt.of(2), 2).size(), 2);
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 17);
+
+        // Rewind bucket 1 and test only bucket 1 is rewinded.
+        hiveSplitSource.rewind(new HivePartitionHandle(1));
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 18);
+        assertEquals(getSplits(hiveSplitSource, OptionalInt.of(1), 1).size(), 1);
+
+        // Rewind bucket 2 and test only bucket 2 is rewinded.
+        hiveSplitSource.rewind(new HivePartitionHandle(2));
+        assertEquals(hiveSplitSource.getBufferedInternalSplitCount(), 19);
     }
 
     private static List<ConnectorSplit> getSplits(ConnectorSplitSource source, int maxSize)
@@ -293,27 +514,40 @@ public class TestHiveSplitSource
 
         private TestSplit(int id, OptionalInt bucketNumber)
         {
-            super(
-                    "partition-name",
-                    "path",
-                    0,
-                    100,
-                    100,
-                    properties("id", String.valueOf(id)),
-                    ImmutableList.of(),
-                    ImmutableList.of(new InternalHiveBlock(0, 100, ImmutableList.of())),
-                    bucketNumber,
-                    true,
-                    false,
-                    ImmutableMap.of(),
-                    Optional.empty());
+            this(id, bucketNumber, new DataSize(100, BYTE));
         }
 
-        private static Properties properties(String key, String value)
+        private TestSplit(int id, OptionalInt bucketNumber, DataSize fileSize)
         {
-            Properties properties = new Properties();
-            properties.put(key, value);
-            return properties;
+            super(
+                    "path",
+                    0,
+                    fileSize.toBytes(),
+                    fileSize.toBytes(),
+                    ImmutableList.of(new InternalHiveBlock(fileSize.toBytes(), ImmutableList.of())),
+                    bucketNumber,
+                    bucketNumber,
+                    true,
+                    NO_PREFERENCE,
+                    false,
+                    new HiveSplitPartitionInfo(
+                            new Storage(
+                                    StorageFormat.create("serde", "input", "output"),
+                                    "location",
+                                    Optional.empty(),
+                                    false,
+                                    ImmutableMap.of(),
+                                    ImmutableMap.of()),
+                            new Path("path").toUri(),
+                            ImmutableList.of(),
+                            "partition-name",
+                            id,
+                            ImmutableMap.of(),
+                            Optional.empty(),
+                            ImmutableSet.of()),
+                    Optional.empty(),
+                    Optional.empty(),
+                    ImmutableMap.of());
         }
     }
 }

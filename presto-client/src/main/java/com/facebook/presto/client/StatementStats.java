@@ -16,7 +16,6 @@ package com.facebook.presto.client;
 import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonProperty;
 
-import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.annotation.concurrent.Immutable;
 
@@ -44,6 +43,9 @@ public class StatementStats
     private final long processedRows;
     private final long processedBytes;
     private final long peakMemoryBytes;
+    private final long peakTotalMemoryBytes;
+    private final long peakTaskTotalMemoryBytes;
+    private final long spilledBytes;
     private final StageStats rootStage;
 
     @JsonCreator
@@ -63,6 +65,9 @@ public class StatementStats
             @JsonProperty("processedRows") long processedRows,
             @JsonProperty("processedBytes") long processedBytes,
             @JsonProperty("peakMemoryBytes") long peakMemoryBytes,
+            @JsonProperty("peakTotalMemoryBytes") long peakTotalMemoryBytes,
+            @JsonProperty("peakTaskTotalMemoryBytes") long peakTaskTotalMemoryBytes,
+            @JsonProperty("spilledBytes") long spilledBytes,
             @JsonProperty("rootStage") StageStats rootStage)
     {
         this.state = requireNonNull(state, "state is null");
@@ -80,10 +85,12 @@ public class StatementStats
         this.processedRows = processedRows;
         this.processedBytes = processedBytes;
         this.peakMemoryBytes = peakMemoryBytes;
+        this.peakTotalMemoryBytes = peakTotalMemoryBytes;
+        this.peakTaskTotalMemoryBytes = peakTaskTotalMemoryBytes;
+        this.spilledBytes = spilledBytes;
         this.rootStage = rootStage;
     }
 
-    @Nonnull
     @JsonProperty
     public String getState()
     {
@@ -174,6 +181,18 @@ public class StatementStats
         return peakMemoryBytes;
     }
 
+    @JsonProperty
+    public long getPeakTotalMemoryBytes()
+    {
+        return peakTotalMemoryBytes;
+    }
+
+    @JsonProperty
+    public long getPeakTaskTotalMemoryBytes()
+    {
+        return peakTaskTotalMemoryBytes;
+    }
+
     @Nullable
     @JsonProperty
     public StageStats getRootStage()
@@ -188,6 +207,12 @@ public class StatementStats
             return OptionalDouble.empty();
         }
         return OptionalDouble.of(min(100, (completedSplits * 100.0) / totalSplits));
+    }
+
+    @JsonProperty
+    public long getSpilledBytes()
+    {
+        return spilledBytes;
     }
 
     @Override
@@ -209,6 +234,9 @@ public class StatementStats
                 .add("processedRows", processedRows)
                 .add("processedBytes", processedBytes)
                 .add("peakMemoryBytes", peakMemoryBytes)
+                .add("peakTotalMemoryBytes", peakTotalMemoryBytes)
+                .add("peakTaskTotalMemoryBytes", peakTaskTotalMemoryBytes)
+                .add("spilledBytes", spilledBytes)
                 .add("rootStage", rootStage)
                 .toString();
     }
@@ -235,6 +263,9 @@ public class StatementStats
         private long processedRows;
         private long processedBytes;
         private long peakMemoryBytes;
+        private long peakTotalMemoryBytes;
+        private long peakTaskTotalMemoryBytes;
+        private long spilledBytes;
         private StageStats rootStage;
 
         private Builder() {}
@@ -329,6 +360,24 @@ public class StatementStats
             return this;
         }
 
+        public Builder setPeakTotalMemoryBytes(long peakTotalMemoryBytes)
+        {
+            this.peakTotalMemoryBytes = peakTotalMemoryBytes;
+            return this;
+        }
+
+        public Builder setPeakTaskTotalMemoryBytes(long peakTaskTotalMemoryBytes)
+        {
+            this.peakTaskTotalMemoryBytes = peakTaskTotalMemoryBytes;
+            return this;
+        }
+
+        public Builder setSpilledBytes(long spilledBytes)
+        {
+            this.spilledBytes = spilledBytes;
+            return this;
+        }
+
         public Builder setRootStage(StageStats rootStage)
         {
             this.rootStage = rootStage;
@@ -353,6 +402,9 @@ public class StatementStats
                     processedRows,
                     processedBytes,
                     peakMemoryBytes,
+                    peakTotalMemoryBytes,
+                    peakTaskTotalMemoryBytes,
+                    spilledBytes,
                     rootStage);
         }
     }

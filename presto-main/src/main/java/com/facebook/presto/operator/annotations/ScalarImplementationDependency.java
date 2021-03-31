@@ -14,64 +14,39 @@
 package com.facebook.presto.operator.annotations;
 
 import com.facebook.presto.metadata.BoundVariables;
-import com.facebook.presto.metadata.FunctionRegistry;
-import com.facebook.presto.metadata.Signature;
-import com.facebook.presto.spi.InvocationConvention;
-import com.facebook.presto.spi.type.TypeManager;
+import com.facebook.presto.metadata.FunctionAndTypeManager;
+import com.facebook.presto.spi.function.FunctionHandle;
+import com.facebook.presto.spi.function.InvocationConvention;
 
 import java.lang.invoke.MethodHandle;
-import java.util.Objects;
 import java.util.Optional;
-
-import static com.facebook.presto.metadata.SignatureBinder.applyBoundVariables;
-import static java.util.Objects.requireNonNull;
 
 public abstract class ScalarImplementationDependency
         implements ImplementationDependency
 {
-    private final Signature signature;
     private final Optional<InvocationConvention> invocationConvention;
 
-    protected ScalarImplementationDependency(Signature signature, Optional<InvocationConvention> invocationConvention)
+    protected ScalarImplementationDependency(Optional<InvocationConvention> invocationConvention)
     {
-        this.signature = requireNonNull(signature, "signature is null");
         this.invocationConvention = invocationConvention;
     }
 
-    public Signature getSignature()
-    {
-        return signature;
-    }
-
+    protected abstract FunctionHandle getFunctionHandle(BoundVariables boundVariables, FunctionAndTypeManager functionAndTypeManager);
     @Override
-    public MethodHandle resolve(BoundVariables boundVariables, TypeManager typeManager, FunctionRegistry functionRegistry)
+    public MethodHandle resolve(BoundVariables boundVariables, FunctionAndTypeManager functionAndTypeManager)
     {
-        Signature signature = applyBoundVariables(this.signature, boundVariables, this.signature.getArgumentTypes().size());
+        FunctionHandle functionHandle = getFunctionHandle(boundVariables, functionAndTypeManager);
         if (invocationConvention.isPresent()) {
-            return functionRegistry.getFunctionInvokerProvider().createFunctionInvoker(signature, invocationConvention).methodHandle();
+            return functionAndTypeManager.getFunctionInvokerProvider().createFunctionInvoker(functionHandle, invocationConvention).methodHandle();
         }
         else {
-            return functionRegistry.getScalarFunctionImplementation(signature).getMethodHandle();
+            return functionAndTypeManager.getBuiltInScalarFunctionImplementation(functionHandle).getMethodHandle();
         }
     }
 
     @Override
-    public boolean equals(Object o)
-    {
-        if (this == o) {
-            return true;
-        }
-        if (o == null || getClass() != o.getClass()) {
-            return false;
-        }
-        ScalarImplementationDependency that = (ScalarImplementationDependency) o;
-        return Objects.equals(signature, that.signature) &&
-                Objects.equals(invocationConvention, that.invocationConvention);
-    }
+    public abstract boolean equals(Object o);
 
     @Override
-    public int hashCode()
-    {
-        return Objects.hash(signature, invocationConvention);
-    }
+    public abstract int hashCode();
 }

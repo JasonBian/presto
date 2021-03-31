@@ -13,11 +13,12 @@
  */
 package com.facebook.presto.hive;
 
+import com.facebook.presto.common.type.TypeManager;
 import com.facebook.presto.hive.metastore.SortingColumn;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.session.PropertyMetadata;
-import com.facebook.presto.spi.type.TypeManager;
 import com.google.common.collect.ImmutableList;
+import com.google.common.collect.ImmutableMap;
 
 import javax.inject.Inject;
 
@@ -27,14 +28,13 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.stream.Collectors;
 
-import static com.facebook.presto.hive.metastore.SortingColumn.Order.ASCENDING;
-import static com.facebook.presto.hive.metastore.SortingColumn.Order.DESCENDING;
+import static com.facebook.presto.common.type.TypeSignature.parseTypeSignature;
+import static com.facebook.presto.common.type.VarcharType.createUnboundedVarcharType;
+import static com.facebook.presto.hive.BucketFunctionType.HIVE_COMPATIBLE;
 import static com.facebook.presto.spi.StandardErrorCode.INVALID_TABLE_PROPERTY;
 import static com.facebook.presto.spi.session.PropertyMetadata.doubleProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.integerProperty;
 import static com.facebook.presto.spi.session.PropertyMetadata.stringProperty;
-import static com.facebook.presto.spi.type.TypeSignature.parseTypeSignature;
-import static com.facebook.presto.spi.type.VarcharType.createUnboundedVarcharType;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static java.lang.String.format;
 import static java.util.Locale.ENGLISH;
@@ -50,6 +50,14 @@ public class HiveTableProperties
     public static final String ORC_BLOOM_FILTER_COLUMNS = "orc_bloom_filter_columns";
     public static final String ORC_BLOOM_FILTER_FPP = "orc_bloom_filter_fpp";
     public static final String AVRO_SCHEMA_URL = "avro_schema_url";
+    public static final String PREFERRED_ORDERING_COLUMNS = "preferred_ordering_columns";
+    public static final String ENCRYPT_COLUMNS = "encrypt_columns";
+    public static final String ENCRYPT_TABLE = "encrypt_table";
+    public static final String DWRF_ENCRYPTION_ALGORITHM = "dwrf_encryption_algorithm";
+    public static final String DWRF_ENCRYPTION_PROVIDER = "dwrf_encryption_provider";
+    public static final String CSV_SEPARATOR = "csv_separator";
+    public static final String CSV_QUOTE = "csv_quote";
+    public static final String CSV_ESCAPE = "csv_escape";
 
     private final List<PropertyMetadata<?>> tableProperties;
 
@@ -102,11 +110,11 @@ public class HiveTableProperties
                         false,
                         value -> ((Collection<?>) value).stream()
                                 .map(String.class::cast)
-                                .map(HiveTableProperties::sortingColumnFromString)
+                                .map(SortingColumn::sortingColumnFromString)
                                 .collect(toImmutableList()),
                         value -> ((Collection<?>) value).stream()
                                 .map(SortingColumn.class::cast)
-                                .map(HiveTableProperties::sortingColumnToString)
+                                .map(SortingColumn::sortingColumnToString)
                                 .collect(toImmutableList())),
                 new PropertyMetadata<>(
                         ORC_BLOOM_FILTER_COLUMNS,
@@ -126,7 +134,37 @@ public class HiveTableProperties
                         config.getOrcDefaultBloomFilterFpp(),
                         false),
                 integerProperty(BUCKET_COUNT_PROPERTY, "Number of buckets", 0, false),
-                stringProperty(AVRO_SCHEMA_URL, "URI pointing to Avro schema for the table", null, false));
+                stringProperty(AVRO_SCHEMA_URL, "URI pointing to Avro schema for the table", null, false),
+                new PropertyMetadata<>(
+                        PREFERRED_ORDERING_COLUMNS,
+                        "Preferred ordering columns for unbucketed table",
+                        typeManager.getType(parseTypeSignature("array(varchar)")),
+                        List.class,
+                        ImmutableList.of(),
+                        false,
+                        value -> ((Collection<?>) value).stream()
+                                .map(String.class::cast)
+                                .map(SortingColumn::sortingColumnFromString)
+                                .collect(toImmutableList()),
+                        value -> ((Collection<?>) value).stream()
+                                .map(SortingColumn.class::cast)
+                                .map(SortingColumn::sortingColumnToString)
+                                .collect(toImmutableList())),
+                stringProperty(ENCRYPT_TABLE, "Key reference for encrypting the whole table", null, false),
+                stringProperty(DWRF_ENCRYPTION_ALGORITHM, "Algorithm used for encryption data in DWRF", null, false),
+                stringProperty(DWRF_ENCRYPTION_PROVIDER, "Provider for encryption keys in provider", null, false),
+                stringProperty(CSV_SEPARATOR, "CSV separator character", null, false),
+                stringProperty(CSV_QUOTE, "CSV quote character", null, false),
+                stringProperty(CSV_ESCAPE, "CSV escape character", null, false),
+                new PropertyMetadata<>(
+                        ENCRYPT_COLUMNS,
+                        "List of key references and columns being encrypted. Example: ARRAY['key1:col1,col2', 'key2:col3,col4']",
+                        typeManager.getType(parseTypeSignature("array(varchar)")),
+                        ColumnEncryptionInformation.class,
+                        null,
+                        false,
+                        ColumnEncryptionInformation::fromTableProperty,
+                        ColumnEncryptionInformation::toTableProperty));
     }
 
     public List<PropertyMetadata<?>> getTableProperties()
@@ -137,6 +175,11 @@ public class HiveTableProperties
     public static String getExternalLocation(Map<String, Object> tableProperties)
     {
         return (String) tableProperties.get(EXTERNAL_LOCATION_PROPERTY);
+    }
+
+    public static boolean isExternalTable(Map<String, Object> tableProperties)
+    {
+        return tableProperties.get(EXTERNAL_LOCATION_PROPERTY) != null;
     }
 
     public static String getAvroSchemaUrl(Map<String, Object> tableProperties)
@@ -170,10 +213,13 @@ public class HiveTableProperties
         if (bucketCount < 0) {
             throw new PrestoException(INVALID_TABLE_PROPERTY, format("%s must be greater than zero", BUCKET_COUNT_PROPERTY));
         }
+        if (bucketCount > 1_000_000) {
+            throw new PrestoException(INVALID_TABLE_PROPERTY, format("%s should be no more than 1000000", BUCKET_COUNT_PROPERTY));
+        }
         if (bucketedBy.isEmpty() || bucketCount == 0) {
             throw new PrestoException(INVALID_TABLE_PROPERTY, format("%s and %s must be specified together", BUCKETED_BY_PROPERTY, BUCKET_COUNT_PROPERTY));
         }
-        return Optional.of(new HiveBucketProperty(bucketedBy, bucketCount, sortedBy));
+        return Optional.of(new HiveBucketProperty(bucketedBy, bucketCount, sortedBy, HIVE_COMPATIBLE, Optional.empty()));
     }
 
     @SuppressWarnings("unchecked")
@@ -199,22 +245,50 @@ public class HiveTableProperties
         return (Double) tableProperties.get(ORC_BLOOM_FILTER_FPP);
     }
 
-    private static SortingColumn sortingColumnFromString(String name)
+    public static Optional<Character> getCsvProperty(Map<String, Object> tableProperties, String key)
     {
-        SortingColumn.Order order = ASCENDING;
-        String lower = name.toUpperCase(ENGLISH);
-        if (lower.endsWith(" ASC")) {
-            name = name.substring(0, name.length() - 4).trim();
+        Object value = tableProperties.get(key);
+        if (value == null) {
+            return Optional.empty();
         }
-        else if (lower.endsWith(" DESC")) {
-            name = name.substring(0, name.length() - 5).trim();
-            order = DESCENDING;
+        String csvValue = (String) value;
+        if (csvValue.length() != 1) {
+            throw new PrestoException(INVALID_TABLE_PROPERTY, format("%s must be a single character string, but was: '%s'", key, csvValue));
         }
-        return new SortingColumn(name, order);
+        return Optional.of(csvValue.charAt(0));
     }
 
-    private static String sortingColumnToString(SortingColumn column)
+    @SuppressWarnings("unchecked")
+    public static List<SortingColumn> getPreferredOrderingColumns(Map<String, Object> tableProperties)
     {
-        return column.getColumnName() + ((column.getOrder() == DESCENDING) ? " DESC" : "");
+        List<SortingColumn> preferredOrderingColumns = (List<SortingColumn>) tableProperties.get(PREFERRED_ORDERING_COLUMNS);
+        if (preferredOrderingColumns == null) {
+            return ImmutableList.of();
+        }
+        if (!preferredOrderingColumns.isEmpty() && getBucketProperty(tableProperties).isPresent()) {
+            throw new PrestoException(INVALID_TABLE_PROPERTY, format("%s must not be specified when %s is specified", PREFERRED_ORDERING_COLUMNS, BUCKETED_BY_PROPERTY));
+        }
+        return preferredOrderingColumns;
+    }
+
+    public static String getEncryptTable(Map<String, Object> tableProperties)
+    {
+        return (String) tableProperties.get(ENCRYPT_TABLE);
+    }
+
+    public static String getDwrfEncryptionAlgorithm(Map<String, Object> tableProperties)
+    {
+        return (String) tableProperties.get(DWRF_ENCRYPTION_ALGORITHM);
+    }
+
+    public static String getDwrfEncryptionProvider(Map<String, Object> tableProperties)
+    {
+        return (String) tableProperties.get(DWRF_ENCRYPTION_PROVIDER);
+    }
+
+    public static ColumnEncryptionInformation getEncryptColumns(Map<String, Object> tableProperties)
+    {
+        return tableProperties.containsKey(ENCRYPT_COLUMNS) ? (ColumnEncryptionInformation) tableProperties.get(ENCRYPT_COLUMNS) :
+                ColumnEncryptionInformation.fromMap(ImmutableMap.of());
     }
 }

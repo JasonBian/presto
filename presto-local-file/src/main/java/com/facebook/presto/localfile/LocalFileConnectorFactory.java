@@ -13,13 +13,13 @@
  */
 package com.facebook.presto.localfile;
 
+import com.facebook.airlift.bootstrap.Bootstrap;
 import com.facebook.presto.spi.ConnectorHandleResolver;
 import com.facebook.presto.spi.NodeManager;
 import com.facebook.presto.spi.connector.Connector;
 import com.facebook.presto.spi.connector.ConnectorContext;
 import com.facebook.presto.spi.connector.ConnectorFactory;
 import com.google.inject.Injector;
-import io.airlift.bootstrap.Bootstrap;
 
 import java.util.Map;
 
@@ -52,7 +52,6 @@ public class LocalFileConnectorFactory
                     new LocalFileModule(catalogName));
 
             Injector injector = app
-                    .strictConfig()
                     .doNotInitializeLogging()
                     .setRequiredConfigurationProperties(config)
                     .initialize();

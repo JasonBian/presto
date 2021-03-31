@@ -13,14 +13,16 @@
  */
 package com.facebook.presto.operator.index;
 
+import com.facebook.presto.common.Page;
+import com.facebook.presto.common.function.SqlFunctionProperties;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.operator.OperatorFactory;
 import com.facebook.presto.operator.project.PageProcessor;
-import com.facebook.presto.operator.project.PageProjection;
-import com.facebook.presto.spi.Page;
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.operator.project.PageProjectionWithOutputs;
+import com.facebook.presto.spi.function.SqlFunctionId;
+import com.facebook.presto.spi.function.SqlInvokedFunction;
+import com.facebook.presto.spi.plan.PlanNodeId;
 import com.facebook.presto.sql.gen.PageFunctionCompiler;
-import com.facebook.presto.sql.planner.plan.PlanNodeId;
 import com.facebook.presto.sql.relational.Expressions;
 import com.google.common.annotations.VisibleForTesting;
 import com.google.common.collect.ImmutableList;
@@ -28,7 +30,9 @@ import com.google.common.primitives.Ints;
 import io.airlift.units.DataSize;
 
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
+import java.util.OptionalInt;
 import java.util.function.Supplier;
 import java.util.stream.IntStream;
 
@@ -48,7 +52,7 @@ public class DynamicTupleFilterFactory
     private final List<Type> filterTypes;
 
     private final List<Type> outputTypes;
-    private final List<Supplier<PageProjection>> outputProjections;
+    private final List<Supplier<PageProjectionWithOutputs>> outputProjections;
 
     public DynamicTupleFilterFactory(
             int filterOperatorId,
@@ -56,6 +60,8 @@ public class DynamicTupleFilterFactory
             int[] tupleFilterChannels,
             int[] outputFilterChannels,
             List<Type> outputTypes,
+            SqlFunctionProperties sqlFunctionProperties,
+            Map<SqlFunctionId, SqlInvokedFunction> sessionFunctions,
             PageFunctionCompiler pageFunctionCompiler)
     {
         requireNonNull(planNodeId, "planNodeId is null");
@@ -77,35 +83,31 @@ public class DynamicTupleFilterFactory
                 .collect(toImmutableList());
 
         this.outputTypes = ImmutableList.copyOf(outputTypes);
-        this.outputProjections = IntStream.range(0, outputTypes.size())
-                .mapToObj(field -> pageFunctionCompiler.compileProjection(Expressions.field(field, outputTypes.get(field)), Optional.empty()))
-                .collect(toImmutableList());
+        this.outputProjections = pageFunctionCompiler.compileProjections(
+                sqlFunctionProperties,
+                sessionFunctions,
+                IntStream.range(0, outputTypes.size())
+                        .mapToObj(field -> Expressions.field(field, outputTypes.get(field)))
+                        .collect(toImmutableList()),
+                false,
+                Optional.empty());
     }
 
     public OperatorFactory filterWithTuple(Page tuplePage)
     {
-        Page filterTuple = getFilterTuple(tuplePage);
-        Supplier<PageProcessor> processor = createPageProcessor(filterTuple);
+        Supplier<PageProcessor> processor = createPageProcessor(tuplePage.extractChannels(tupleFilterChannels), OptionalInt.empty());
         return new FilterAndProjectOperatorFactory(filterOperatorId, planNodeId, processor, outputTypes, new DataSize(0, BYTE), 0);
     }
 
     @VisibleForTesting
-    public Supplier<PageProcessor> createPageProcessor(Page filterTuple)
+    public Supplier<PageProcessor> createPageProcessor(Page filterTuple, OptionalInt initialBatchSize)
     {
         TuplePageFilter filter = new TuplePageFilter(filterTuple, filterTypes, outputFilterChannels);
         return () -> new PageProcessor(
                 Optional.of(filter),
                 outputProjections.stream()
                         .map(Supplier::get)
-                        .collect(toImmutableList()));
-    }
-
-    private Page getFilterTuple(Page tuplePage)
-    {
-        Block[] normalizedBlocks = new Block[tupleFilterChannels.length];
-        for (int i = 0; i < tupleFilterChannels.length; i++) {
-            normalizedBlocks[i] = tuplePage.getBlock(tupleFilterChannels[i]);
-        }
-        return new Page(normalizedBlocks);
+                        .collect(toImmutableList()),
+                initialBatchSize);
     }
 }

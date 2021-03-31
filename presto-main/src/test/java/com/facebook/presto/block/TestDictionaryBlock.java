@@ -13,17 +13,24 @@
  */
 package com.facebook.presto.block;
 
-import com.facebook.presto.spi.block.Block;
-import com.facebook.presto.spi.block.BlockBuilder;
-import com.facebook.presto.spi.block.DictionaryBlock;
-import com.facebook.presto.spi.block.DictionaryId;
-import com.facebook.presto.spi.block.VariableWidthBlockBuilder;
+import com.facebook.presto.common.block.Block;
+import com.facebook.presto.common.block.BlockBuilder;
+import com.facebook.presto.common.block.DictionaryBlock;
+import com.facebook.presto.common.block.DictionaryId;
+import com.facebook.presto.common.block.VariableWidthBlockBuilder;
 import com.google.common.collect.ImmutableList;
 import io.airlift.slice.Slice;
 import org.testng.annotations.Test;
 
+import java.util.Arrays;
+
+import static com.facebook.presto.block.BlockAssertions.createRLEBlock;
+import static com.facebook.presto.block.BlockAssertions.createRandomDictionaryBlock;
+import static com.facebook.presto.block.BlockAssertions.createRandomLongsBlock;
 import static com.facebook.presto.block.BlockAssertions.createSlicesBlock;
+import static com.facebook.presto.common.type.VarcharType.VARCHAR;
 import static io.airlift.slice.SizeOf.SIZE_OF_INT;
+import static io.airlift.slice.Slices.utf8Slice;
 import static org.testng.Assert.assertEquals;
 import static org.testng.Assert.assertFalse;
 import static org.testng.Assert.assertNotEquals;
@@ -39,6 +46,78 @@ public class TestDictionaryBlock
         Slice[] expectedValues = createExpectedValues(10);
         DictionaryBlock dictionaryBlock = createDictionaryBlock(expectedValues, 100);
         assertEquals(dictionaryBlock.getSizeInBytes(), dictionaryBlock.getDictionary().getSizeInBytes() + (100 * SIZE_OF_INT));
+    }
+
+    @Test
+    public void testNonCachedLogicalBytes()
+    {
+        int numEntries = 10;
+        BlockBuilder blockBuilder = VARCHAR.createBlockBuilder(null, numEntries);
+
+        // Over allocate dictionary indexes but only use the required limit.
+        int[] dictionaryIndexes = new int[numEntries + 10];
+        Arrays.fill(dictionaryIndexes, 1);
+        blockBuilder.appendNull();
+        dictionaryIndexes[0] = 0;
+
+        String string = "";
+        for (int i = 1; i < numEntries; i++) {
+            string += "a";
+            VARCHAR.writeSlice(blockBuilder, utf8Slice(string));
+            dictionaryIndexes[i] = numEntries - i;
+        }
+
+        // A dictionary block of size 10, 1st element -> null, 2nd element size -> 9....9th element size -> 1
+        // Pass different maxChunkSize and different offset and verify if it computes the chunk lengths correctly.
+        Block elementBlock = blockBuilder.build();
+        DictionaryBlock block = new DictionaryBlock(numEntries, elementBlock, dictionaryIndexes);
+        int elementSize = Integer.BYTES + Byte.BYTES;
+
+        long size = block.getRegionLogicalSizeInBytes(0, 1);
+        assertEquals(size, 0 + 1 * elementSize);
+
+        size = block.getRegionLogicalSizeInBytes(0, numEntries);
+        assertEquals(size, 45 + numEntries * elementSize);
+
+        size = block.getRegionLogicalSizeInBytes(1, 2);
+        assertEquals(size, 9 + 8 + 2 * elementSize);
+
+        size = block.getRegionLogicalSizeInBytes(9, 1);
+        assertEquals(size, 1 + 1 * elementSize);
+    }
+
+    @Test
+    public void testLogicalSizeInBytes()
+    {
+        // The 10 Slices in the array will be of lengths 0 to 9.
+        Slice[] expectedValues = createExpectedValues(10);
+
+        // The dictionary within the dictionary block is expected to be a VariableWidthBlock of size 95 bytes.
+        // 45 bytes for the expectedValues Slices (sum of seq(0,9)) and 50 bytes for the position and isNull array (total 10 positions).
+        DictionaryBlock dictionaryBlock = createDictionaryBlock(expectedValues, 100);
+        assertEquals(dictionaryBlock.getDictionary().getLogicalSizeInBytes(), 95);
+
+        // The 100 positions in the dictionary block index to 10 positions in the underlying dictionary (10 each).
+        // Logical size calculation accounts for 4 bytes of offset and 1 byte of isNull. Therefore the expected unoptimized
+        // size is 10 times the size of the underlying dictionary (VariableWidthBlock).
+        assertEquals(dictionaryBlock.getLogicalSizeInBytes(), 95 * 10);
+
+        // With alternating nulls, we have 21 positions, with the same size calculation as above.
+        dictionaryBlock = createDictionaryBlock(alternatingNullValues(expectedValues), 210);
+        assertEquals(dictionaryBlock.getDictionary().getPositionCount(), 21);
+        assertEquals(dictionaryBlock.getDictionary().getLogicalSizeInBytes(), 150);
+
+        // The null positions should be included in the logical size.
+        assertEquals(dictionaryBlock.getLogicalSizeInBytes(), 150 * 10);
+
+        Block longArrayBlock = createRandomLongsBlock(100, 0.5f);
+        DictionaryBlock dictionaryDictionaryBlock = createRandomDictionaryBlock(createRandomDictionaryBlock(longArrayBlock, 50), 10);
+        assertEquals(dictionaryDictionaryBlock.getDictionary().getLogicalSizeInBytes(), 450);
+        assertEquals(dictionaryDictionaryBlock.getLogicalSizeInBytes(), 90);
+
+        DictionaryBlock dictionaryRleBlock = createRandomDictionaryBlock(createRLEBlock(1, 50), 10);
+        assertEquals(dictionaryRleBlock.getDictionary().getLogicalSizeInBytes(), 450);
+        assertEquals(dictionaryRleBlock.getLogicalSizeInBytes(), 90);
     }
 
     @Test
@@ -64,7 +143,8 @@ public class TestDictionaryBlock
         assertEquals(copiedBlock.getDictionary().getPositionCount(), 1);
         assertEquals(copiedBlock.getPositionCount(), positionsToCopy.length);
         assertBlock(copiedBlock.getDictionary(), TestDictionaryBlock::createBlockBuilder, new Slice[] {firstExpectedValue});
-        assertBlock(copiedBlock, TestDictionaryBlock::createBlockBuilder, new Slice[] {firstExpectedValue, firstExpectedValue, firstExpectedValue, firstExpectedValue, firstExpectedValue});
+        assertBlock(copiedBlock, TestDictionaryBlock::createBlockBuilder, new Slice[] {firstExpectedValue, firstExpectedValue, firstExpectedValue, firstExpectedValue,
+                firstExpectedValue});
     }
 
     @Test
@@ -152,7 +232,8 @@ public class TestDictionaryBlock
     {
         Slice[] expectedValues = createExpectedValues(10);
         Block dictionaryBlock = new DictionaryBlock(createSlicesBlock(expectedValues), new int[] {0, 1, 2, 3, 4, 5});
-        assertBlock(dictionaryBlock, TestDictionaryBlock::createBlockBuilder, new Slice[] {expectedValues[0], expectedValues[1], expectedValues[2], expectedValues[3], expectedValues[4], expectedValues[5]});
+        assertBlock(dictionaryBlock, TestDictionaryBlock::createBlockBuilder, new Slice[] {expectedValues[0], expectedValues[1], expectedValues[2], expectedValues[3],
+                expectedValues[4], expectedValues[5]});
         DictionaryId dictionaryId = ((DictionaryBlock) dictionaryBlock).getDictionarySourceId();
 
         // first getPositions
@@ -177,7 +258,8 @@ public class TestDictionaryBlock
 
         // duplicated getPositions
         dictionaryBlock = dictionaryBlock.getPositions(new int[] {1, 1, 1, 1, 1}, 0, 5);
-        assertBlock(dictionaryBlock, TestDictionaryBlock::createBlockBuilder, new Slice[] {expectedValues[5], expectedValues[5], expectedValues[5], expectedValues[5], expectedValues[5]});
+        assertBlock(dictionaryBlock, TestDictionaryBlock::createBlockBuilder, new Slice[] {expectedValues[5], expectedValues[5], expectedValues[5], expectedValues[5],
+                expectedValues[5]});
         assertEquals(((DictionaryBlock) dictionaryBlock).getDictionarySourceId(), dictionaryId);
 
         // out of range

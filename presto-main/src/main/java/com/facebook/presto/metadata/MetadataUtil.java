@@ -14,14 +14,18 @@
 package com.facebook.presto.metadata;
 
 import com.facebook.presto.Session;
-import com.facebook.presto.spi.CatalogSchemaName;
+import com.facebook.presto.common.CatalogSchemaName;
+import com.facebook.presto.common.QualifiedObjectName;
+import com.facebook.presto.common.type.Type;
 import com.facebook.presto.spi.ColumnMetadata;
 import com.facebook.presto.spi.ConnectorTableMetadata;
 import com.facebook.presto.spi.PrestoException;
 import com.facebook.presto.spi.SchemaTableName;
-import com.facebook.presto.spi.type.Type;
+import com.facebook.presto.spi.security.PrestoPrincipal;
 import com.facebook.presto.sql.analyzer.SemanticException;
+import com.facebook.presto.sql.tree.GrantorSpecification;
 import com.facebook.presto.sql.tree.Node;
+import com.facebook.presto.sql.tree.PrincipalSpecification;
 import com.facebook.presto.sql.tree.QualifiedName;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
@@ -31,6 +35,8 @@ import java.util.List;
 import java.util.Optional;
 
 import static com.facebook.presto.spi.StandardErrorCode.SYNTAX_ERROR;
+import static com.facebook.presto.spi.security.PrincipalType.ROLE;
+import static com.facebook.presto.spi.security.PrincipalType.USER;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.CATALOG_NOT_SPECIFIED;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.INVALID_SCHEMA_NAME;
 import static com.facebook.presto.sql.analyzer.SemanticErrorCode.SCHEMA_NOT_SPECIFIED;
@@ -67,11 +73,9 @@ public final class MetadataUtil
         return checkLowerCase(tableName, "tableName");
     }
 
-    public static void checkObjectName(String catalogName, String schemaName, String objectName)
+    public static SchemaTableName toSchemaTableName(QualifiedObjectName qualifiedObjectName)
     {
-        checkLowerCase(catalogName, "catalogName");
-        checkLowerCase(schemaName, "schemaName");
-        checkLowerCase(objectName, "objectName");
+        return new SchemaTableName(qualifiedObjectName.getSchemaName(), qualifiedObjectName.getObjectName());
     }
 
     public static String checkLowerCase(String value, String name)
@@ -91,6 +95,17 @@ public final class MetadataUtil
             }
         }
         return null;
+    }
+
+    public static String createCatalogName(Session session, Node node)
+    {
+        Optional<String> sessionCatalog = session.getCatalog();
+
+        if (!sessionCatalog.isPresent()) {
+            throw new SemanticException(CATALOG_NOT_SPECIFIED, node, "Session catalog must be set");
+        }
+
+        return sessionCatalog.get();
     }
 
     public static CatalogSchemaName createCatalogSchemaName(Session session, Node node, Optional<QualifiedName> schema)
@@ -140,6 +155,36 @@ public final class MetadataUtil
     public static QualifiedName createQualifiedName(QualifiedObjectName name)
     {
         return QualifiedName.of(name.getCatalogName(), name.getSchemaName(), name.getObjectName());
+    }
+
+    public static PrestoPrincipal createPrincipal(Session session, GrantorSpecification specification)
+    {
+        GrantorSpecification.Type type = specification.getType();
+        switch (type) {
+            case PRINCIPAL:
+                return createPrincipal(specification.getPrincipal().get());
+            case CURRENT_USER:
+                return new PrestoPrincipal(USER, session.getIdentity().getUser());
+            case CURRENT_ROLE:
+                // TODO: will be implemented once the "SET ROLE" statement is introduced
+                throw new UnsupportedOperationException("CURRENT_ROLE is not yet supported");
+            default:
+                throw new IllegalArgumentException("Unsupported type: " + type);
+        }
+    }
+
+    public static PrestoPrincipal createPrincipal(PrincipalSpecification specification)
+    {
+        PrincipalSpecification.Type type = specification.getType();
+        switch (type) {
+            case UNSPECIFIED:
+            case USER:
+                return new PrestoPrincipal(USER, specification.getName().getValue());
+            case ROLE:
+                return new PrestoPrincipal(ROLE, specification.getName().getValue());
+            default:
+                throw new IllegalArgumentException("Unsupported type: " + type);
+        }
     }
 
     public static boolean tableExists(Metadata metadata, Session session, String table)
